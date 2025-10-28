@@ -1,4 +1,4 @@
-import { startApp } from "./modules/app/services/app.service.ts";
+import { startApp } from "./modules/app/setup.ts";
 
 await startApp();
 console.debug("App started");
