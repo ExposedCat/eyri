@@ -71,5 +71,10 @@ tickersComposer.command("tickers", async (ctx) => {
 		})
 		.join("\n");
 
+	if (priceList.length === 0) {
+		await ctx.text("no_positions");
+		return;
+	}
+
 	await ctx.reply(priceList);
 });
