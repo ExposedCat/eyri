@@ -1,0 +1,16 @@
+---
+alwaysApply: true
+---
+
+STRICTLY FOLLOW THESE COMMIT CONVENTIONS:
+
+- Always use `feat: message` for new features. Never add "implement" or "add",
+  write the feature right after feat:
+- Always use `fix: message` for bug fixes. Never add "fix", write the bug right
+  after fix:
+- Always use `chore: message` for chore updates. Never add "update", write the
+  chore right after chore:
+- Always write short commit messages that are easy to understand and explain the
+  changes
+- Never describe every single change in the commit message, write only a general
+  description of all changes
