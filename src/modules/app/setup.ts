@@ -2,6 +2,7 @@ import { validateEnv } from "../../utils/env.ts";
 import { createBot } from "../bot/setup.ts";
 import type { Database } from "../database/setup.ts";
 import { connectToDb } from "../database/setup.ts";
+import { subscribeToAllTickers } from "../tickers/service.ts";
 import { TradenetRealtime } from "../tradernet/realtime.ts";
 
 export async function startApp() {
@@ -23,6 +24,7 @@ export async function startApp() {
 	const tradenetRealtime = new TradenetRealtime(database);
 	try {
 		await tradenetRealtime.connect(Deno.env.get("TRADERNET_SID") ?? "");
+		await subscribeToAllTickers({ database, tradenetRealtime });
 	} catch (error) {
 		console.error(
 			"Error occurred while connecting to the Tradenet Realtime:",

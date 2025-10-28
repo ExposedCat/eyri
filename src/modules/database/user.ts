@@ -68,3 +68,7 @@ export function getPositions(user: User) {
 		{} as Record<string, { amount: number; cost: number }>,
 	);
 }
+
+export function getAllUsers(database: Database) {
+	return database.user.find().toArray();
+}
