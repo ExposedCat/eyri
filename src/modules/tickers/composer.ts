@@ -67,7 +67,7 @@ tickersComposer.command("tickers", async (ctx) => {
 			const profit = totalPrice - cost;
 			const profitPercentage = (profit / cost) * 100;
 
-			return `${ticker} ${formatMoneyChange(profit)} ${formatMoneyChange(profitPercentage, "%")} ($${totalPrice})`;
+			return `${ticker} ${formatMoneyChange(profit)} ${formatMoneyChange(profitPercentage, "%")} ($${totalPrice.toFixed(1)})`;
 		})
 		.join("\n");
 
