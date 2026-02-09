@@ -55,19 +55,58 @@ tickersComposer.command("tickers", async (ctx) => {
 	);
 
 	const positions = getPositions(ctx.dbEntities.user);
+	const now = new Date();
+	const earliestDatesByTicker = ctx.dbEntities.user.positions.reduce(
+		(list, position) => {
+			const ticker = position.ticker;
+			const positionDate =
+				position.date instanceof Date ? position.date : new Date(position.date);
+			const previousDate = list[ticker];
+			if (!previousDate || positionDate < previousDate) {
+				list[ticker] = positionDate;
+			}
+			return list;
+		},
+		{} as Record<string, Date>,
+	);
+
+	const getMonthCount = (startDate: Date, endDate: Date) => {
+		const monthDifference =
+			(endDate.getFullYear() - startDate.getFullYear()) * 12 +
+			(endDate.getMonth() - startDate.getMonth());
+		return Math.max(1, monthDifference + 1);
+	};
+
+	const formatMoney = (value: number) => `$${value.toFixed(2)}`;
 
 	const priceList = Object.entries(positions)
 		.map(([ticker, { amount, cost }]) => {
-			const price = prices[ticker]?.price;
-			if (!price) {
-				return `${ticker} ${amount}x $?`;
+			const currentPrice = prices[ticker]?.price;
+			const oldestDate = earliestDatesByTicker[ticker];
+			const monthCount = oldestDate ? getMonthCount(oldestDate, now) : 1;
+			const totalInput = cost;
+			if (!currentPrice) {
+				const monthlyAverageInput = totalInput / monthCount;
+				return [
+					`${ticker} ? ?`,
+					`${formatMoney(monthlyAverageInput)} (?) ? x ${monthCount}`,
+					`${formatMoney(totalInput)} ➔ ?`,
+				].join("\n");
 			}
 
-			const totalPrice = amount * price;
-			const profit = totalPrice - cost;
-			const profitPercentage = (profit / cost) * 100;
+			const totalNow = amount * currentPrice;
+			const totalChange = totalNow - totalInput;
+			const totalPercentageChange =
+				totalInput === 0 ? 0 : (totalChange / totalInput) * 100;
+			const monthlyAveragePrice = totalInput / monthCount;
+			const monthlyAveragePercentageChange =
+				totalInput === 0 ? 0 : totalPercentageChange / monthCount;
 
-			return `${ticker} ${formatMoneyChange(profit)} ${formatMoneyChange(profitPercentage, "%")} ($${totalPrice.toFixed(1)})`;
+			return [
+				`${ticker} ${formatMoneyChange(totalChange)} ${formatMoneyChange(totalPercentageChange, "%")}`,
+				`${formatMoney(monthlyAveragePrice)} (${formatMoney(currentPrice)}) ${formatMoneyChange(monthlyAveragePercentageChange, "%")} x ${monthCount}`,
+				`${formatMoney(totalInput)} ➔ ${formatMoney(totalNow)}`,
+			].join("\n");
 		})
 		.join("\n");
 
