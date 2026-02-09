@@ -78,6 +78,7 @@ tickersComposer.command("tickers", async (ctx) => {
 	};
 
 	const formatMoney = (value: number) => `$${value.toFixed(2)}`;
+	const formatAmount = (value: number) => value.toFixed(2);
 
 	const priceList = Object.entries(positions)
 		.map(([ticker, { amount, cost }]) => {
@@ -85,12 +86,12 @@ tickersComposer.command("tickers", async (ctx) => {
 			const oldestDate = earliestDatesByTicker[ticker];
 			const monthCount = oldestDate ? getMonthCount(oldestDate, now) : 1;
 			const totalInput = cost;
+			const averageUnitPrice = amount === 0 ? 0 : totalInput / amount;
 			if (!currentPrice) {
-				const monthlyAverageInput = totalInput / monthCount;
 				return [
 					`${ticker} ? ?`,
-					`${formatMoney(monthlyAverageInput)} (?) ? x ${monthCount}`,
-					`${formatMoney(totalInput)} ➔ ?`,
+					`${formatMoney(averageUnitPrice)} x ${formatAmount(amount)} (? ?)`,
+					`${formatMoney(totalInput)} ➔ ? x ${monthCount}m`,
 				].join("\n");
 			}
 
@@ -98,14 +99,15 @@ tickersComposer.command("tickers", async (ctx) => {
 			const totalChange = totalNow - totalInput;
 			const totalPercentageChange =
 				totalInput === 0 ? 0 : (totalChange / totalInput) * 100;
-			const monthlyAveragePrice = totalInput / monthCount;
-			const monthlyAveragePercentageChange =
-				totalInput === 0 ? 0 : totalPercentageChange / monthCount;
+			const currentVsAveragePercentageChange =
+				averageUnitPrice === 0
+					? 0
+					: ((currentPrice - averageUnitPrice) / averageUnitPrice) * 100;
 
 			return [
 				`${ticker} ${formatMoneyChange(totalChange)} ${formatMoneyChange(totalPercentageChange, "%")}`,
-				`${formatMoney(monthlyAveragePrice)} (${formatMoney(currentPrice)}) ${formatMoneyChange(monthlyAveragePercentageChange, "%")} x ${monthCount}`,
-				`${formatMoney(totalInput)} ➔ ${formatMoney(totalNow)}`,
+				`${formatMoney(averageUnitPrice)} x ${formatAmount(amount)} (${formatMoney(currentPrice)} ${formatMoneyChange(currentVsAveragePercentageChange, "%")})`,
+				`${formatMoney(totalInput)} ➔ ${formatMoney(totalNow)} x ${monthCount}m`,
 			].join("\n");
 		})
 		.join("\n");
