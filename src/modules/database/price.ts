@@ -89,12 +89,18 @@ export async function refreshPersistentPrice(
   ticker: string,
 ) {
   const normalizedTicker = ticker.trim().toUpperCase();
-  const currentPrice = await fetchTickerPrice(normalizedTicker);
-  if (currentPrice) {
+  const result = await fetchTickerPrice(normalizedTicker);
+  if (!result.success) {
+    return false;
+  }
+
+  if (result.data) {
     await savePrice({
       database,
       ticker: normalizedTicker,
-      price: currentPrice,
+      price: result.data,
     });
   }
+
+  return true;
 }

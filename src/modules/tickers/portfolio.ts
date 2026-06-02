@@ -33,6 +33,7 @@ type TickerPositionSummary = {
 
 const formatMoney = (value: number) => `$${value.toFixed(2)}`;
 const formatAmount = (value: number) => value.toFixed(2);
+const PRICE_LIMIT_WARNING = "<i>price limit hit: showing cached data</i>";
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 365.2425 / 12;
 
@@ -66,6 +67,23 @@ function toDate(value: Date | string) {
   return value instanceof Date ? value : new Date(value);
 }
 
+async function refreshPrices(database: Database, tickers: string[]) {
+  const refreshResults = await Promise.all(
+    [...new Set(tickers)].map((ticker) =>
+      refreshPersistentPrice(database, ticker),
+    ),
+  );
+
+  return refreshResults.some((success) => !success);
+}
+
+function appendPriceLimitWarning(
+  output: string,
+  hasFailedPriceRequest: boolean,
+) {
+  return hasFailedPriceRequest ? `${PRICE_LIMIT_WARNING}\n\n${output}` : output;
+}
+
 function getTickerPositionSummaries(user: User) {
   return user.positions.reduce(
     (list, position) => {
@@ -96,11 +114,7 @@ export async function buildTickerList({
   }
 
   const tickers = user.positions.map((position) => position.ticker);
-  await Promise.all(
-    [...new Set(tickers)].map((ticker) =>
-      refreshPersistentPrice(database, ticker)
-    ),
-  );
+  const hasFailedPriceRequest = await refreshPrices(database, tickers);
 
   const prices = await getPrices(database, tickers);
   const positions = getPositions(user);
@@ -208,7 +222,10 @@ export async function buildTickerList({
     } (${portfolioElapsedPeriod.label})`;
   })();
 
-  return [...tickerLines, totalSummary].join("\n\n");
+  return appendPriceLimitWarning(
+    [...tickerLines, totalSummary].join("\n\n"),
+    hasFailedPriceRequest,
+  );
 }
 
 export async function buildPerformanceList({
@@ -224,11 +241,7 @@ export async function buildPerformanceList({
   }
 
   const tickers = user.positions.map((position) => position.ticker);
-  await Promise.all(
-    [...new Set(tickers)].map((ticker) =>
-      refreshPersistentPrice(database, ticker)
-    ),
-  );
+  const hasFailedPriceRequest = await refreshPrices(database, tickers);
 
   const prices = await getPrices(database, tickers);
   const positions = getTickerPositionSummaries(user);
@@ -294,7 +307,10 @@ export async function buildPerformanceList({
       } ${formatMoneyChange(change)} (${portfolioElapsedPeriod.label})`;
     })();
 
-  return [...lines, totalLine].join("\n\n");
+  return appendPriceLimitWarning(
+    [...lines, totalLine].join("\n\n"),
+    hasFailedPriceRequest,
+  );
 }
 
 export function buildHistory({
