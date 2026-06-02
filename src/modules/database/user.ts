@@ -18,6 +18,7 @@ type UserRow = {
 };
 
 type PositionRow = {
+  id: number;
   ticker: string;
   amount: number;
   price: number;
@@ -31,7 +32,7 @@ function normalizeTicker(ticker: string) {
 function readPositions(database: Database, userId: number): Position[] {
   const rows = database
     .prepare(`
-      SELECT ticker, amount, price, date
+      SELECT id, ticker, amount, price, date
       FROM positions
       WHERE user_id = ?
       ORDER BY date, id
@@ -119,6 +120,53 @@ export async function addPosition({
     return { success: true, data: null };
   } catch {
     return { success: false, error: "Failed to add position" };
+  }
+}
+
+type DeleteLatestPositionArgs = {
+  database: Database;
+  userId: number;
+  ticker: string;
+};
+
+export async function deleteLatestPosition({
+  database,
+  userId,
+  ticker,
+}: DeleteLatestPositionArgs): Promise<ServiceResult<null>> {
+  const normalizedTicker = normalizeTicker(ticker);
+  if (!normalizedTicker) {
+    return { success: false, error: "Failed to delete position" };
+  }
+
+  try {
+    const row = database
+      .prepare(`
+        SELECT id
+        FROM positions
+        WHERE user_id = ? AND ticker = ?
+        ORDER BY date DESC, id DESC
+        LIMIT 1
+      `)
+      .get(userId, normalizedTicker) as Pick<PositionRow, "id"> | undefined;
+
+    if (!row) {
+      return { success: false, error: "Position not found" };
+    }
+
+    database.prepare("DELETE FROM positions WHERE id = ?").run(row.id);
+
+    database
+      .prepare(`
+        UPDATE users
+        SET updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = ?
+      `)
+      .run(userId);
+
+    return { success: true, data: null };
+  } catch {
+    return { success: false, error: "Failed to delete position" };
   }
 }
 

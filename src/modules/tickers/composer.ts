@@ -1,7 +1,7 @@
 import { Composer } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
 import { refreshPersistentPrice } from "../database/price.ts";
-import { addPosition } from "../database/user.ts";
+import { addPosition, deleteLatestPosition } from "../database/user.ts";
 import {
   escapeHtml,
   formatTickerDecorations,
@@ -65,6 +65,38 @@ tickersComposer.command("buy", async (ctx) => {
 
   await ctx.text("bought");
   await refreshPersistentPrice(ctx.db, ticker);
+});
+
+tickersComposer.command("delete", async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  if (!ctx.match) {
+    await ctx.text("delete");
+    return;
+  }
+
+  const params = ctx.match.split(" ");
+  if (params.length !== 1) {
+    await ctx.text("delete");
+    return;
+  }
+
+  const [ticker] = params;
+  const result = await deleteLatestPosition({
+    database: ctx.db,
+    userId: ctx.dbEntities.user.userId,
+    ticker,
+  });
+
+  if (!result.success) {
+    await ctx.text("delete_not_found");
+    return;
+  }
+
+  await ctx.text("deleted");
 });
 
 tickersComposer.command("decorate", async (ctx) => {
