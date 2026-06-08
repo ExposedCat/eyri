@@ -6,5 +6,6 @@ COPY deno.json deno.lock ./
 COPY src ./src
 
 RUN deno cache --allow-import --lock=deno.lock src/main.ts
+RUN deno cache --allow-import --lock=deno.lock src/healthcheck.ts
 
-CMD ["run", "--env-file=.env", "-A", "src/main.ts"]
+CMD ["run", "-A", "src/main.ts"]

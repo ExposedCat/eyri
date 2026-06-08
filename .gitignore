@@ -5,5 +5,5 @@ build
 node_modules
 
 # Sensitive data
-.env
+.env*
 data/

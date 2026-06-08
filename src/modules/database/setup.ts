@@ -11,28 +11,19 @@ function ensureSchema(database: Database) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
-    CREATE TABLE IF NOT EXISTS positions (
+    CREATE TABLE IF NOT EXISTS integrations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
-      ticker TEXT NOT NULL,
-      amount REAL NOT NULL,
-      price REAL NOT NULL,
-      date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(user_id)
+      kind TEXT NOT NULL,
+      credentials_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(user_id),
+      UNIQUE (user_id, kind)
     );
 
-    CREATE INDEX IF NOT EXISTS positions_user_id_idx
-      ON positions(user_id);
-
-    CREATE INDEX IF NOT EXISTS positions_ticker_idx
-      ON positions(ticker);
-
-    CREATE TABLE IF NOT EXISTS prices (
-      ticker TEXT PRIMARY KEY,
-      price REAL NOT NULL,
-      close_price REAL,
-      date TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
+    CREATE INDEX IF NOT EXISTS integrations_user_id_idx
+      ON integrations(user_id);
   `);
 }
 

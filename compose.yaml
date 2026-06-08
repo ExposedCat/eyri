@@ -1,14 +1,41 @@
 services:
+  ib_gateway:
+    image: docker.io/gnzsnz/ib-gateway:10.34.1a@sha256:d1779edb24f50ca44d4bd20d4098ffd5b2b81ca98cf21e6676ed465befb7dd44
+    restart: unless-stopped
+    env_file:
+      - .env-ibkr-1
+    environment:
+      TWS_SETTINGS_PATH: /home/ibgateway/Jts
+    ports:
+      - "127.0.0.1:4001:4003"
+      - "127.0.0.1:4002:4004"
+      - "127.0.0.1:5900:5900"
+    volumes:
+      - ib-gateway-settings:/home/ibgateway/Jts
+
   eyri_app:
     build:
       context: .
       dockerfile: Containerfile
     restart: unless-stopped
+    depends_on:
+      - ib_gateway
     env_file:
       - .env
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "deno run -A src/healthcheck.ts",
+        ]
+      interval: 2m
+      timeout: 45s
+      start_period: 2m
+      retries: 1
     init: true
     volumes:
       - eyri-data:/app/data
 
 volumes:
+  ib-gateway-settings:
   eyri-data:

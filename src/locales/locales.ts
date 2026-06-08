@@ -1,15 +1,27 @@
 export const locales: Record<string, Record<string, string>> = {
   en: {
-    start: `Eyri (Icelandic "penny") manages your investment performance.\n\nUse /buy to add a position purchase item.\nUse /delete to remove the last purchase item for a position.\nUse /tickers to see your positions performance.\nUse /perf to see concise performance.\nUse /history to see your purchase history.`,
-    buy: `To add a position purchase item, use this format:\n\n<code>/buy [ticker] [price] [commission] [amount]</code>`,
-    bought: `Position purchase item has been successfully added.\n\nUse /tickers to see your positions performance.`,
-    delete: `To delete the last purchase item for a position, use this format:\n\n<code>/delete [ticker]</code>`,
-    deleted: `Last position purchase item has been successfully deleted.\n\nUse /history to see your purchase history.`,
-    delete_not_found: `No position purchase item was found for this ticker.`,
-    no_positions: `You don't have any positions yet.\n\nUse /buy to add a position purchase item.`,
-    when: `To see hypothetical performance, use this format:\n\n<code>/when TICKER=price TICKER2=price2 ...</code>`,
-    decorate: `To decorate a ticker, use this format:\n\n<code>/decorate TICKER EMOJI</code>`,
-    label: `To set or hide a ticker label, use this format:\n\n<code>/label TICKER LABEL</code>\n\nUse <code>false</code> as the label to hide it.`,
-    link: `To link a ticker label, use this format:\n\n<code>/link TICKER TAG</code>\n\nUse <code>false</code> as the tag to remove it.`,
+    start:
+      `Eyri (Icelandic "penny") manages your investment performance.\n\nUse /ibkr to set up an Interactive Brokers integration.\nUse /integrations to see configured integrations.\nUse /tickers to see your positions performance.\nUse /perf to see concise performance.\nUse /history to see your order history.`,
+    no_positions: `No positions were returned by your configured integrations.`,
+    when:
+      `To see hypothetical performance, use this format:\n\n<code>/when TICKER=price TICKER2=price2 ...</code>`,
+    decorate:
+      `To decorate a ticker, use this format:\n\n<code>/decorate TICKER EMOJI</code>`,
+    label:
+      `To set or hide a ticker label, use this format:\n\n<code>/label TICKER LABEL</code>\n\nUse <code>false</code> as the label to hide it.`,
+    link:
+      `To link a ticker label, use this format:\n\n<code>/link TICKER TAG</code>\n\nUse <code>false</code> as the tag to remove it.`,
+    integrations: `Use /ibkr to set up an Interactive Brokers integration.`,
+    no_integrations:
+      `No integrations are configured yet.\n\nUse /ibkr to set up Interactive Brokers.`,
+    ibkr:
+      `To set up Interactive Brokers, use this format:\n\n<code>/ibkr [instance_url] [flex_token] [flex_query_id]</code>\n\nExample:\n<code>/ibkr ib_gateway:4003 FLEX_TOKEN FLEX_QUERY_ID</code>`,
+    integration_saved:
+      `Integration has been saved.\n\nUse /tickers, /perf, or /history to fetch broker data.`,
+    integration_save_failed: `Failed to save integration.`,
+    integration_delete:
+      `To delete an integration, use this format:\n\n<code>/integration_delete ibkr</code>`,
+    integration_deleted: `Integration has been deleted.`,
+    integration_not_found: `Integration was not found.`,
   },
 };

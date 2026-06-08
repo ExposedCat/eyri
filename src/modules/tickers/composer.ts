@@ -1,7 +1,16 @@
 import { Composer } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
-import { refreshPersistentPrice } from "../database/price.ts";
-import { addPosition, deleteLatestPosition } from "../database/user.ts";
+import {
+  deleteIntegration,
+  getUserIntegrations,
+  hasUserIntegrations,
+  type IntegrationKind,
+  upsertIntegration,
+} from "../database/integration.ts";
+import {
+  fetchIntegratedOrderHistory,
+  fetchIntegratedPortfolio,
+} from "../integrations/service.ts";
 import {
   escapeHtml,
   formatTickerDecorations,
@@ -16,9 +25,9 @@ import {
   setTickerLabelPreference,
 } from "./decorations.ts";
 import {
-  buildHistory,
-  buildPerformanceList,
-  buildTickerList,
+  buildIntegratedHistory,
+  buildIntegratedPerformanceList,
+  buildIntegratedTickerList,
   parsePriceOverrides,
 } from "./portfolio.ts";
 
@@ -31,72 +40,134 @@ const htmlReplyOptions = {
   },
 };
 
-tickersComposer.command("buy", async (ctx) => {
+function parseIbkrCredentials(input: string) {
+  const params = input.trim().split(/\s+/);
+  if (params.length !== 3) {
+    return null;
+  }
+
+  const [instanceUrl, flexToken, flexQueryId] = params;
+
+  return {
+    instanceUrl,
+    flexToken,
+    flexQueryId,
+  };
+}
+
+async function readTickerDisplayPreferences(userId: number) {
+  const [tickerDecorations, tickerLabelPreferences, tickerLabelLinks] =
+    await Promise.all([
+      readTickerDecorations(userId),
+      readTickerLabelPreferences(userId),
+      readTickerLabelLinks(userId),
+    ]);
+
+  return {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+  };
+}
+
+function formatIntegrationList(
+  integrations: ReturnType<typeof getUserIntegrations>,
+) {
+  return integrations
+    .map((integration) => {
+      if (integration.kind === "ibkr") {
+        const instanceUrl =
+          typeof integration.credentials.instanceUrl === "string"
+            ? integration.credentials.instanceUrl
+            : "unknown";
+        const accountId = typeof integration.credentials.accountId === "string"
+          ? `, account ${escapeHtml(integration.credentials.accountId)}`
+          : "";
+        return `${integration.id}. IBKR ${escapeHtml(instanceUrl)}${accountId}`;
+      }
+
+      return `${integration.id}. ${escapeHtml(integration.kind)}`;
+    })
+    .join("\n");
+}
+
+async function replyIntegrationError(ctx: CustomContext, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  await ctx.reply(
+    `Failed to fetch integration data:\n\n<code>${escapeHtml(message)}</code>`,
+    htmlReplyOptions,
+  );
+}
+
+tickersComposer.command("integrations", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
     return;
   }
 
-  if (!ctx.match) {
-    await ctx.text("buy");
+  const integrations = getUserIntegrations(ctx.db, ctx.dbEntities.user.userId);
+  if (integrations.length === 0) {
+    await ctx.text("no_integrations");
     return;
   }
 
-  const params = ctx.match.split(" ");
-  if (params.length !== 4) {
-    await ctx.text("buy");
-    return;
-  }
-
-  const [ticker, price, commission, amount] = params;
-
-  const result = await addPosition({
-    database: ctx.db,
-    userId: ctx.dbEntities.user.userId,
-    ticker,
-    price: Number(price) + Number(commission),
-    amount: Number(amount),
-  });
-
-  if (!result.success) {
-    await ctx.text("buy");
-    return;
-  }
-
-  await ctx.text("bought");
-  await refreshPersistentPrice(ctx.db, ticker);
+  await ctx.reply(formatIntegrationList(integrations), htmlReplyOptions);
 });
 
-tickersComposer.command("delete", async (ctx) => {
+tickersComposer.command("ibkr", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
     return;
   }
 
   if (!ctx.match) {
-    await ctx.text("delete");
+    await ctx.text("ibkr");
     return;
   }
 
-  const params = ctx.match.split(" ");
-  if (params.length !== 1) {
-    await ctx.text("delete");
+  const credentials = parseIbkrCredentials(ctx.match);
+  if (!credentials) {
+    await ctx.text("ibkr");
     return;
   }
 
-  const [ticker] = params;
-  const result = await deleteLatestPosition({
+  const result = await upsertIntegration({
     database: ctx.db,
     userId: ctx.dbEntities.user.userId,
-    ticker,
+    kind: "ibkr",
+    credentials,
   });
-
   if (!result.success) {
-    await ctx.text("delete_not_found");
+    await ctx.text("integration_save_failed");
     return;
   }
 
-  await ctx.text("deleted");
+  await ctx.text("integration_saved");
+});
+
+tickersComposer.command("integration_delete", async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  const kind = ctx.match?.trim() as IntegrationKind | undefined;
+  if (kind !== "ibkr") {
+    await ctx.text("integration_delete");
+    return;
+  }
+
+  const result = await deleteIntegration({
+    database: ctx.db,
+    userId: ctx.dbEntities.user.userId,
+    kind,
+  });
+  if (!result.success) {
+    await ctx.text("integration_not_found");
+    return;
+  }
+
+  await ctx.text("integration_deleted");
 });
 
 tickersComposer.command("decorate", async (ctx) => {
@@ -108,9 +179,11 @@ tickersComposer.command("decorate", async (ctx) => {
 
   await setTickerDecoration(ctx.from.id, parsed.ticker, parsed.decorations);
   await ctx.reply(
-    `${formatTickerDecorations(parsed.decorations)} ${escapeHtml(
-      parsed.ticker,
-    )} decorated (${parsed.decorations.length}).`,
+    `${formatTickerDecorations(parsed.decorations)} ${
+      escapeHtml(
+        parsed.ticker,
+      )
+    } decorated (${parsed.decorations.length}).`,
     htmlReplyOptions,
   );
 });
@@ -123,8 +196,9 @@ tickersComposer.command("label", async (ctx) => {
   }
 
   await setTickerLabelPreference(ctx.from.id, parsed.ticker, parsed.label);
-  const labelStatus =
-    parsed.label === false ? "hidden" : `set to ${escapeHtml(parsed.label)}`;
+  const labelStatus = parsed.label === false
+    ? "hidden"
+    : `set to ${escapeHtml(parsed.label)}`;
   await ctx.reply(
     `${escapeHtml(parsed.ticker)} label ${labelStatus}.`,
     htmlReplyOptions,
@@ -139,8 +213,9 @@ tickersComposer.command("link", async (ctx) => {
   }
 
   await setTickerLabelLink(ctx.from.id, parsed.ticker, parsed.tag);
-  const linkStatus =
-    parsed.tag === false ? "removed" : `set to ${escapeHtml(parsed.tag)}`;
+  const linkStatus = parsed.tag === false
+    ? "removed"
+    : `set to ${escapeHtml(parsed.tag)}`;
   await ctx.reply(
     `${escapeHtml(parsed.ticker)} link ${linkStatus}.`,
     htmlReplyOptions,
@@ -153,23 +228,35 @@ tickersComposer.command("tickers", async (ctx) => {
     return;
   }
 
-  const tickerDecorations = await readTickerDecorations(ctx.from.id);
-  const tickerLabelPreferences = await readTickerLabelPreferences(ctx.from.id);
-  const tickerLabelLinks = await readTickerLabelLinks(ctx.from.id);
-  const priceList = await buildTickerList({
-    database: ctx.db,
-    user: ctx.dbEntities.user,
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-  });
+  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
+    await readTickerDisplayPreferences(ctx.from.id);
 
-  if (priceList.length === 0) {
-    await ctx.text("no_positions");
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
     return;
   }
 
-  await ctx.reply(priceList, htmlReplyOptions);
+  try {
+    const positions = await fetchIntegratedPortfolio(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    const priceList = await buildIntegratedTickerList({
+      positions,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+    });
+
+    if (priceList.length === 0) {
+      await ctx.text("no_positions");
+      return;
+    }
+
+    await ctx.reply(priceList, htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
 });
 
 tickersComposer.command("perf", async (ctx) => {
@@ -178,23 +265,35 @@ tickersComposer.command("perf", async (ctx) => {
     return;
   }
 
-  const tickerDecorations = await readTickerDecorations(ctx.from.id);
-  const tickerLabelPreferences = await readTickerLabelPreferences(ctx.from.id);
-  const tickerLabelLinks = await readTickerLabelLinks(ctx.from.id);
-  const performanceList = await buildPerformanceList({
-    database: ctx.db,
-    user: ctx.dbEntities.user,
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-  });
+  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
+    await readTickerDisplayPreferences(ctx.from.id);
 
-  if (performanceList.length === 0) {
-    await ctx.text("no_positions");
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
     return;
   }
 
-  await ctx.reply(performanceList, htmlReplyOptions);
+  try {
+    const positions = await fetchIntegratedPortfolio(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    const performanceList = await buildIntegratedPerformanceList({
+      positions,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+    });
+
+    if (performanceList.length === 0) {
+      await ctx.text("no_positions");
+      return;
+    }
+
+    await ctx.reply(performanceList, htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
 });
 
 tickersComposer.command("history", async (ctx) => {
@@ -203,22 +302,35 @@ tickersComposer.command("history", async (ctx) => {
     return;
   }
 
-  const tickerDecorations = await readTickerDecorations(ctx.from.id);
-  const tickerLabelPreferences = await readTickerLabelPreferences(ctx.from.id);
-  const tickerLabelLinks = await readTickerLabelLinks(ctx.from.id);
-  const history = buildHistory({
-    user: ctx.dbEntities.user,
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-  });
+  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
+    await readTickerDisplayPreferences(ctx.from.id);
 
-  if (history.length === 0) {
-    await ctx.text("no_positions");
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
     return;
   }
 
-  await ctx.reply(history, htmlReplyOptions);
+  try {
+    const orders = await fetchIntegratedOrderHistory(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    const history = buildIntegratedHistory({
+      orders,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+    });
+
+    if (history.length === 0) {
+      await ctx.text("no_positions");
+      return;
+    }
+
+    await ctx.reply(history, htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
 });
 
 tickersComposer.command("when", async (ctx) => {
@@ -238,22 +350,34 @@ tickersComposer.command("when", async (ctx) => {
     return;
   }
 
-  const tickerDecorations = await readTickerDecorations(ctx.from.id);
-  const tickerLabelPreferences = await readTickerLabelPreferences(ctx.from.id);
-  const tickerLabelLinks = await readTickerLabelLinks(ctx.from.id);
-  const priceList = await buildTickerList({
-    database: ctx.db,
-    user: ctx.dbEntities.user,
-    priceOverrides,
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-  });
+  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
+    await readTickerDisplayPreferences(ctx.from.id);
 
-  if (priceList.length === 0) {
-    await ctx.text("no_positions");
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
     return;
   }
 
-  await ctx.reply(priceList, htmlReplyOptions);
+  try {
+    const positions = await fetchIntegratedPortfolio(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    const priceList = await buildIntegratedTickerList({
+      positions,
+      priceOverrides,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+    });
+
+    if (priceList.length === 0) {
+      await ctx.text("no_positions");
+      return;
+    }
+
+    await ctx.reply(priceList, htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
 });

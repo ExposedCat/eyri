@@ -1,8 +1,8 @@
-import { refetchPrices } from "../../jobs/fetch-prices.ts";
 import { validateEnv } from "../../utils/env.ts";
 import { createBot } from "../bot/setup.ts";
 import type { Database } from "../database/setup.ts";
 import { connectToDb } from "../database/setup.ts";
+import { startFlexSyncLoop } from "../integrations/ibkr/flex.ts";
 
 export async function startApp() {
   try {
@@ -29,7 +29,7 @@ export async function startApp() {
     await new Promise((resolve) =>
       bot.start({
         onStart: () => resolve(undefined),
-      }),
+      })
     );
     console.log("Bot started");
   } catch (error) {
@@ -38,15 +38,10 @@ export async function startApp() {
   }
 
   try {
-    console.log("Refetching initial prices...");
-    await refetchPrices(database);
-    console.log("Setting up cron job...");
-    Deno.cron("refetch prices", "*/5 * * * *", async () => {
-      await refetchPrices(database);
-    });
-    console.log("Cron job set up");
+    console.log("Starting Flex sync loop...");
+    startFlexSyncLoop(database);
+    console.log("Flex sync loop started");
   } catch (error) {
-    console.error("Error occurred while setting up cron job:", error);
-    Deno.exit(5);
+    console.error("Error occurred while starting Flex sync loop:", error);
   }
 }
