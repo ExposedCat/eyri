@@ -90,6 +90,7 @@ export async function refreshPersistentPrice(
 ) {
   const normalizedTicker = ticker.trim().toUpperCase();
   const result = await fetchTickerPrice(normalizedTicker);
+  console.log(normalizedTicker, result);
   if (!result.success) {
     return false;
   }
