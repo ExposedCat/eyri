@@ -29,12 +29,14 @@ function mergePosition(
   next: IntegrationPortfolioPosition,
 ): IntegrationPortfolioPosition {
   const amount = current.amount + next.amount;
-  const totalInput = current.totalInput === null || next.totalInput === null
-    ? null
-    : current.totalInput + next.totalInput;
-  const totalNow = current.totalNow === null || next.totalNow === null
-    ? null
-    : current.totalNow + next.totalNow;
+  const totalInput =
+    current.totalInput === null || next.totalInput === null
+      ? null
+      : current.totalInput + next.totalInput;
+  const totalNow =
+    current.totalNow === null || next.totalNow === null
+      ? null
+      : current.totalNow + next.totalNow;
 
   return {
     ...current,
@@ -43,21 +45,25 @@ function mergePosition(
       .filter((value, index, list) => list.indexOf(value) === index)
       .join(", "),
     amount,
-    averageUnitPrice: totalInput === null || amount === 0
-      ? null
-      : totalInput / amount,
+    averageUnitPrice:
+      totalInput === null || amount === 0 ? null : totalInput / amount,
     currentPrice: totalNow === null || amount === 0 ? null : totalNow / amount,
     totalInput,
     totalNow,
-    unrealizedPnl: current.unrealizedPnl === null || next.unrealizedPnl === null
-      ? null
-      : current.unrealizedPnl + next.unrealizedPnl,
-    realizedPnl: current.realizedPnl === null || next.realizedPnl === null
-      ? null
-      : current.realizedPnl + next.realizedPnl,
-    openedAt: current.openedAt && next.openedAt
-      ? current.openedAt < next.openedAt ? current.openedAt : next.openedAt
-      : (current.openedAt ?? next.openedAt),
+    unrealizedPnl:
+      current.unrealizedPnl === null || next.unrealizedPnl === null
+        ? null
+        : current.unrealizedPnl + next.unrealizedPnl,
+    realizedPnl:
+      current.realizedPnl === null || next.realizedPnl === null
+        ? null
+        : current.realizedPnl + next.realizedPnl,
+    openedAt:
+      current.openedAt && next.openedAt
+        ? current.openedAt < next.openedAt
+          ? current.openedAt
+          : next.openedAt
+        : (current.openedAt ?? next.openedAt),
   };
 }
 

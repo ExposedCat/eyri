@@ -32,7 +32,6 @@ services:
       timeout: 45s
       start_period: 2m
       retries: 1
-    init: true
     volumes:
       - eyri-data:/app/data
 

@@ -25,6 +25,7 @@ import {
   setTickerLabelPreference,
 } from "./decorations.ts";
 import {
+  buildIntegratedDailyPerformanceList,
   buildIntegratedHistory,
   buildIntegratedPerformanceList,
   buildIntegratedTickerList,
@@ -80,9 +81,10 @@ function formatIntegrationList(
           typeof integration.credentials.instanceUrl === "string"
             ? integration.credentials.instanceUrl
             : "unknown";
-        const accountId = typeof integration.credentials.accountId === "string"
-          ? `, account ${escapeHtml(integration.credentials.accountId)}`
-          : "";
+        const accountId =
+          typeof integration.credentials.accountId === "string"
+            ? `, account ${escapeHtml(integration.credentials.accountId)}`
+            : "";
         return `${integration.id}. IBKR ${escapeHtml(instanceUrl)}${accountId}`;
       }
 
@@ -145,6 +147,33 @@ tickersComposer.command("ibkr", async (ctx) => {
   await ctx.text("integration_saved");
 });
 
+tickersComposer.command("restart", async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  try {
+    await ctx.reply("Restarting eyri...");
+    const output = await new Deno.Command("pm3", {
+      args: ["restart", "eyri"],
+    }).output();
+
+    if (!output.success) {
+      const error = new TextDecoder().decode(output.stderr).trim();
+      await ctx.reply(
+        `Restart failed:\n\n<code>${escapeHtml(
+          error || `pm3 exited with code ${output.code}`,
+        )}</code>`,
+        htmlReplyOptions,
+      );
+      return;
+    }
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
 tickersComposer.command("integration_delete", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
@@ -179,11 +208,9 @@ tickersComposer.command("decorate", async (ctx) => {
 
   await setTickerDecoration(ctx.from.id, parsed.ticker, parsed.decorations);
   await ctx.reply(
-    `${formatTickerDecorations(parsed.decorations)} ${
-      escapeHtml(
-        parsed.ticker,
-      )
-    } decorated (${parsed.decorations.length}).`,
+    `${formatTickerDecorations(parsed.decorations)} ${escapeHtml(
+      parsed.ticker,
+    )} decorated (${parsed.decorations.length}).`,
     htmlReplyOptions,
   );
 });
@@ -196,9 +223,8 @@ tickersComposer.command("label", async (ctx) => {
   }
 
   await setTickerLabelPreference(ctx.from.id, parsed.ticker, parsed.label);
-  const labelStatus = parsed.label === false
-    ? "hidden"
-    : `set to ${escapeHtml(parsed.label)}`;
+  const labelStatus =
+    parsed.label === false ? "hidden" : `set to ${escapeHtml(parsed.label)}`;
   await ctx.reply(
     `${escapeHtml(parsed.ticker)} label ${labelStatus}.`,
     htmlReplyOptions,
@@ -213,9 +239,8 @@ tickersComposer.command("link", async (ctx) => {
   }
 
   await setTickerLabelLink(ctx.from.id, parsed.ticker, parsed.tag);
-  const linkStatus = parsed.tag === false
-    ? "removed"
-    : `set to ${escapeHtml(parsed.tag)}`;
+  const linkStatus =
+    parsed.tag === false ? "removed" : `set to ${escapeHtml(parsed.tag)}`;
   await ctx.reply(
     `${escapeHtml(parsed.ticker)} link ${linkStatus}.`,
     htmlReplyOptions,
@@ -279,6 +304,43 @@ tickersComposer.command("perf", async (ctx) => {
       ctx.dbEntities.user.userId,
     );
     const performanceList = await buildIntegratedPerformanceList({
+      positions,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+    });
+
+    if (performanceList.length === 0) {
+      await ctx.text("no_positions");
+      return;
+    }
+
+    await ctx.reply(performanceList, htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
+tickersComposer.command("daily", async (ctx) => {
+  if (!ctx.dbEntities.user || !ctx.from) {
+    await ctx.text("start");
+    return;
+  }
+
+  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
+    await readTickerDisplayPreferences(ctx.from.id);
+
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
+    return;
+  }
+
+  try {
+    const positions = await fetchIntegratedPortfolio(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    const performanceList = await buildIntegratedDailyPerformanceList({
       positions,
       tickerDecorations,
       tickerLabelPreferences,

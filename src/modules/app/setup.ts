@@ -29,7 +29,7 @@ export async function startApp() {
     await new Promise((resolve) =>
       bot.start({
         onStart: () => resolve(undefined),
-      })
+      }),
     );
     console.log("Bot started");
   } catch (error) {

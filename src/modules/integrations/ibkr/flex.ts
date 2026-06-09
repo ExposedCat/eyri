@@ -190,7 +190,9 @@ function getTodayUtc() {
 }
 
 function getFlexStatementRange(batchIndex: number): FlexStatementRange {
-  const end = addDays(getTodayUtc(), -batchIndex * FLEX_BATCH_DAYS);
+  // Flex can omit same-day trades when td is today's date; asking through
+  // tomorrow keeps today's executions in the current 365-day batch.
+  const end = addDays(getTodayUtc(), 1 - batchIndex * FLEX_BATCH_DAYS);
   const from = addDays(end, -(FLEX_BATCH_DAYS - 1));
   return { from, to: end };
 }
@@ -438,9 +440,7 @@ function getBatchRow(
         AND query_id = ?
         AND batch_index = ?
     `)
-    .get(integration.id, queryId, batchIndex) as
-      | FlexSyncBatchRow
-      | undefined;
+    .get(integration.id, queryId, batchIndex) as FlexSyncBatchRow | undefined;
 }
 
 function getBatchLastRequestMs(candidate: FlexBatchCandidate) {
@@ -453,9 +453,7 @@ function getBatchLastRequestMs(candidate: FlexBatchCandidate) {
   return Number.isNaN(lastRequestMs) ? null : lastRequestMs;
 }
 
-function getNextFlexBatch(
-  database: Database,
-): {
+function getNextFlexBatch(database: Database): {
   integration: Integration;
   credentials: IbkrCredentials;
   batchIndex: number;
@@ -501,24 +499,27 @@ function getNextFlexBatch(
     }
   }
 
-  const neverRequested = candidates.find((candidate) =>
-    !candidate.requestedAt && !candidate.syncedAt
+  const neverRequested = candidates.find(
+    (candidate) => !candidate.requestedAt && !candidate.syncedAt,
   );
   if (neverRequested) {
     return neverRequested;
   }
 
-  return candidates
-    .map((candidate) => ({
-      candidate,
-      lastRequestMs: getBatchLastRequestMs(candidate),
-    }))
-    .filter(({ lastRequestMs }) =>
-      lastRequestMs === null ||
-      Date.now() - lastRequestMs >= FLEX_SYNC_INTERVAL_MS
-    )
-    .sort((a, b) => (a.lastRequestMs ?? 0) - (b.lastRequestMs ?? 0))
-    .at(0)?.candidate ?? null;
+  return (
+    candidates
+      .map((candidate) => ({
+        candidate,
+        lastRequestMs: getBatchLastRequestMs(candidate),
+      }))
+      .filter(
+        ({ lastRequestMs }) =>
+          lastRequestMs === null ||
+          Date.now() - lastRequestMs >= FLEX_SYNC_INTERVAL_MS,
+      )
+      .sort((a, b) => (a.lastRequestMs ?? 0) - (b.lastRequestMs ?? 0))
+      .at(0)?.candidate ?? null
+  );
 }
 
 function markBatchRequested(
@@ -667,9 +668,6 @@ async function syncFlexBatch(
       batchIndex,
       range,
       trades,
-    );
-    console.info(
-      `Synced IBKR Flex integration=${integration.id} batch=${batchIndex} trades=${trades.length}`,
     );
   } catch (error) {
     markBatchFailed(

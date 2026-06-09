@@ -86,9 +86,9 @@ async function connect(config: IbkrConnectionConfig) {
 
   throw (
     lastError ??
-      new Error(
-        `Timed out connecting to IBKR Gateway at ${config.host}:${config.port}`,
-      )
+    new Error(
+      `Timed out connecting to IBKR Gateway at ${config.host}:${config.port}`,
+    )
   );
 }
 
@@ -150,13 +150,14 @@ function toPortfolioPosition(
   const currentPrice = normalizeNumber(marketPrice);
   const totalNow = normalizeNumber(marketValue);
   const averageUnitPrice = normalizeNumber(averageCost);
-  const resolvedCurrentPrice = currentPrice ??
+  const resolvedCurrentPrice =
+    currentPrice ??
     (totalNow !== null && amount !== 0 ? totalNow / amount : null);
-  const resolvedTotalNow = totalNow ??
+  const resolvedTotalNow =
+    totalNow ??
     (resolvedCurrentPrice !== null ? resolvedCurrentPrice * amount : null);
-  const totalInput = averageUnitPrice === null
-    ? null
-    : averageUnitPrice * amount;
+  const totalInput =
+    averageUnitPrice === null ? null : averageUnitPrice * amount;
 
   return {
     integrationId: integration.id,
@@ -184,10 +185,11 @@ function getOpenLotCostBasis(
   orders: IntegrationOrder[],
 ) {
   const matchingOrders = orders
-    .filter((order) =>
-      getPositionOrderKey(order.ticker, order.currency) ===
-        getPositionOrderKey(position.ticker, position.currency) &&
-      order.price !== null
+    .filter(
+      (order) =>
+        getPositionOrderKey(order.ticker, order.currency) ===
+          getPositionOrderKey(position.ticker, position.currency) &&
+        order.price !== null,
     )
     .sort((a, b) => a.date.getTime() - b.date.getTime());
   const lots: { quantity: number; price: number; date: Date }[] = [];
@@ -339,7 +341,7 @@ async function getAccountPortfolio(
   }
 
   return [...positions.values()].sort((a, b) =>
-    a.ticker.localeCompare(b.ticker)
+    a.ticker.localeCompare(b.ticker),
   );
 }
 

@@ -57,6 +57,13 @@ function getElapsedMonthCount(startDate: Date, endDate: Date) {
   return elapsedDays / DAYS_PER_MONTH;
 }
 
+function getElapsedDayCount(startDate: Date, endDate: Date) {
+  return Math.max(
+    0,
+    (endDate.getTime() - startDate.getTime()) / MILLISECONDS_PER_DAY,
+  );
+}
+
 function formatElapsedPeriodFromMonths(months: number) {
   if (months < 12) {
     return `${months.toFixed(1)} month`;
@@ -70,13 +77,16 @@ function formatElapsedPeriodFromMonths(months: number) {
 function getElapsedPeriod(startDate: Date | null | undefined, endDate: Date) {
   if (!startDate) {
     return {
+      days: null,
       months: null,
       label: "?",
     };
   }
 
+  const days = getElapsedDayCount(startDate, endDate);
   const months = getElapsedMonthCount(startDate, endDate);
   return {
+    days: Math.max(days, 1),
     months: Math.max(months, 0.1),
     label: formatElapsedPeriodFromMonths(months),
   };
@@ -107,8 +117,8 @@ function buildIntegratedPositionPerformance(
   now: Date,
   priceOverrides?: Record<string, number>,
 ): IntegratedPositionPerformance {
-  const currentPrice = getPriceOverride(priceOverrides, position.ticker) ??
-    position.currentPrice;
+  const currentPrice =
+    getPriceOverride(priceOverrides, position.ticker) ?? position.currentPrice;
   const totalInput = position.totalInput;
   const averageUnitPrice = position.averageUnitPrice;
   const elapsedPeriod = getElapsedPeriod(position.openedAt, now);
@@ -134,9 +144,8 @@ function buildIntegratedPositionPerformance(
 
   const totalNow = position.amount * currentPrice;
   const totalChange = totalNow - totalInput;
-  const totalPercentageChange = totalInput === 0
-    ? 0
-    : (totalChange / totalInput) * 100;
+  const totalPercentageChange =
+    totalInput === 0 ? 0 : (totalChange / totalInput) * 100;
 
   return {
     position,
@@ -160,8 +169,8 @@ function buildIntegratedPortfolioTotals(
       !position.openedAt
         ? earliest
         : !earliest || position.openedAt < earliest
-        ? position.openedAt
-        : earliest,
+          ? position.openedAt
+          : earliest,
     null as Date | null,
   );
   const elapsedPeriod = getElapsedPeriod(earliestPortfolioDate, now);
@@ -187,6 +196,8 @@ function buildIntegratedPortfolioTotals(
       ...totals,
       totalChange: null,
       totalPercentageChange: null,
+      dailyChange: null,
+      dailyPercentageChange: null,
       monthlyChange: null,
       monthlyPercentageChange: null,
       elapsedPeriod,
@@ -194,20 +205,25 @@ function buildIntegratedPortfolioTotals(
   }
 
   const totalChange = totals.totalNow - totals.totalInput;
-  const totalPercentageChange = totals.totalInput === 0
-    ? 0
-    : (totalChange / totals.totalInput) * 100;
+  const totalPercentageChange =
+    totals.totalInput === 0 ? 0 : (totalChange / totals.totalInput) * 100;
 
   return {
     ...totals,
     totalChange,
     totalPercentageChange,
-    monthlyChange: elapsedPeriod.months === null
-      ? null
-      : totalChange / elapsedPeriod.months,
-    monthlyPercentageChange: elapsedPeriod.months === null
-      ? null
-      : totalPercentageChange / elapsedPeriod.months,
+    dailyChange:
+      elapsedPeriod.days === null ? null : totalChange / elapsedPeriod.days,
+    dailyPercentageChange:
+      elapsedPeriod.days === null
+        ? null
+        : totalPercentageChange / elapsedPeriod.days,
+    monthlyChange:
+      elapsedPeriod.months === null ? null : totalChange / elapsedPeriod.months,
+    monthlyPercentageChange:
+      elapsedPeriod.months === null
+        ? null
+        : totalPercentageChange / elapsedPeriod.months,
     elapsedPeriod,
   };
 }
@@ -225,7 +241,7 @@ export async function buildIntegratedTickerList({
 
   const now = new Date();
   const performances = getSortedIntegratedPositions(positions).map((position) =>
-    buildIntegratedPositionPerformance(position, now, priceOverrides)
+    buildIntegratedPositionPerformance(position, now, priceOverrides),
   );
 
   const tickerLines = performances.map((performance) => {
@@ -253,61 +269,48 @@ export async function buildIntegratedTickerList({
       ].join("\n");
     }
 
-    const monthlySummary = performance.elapsedPeriod.months === null
-      ? "? ?/m"
-      : `${
-        formatMoneyChange(
-          performance.totalChange / performance.elapsedPeriod.months,
-        )
-      } ${
-        formatMoneyChange(
-          performance.totalPercentageChange / performance.elapsedPeriod.months,
-          "%",
-        )
-      }/m`;
+    const monthlySummary =
+      performance.elapsedPeriod.months === null
+        ? "? ?/m"
+        : `${formatMoneyChange(
+            performance.totalChange / performance.elapsedPeriod.months,
+          )} ${formatMoneyChange(
+            performance.totalPercentageChange /
+              performance.elapsedPeriod.months,
+            "%",
+          )}/m`;
 
     return [
-      `${tickerName} ${formatMoneyChange(performance.totalChange)} ${
-        formatMoneyChange(
-          performance.totalPercentageChange,
-          "%",
-        )
-      }`,
-      `${formatMoney(performance.averageUnitPrice, position.currency)} x ${
-        formatAmount(
-          position.amount,
-        )
-      } (${formatMoney(performance.currentPrice, position.currency)} ${
-        formatMoneyChange(
-          performance.currentVsAverageChange,
-        )
-      })`,
-      `${formatMoney(performance.totalInput, position.currency)} -> ${
-        formatMoney(
-          performance.totalNow,
-          position.currency,
-        )
-      } x ${performance.elapsedPeriod.label} (${monthlySummary})`,
+      `${tickerName} ${formatMoneyChange(performance.totalChange)} ${formatMoneyChange(
+        performance.totalPercentageChange,
+        "%",
+      )}`,
+      `${formatMoney(performance.averageUnitPrice, position.currency)} x ${formatAmount(
+        position.amount,
+      )} (${formatMoney(performance.currentPrice, position.currency)} ${formatMoneyChange(
+        performance.currentVsAverageChange,
+      )})`,
+      `${formatMoney(performance.totalInput, position.currency)} -> ${formatMoney(
+        performance.totalNow,
+        position.currency,
+      )} x ${performance.elapsedPeriod.label} (${monthlySummary})`,
     ].join("\n");
   });
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
-  const totalSummary = totals.totalChange === null ||
-      totals.totalPercentageChange === null ||
-      totals.monthlyChange === null ||
-      totals.monthlyPercentageChange === null
-    ? `? ? / ? ? (${totals.elapsedPeriod.label})`
-    : `${formatMoneyChange(totals.totalChange)} ${
-      formatMoneyChange(
-        totals.totalPercentageChange,
-        "%",
-      )
-    } / ${formatMoneyChange(totals.monthlyChange)} ${
-      formatMoneyChange(
-        totals.monthlyPercentageChange,
-        "%",
-      )
-    } (${totals.elapsedPeriod.label})`;
+  const totalSummary =
+    totals.totalChange === null ||
+    totals.totalPercentageChange === null ||
+    totals.monthlyChange === null ||
+    totals.monthlyPercentageChange === null
+      ? `? ? / ? ? (${totals.elapsedPeriod.label})`
+      : `${formatMoneyChange(totals.totalChange)} ${formatMoneyChange(
+          totals.totalPercentageChange,
+          "%",
+        )} / ${formatMoneyChange(totals.monthlyChange)} ${formatMoneyChange(
+          totals.monthlyPercentageChange,
+          "%",
+        )} (${totals.elapsedPeriod.label})`;
 
   return [...tickerLines, totalSummary].join("\n\n");
 }
@@ -325,7 +328,7 @@ export async function buildIntegratedPerformanceList({
 
   const now = new Date();
   const performances = getSortedIntegratedPositions(positions).map((position) =>
-    buildIntegratedPositionPerformance(position, now, priceOverrides)
+    buildIntegratedPositionPerformance(position, now, priceOverrides),
   );
 
   const lines = performances.map((performance) => {
@@ -343,27 +346,72 @@ export async function buildIntegratedPerformanceList({
       return `${tickerName} ? ? (${performance.elapsedPeriod.label})`;
     }
 
-    return `${tickerName} ${
-      formatMoneyChange(
-        performance.totalPercentageChange,
-        "%",
-      )
-    } ${
-      formatMoneyChange(
-        performance.totalChange,
-      )
-    } (${performance.elapsedPeriod.label})`;
+    return `${tickerName} ${formatMoneyChange(
+      performance.totalPercentageChange,
+      "%",
+    )} ${formatMoneyChange(
+      performance.totalChange,
+    )} (${performance.elapsedPeriod.label})`;
   });
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalLine =
     totals.totalChange === null || totals.totalPercentageChange === null
       ? `Total: ? ? (${totals.elapsedPeriod.label})`
-      : `Total: ${formatMoneyChange(totals.totalPercentageChange, "%")} ${
-        formatMoneyChange(
+      : `Total: ${formatMoneyChange(totals.totalPercentageChange, "%")} ${formatMoneyChange(
           totals.totalChange,
-        )
-      } (${totals.elapsedPeriod.label})`;
+        )} (${totals.elapsedPeriod.label})`;
+
+  return [...lines, totalLine].join("\n\n");
+}
+
+export async function buildIntegratedDailyPerformanceList({
+  positions,
+  priceOverrides,
+  tickerDecorations,
+  tickerLabelPreferences,
+  tickerLabelLinks,
+}: BuildIntegratedTickerListArgs) {
+  if (positions.length === 0) {
+    return "";
+  }
+
+  const now = new Date();
+  const performances = getSortedIntegratedPositions(positions).map((position) =>
+    buildIntegratedPositionPerformance(position, now, priceOverrides),
+  );
+
+  const lines = performances.map((performance) => {
+    const { position } = performance;
+    const tickerName = formatDecoratedTicker(
+      position.ticker,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+    );
+    if (
+      performance.totalChange === null ||
+      performance.totalPercentageChange === null ||
+      performance.elapsedPeriod.days === null
+    ) {
+      return `${tickerName} ? ?/d (${performance.elapsedPeriod.label})`;
+    }
+
+    return `${tickerName} ${formatMoneyChange(
+      performance.totalPercentageChange / performance.elapsedPeriod.days,
+      "%",
+    )} ${formatMoneyChange(
+      performance.totalChange / performance.elapsedPeriod.days,
+    )}/d (${performance.elapsedPeriod.label})`;
+  });
+
+  const totals = buildIntegratedPortfolioTotals(performances, now);
+  const totalLine =
+    totals.dailyChange === null || totals.dailyPercentageChange === null
+      ? `Total: ? ?/d (${totals.elapsedPeriod.label})`
+      : `Total: ${formatMoneyChange(totals.dailyPercentageChange, "%")} ${formatMoneyChange(
+          totals.dailyChange,
+        )}/d (${totals.elapsedPeriod.label})`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -485,16 +533,12 @@ export function buildIntegratedHistory({
       tickerLabelLinks,
     );
     lines.push(
-      `${formatUtcDate(group.date)} ${tickerName} ${
-        group.quantity.toFixed(
-          4,
-        )
-      } x ${formatMoney(averagePrice, group.currency)} (${
-        formatWholeMoney(
-          group.total,
-          group.currency,
-        )
-      })`,
+      `${formatUtcDate(group.date)} ${tickerName} ${group.quantity.toFixed(
+        4,
+      )} x ${formatMoney(averagePrice, group.currency)} (${formatWholeMoney(
+        group.total,
+        group.currency,
+      )})`,
     );
     grouped.set(year, lines);
 
@@ -516,12 +560,10 @@ export function buildIntegratedHistory({
     return `${header}\n${lines.join("\n")}`;
   });
 
-  return `${yearBlocks.join("\n\n")}\n\nTotal ${
-    formatWholeMoney(
-      totalSpent,
-      totalCurrency,
-    )
-  }`;
+  return `${yearBlocks.join("\n\n")}\n\nTotal ${formatWholeMoney(
+    totalSpent,
+    totalCurrency,
+  )}`;
 }
 
 export function parsePriceOverrides(
