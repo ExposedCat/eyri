@@ -1,7 +1,7 @@
 import type { ServiceResult } from "../../utils/service.ts";
 import type { Database } from "./setup.ts";
 
-export type IntegrationKind = "ibkr";
+export type IntegrationKind = "ibkr" | "f24";
 
 export type Integration = {
   id: number;
@@ -22,7 +22,7 @@ type IntegrationRow = {
 };
 
 function isIntegrationKind(value: string): value is IntegrationKind {
-  return value === "ibkr";
+  return value === "ibkr" || value === "f24";
 }
 
 function parseCredentials(value: string) {

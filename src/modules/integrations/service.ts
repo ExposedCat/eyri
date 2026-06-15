@@ -3,6 +3,7 @@ import {
   type Integration,
 } from "../database/integration.ts";
 import type { Database } from "../database/setup.ts";
+import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
 import type {
   IntegrationAdapter,
@@ -10,6 +11,7 @@ import type {
 } from "./types.ts";
 
 const adapters: Record<Integration["kind"], IntegrationAdapter> = {
+  f24: freedom24Adapter,
   ibkr: ibkrAdapter,
 };
 

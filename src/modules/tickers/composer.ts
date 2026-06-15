@@ -56,6 +56,29 @@ function parseIbkrCredentials(input: string) {
   };
 }
 
+function parseFreedom24Credentials(input: string) {
+  const params = input.trim().split(/\s+/);
+  if (params.length !== 2 && params.length !== 3) {
+    return null;
+  }
+
+  const [apiKey, secretKey, historyYears] = params;
+  if (historyYears !== undefined) {
+    const parsedHistoryYears = Number(historyYears);
+    if (!Number.isFinite(parsedHistoryYears) || parsedHistoryYears <= 0) {
+      return null;
+    }
+  }
+
+  return {
+    apiKey,
+    secretKey,
+    ...(historyYears === undefined
+      ? {}
+      : { historyYears: Number(historyYears) }),
+  };
+}
+
 async function readTickerDisplayPreferences(userId: number) {
   const [tickerDecorations, tickerLabelPreferences, tickerLabelLinks] =
     await Promise.all([
@@ -86,6 +109,18 @@ function formatIntegrationList(
             ? `, account ${escapeHtml(integration.credentials.accountId)}`
             : "";
         return `${integration.id}. IBKR ${escapeHtml(instanceUrl)}${accountId}`;
+      }
+
+      if (integration.kind === "f24") {
+        const apiKey =
+          typeof integration.credentials.apiKey === "string"
+            ? integration.credentials.apiKey
+            : "unknown";
+        const maskedApiKey =
+          apiKey.length > 8
+            ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`
+            : apiKey;
+        return `${integration.id}. Freedom24 ${escapeHtml(maskedApiKey)}`;
       }
 
       return `${integration.id}. ${escapeHtml(integration.kind)}`;
@@ -147,6 +182,37 @@ tickersComposer.command("ibkr", async (ctx) => {
   await ctx.text("integration_saved");
 });
 
+tickersComposer.command("f24", async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  if (!ctx.match) {
+    await ctx.text("f24");
+    return;
+  }
+
+  const credentials = parseFreedom24Credentials(ctx.match);
+  if (!credentials) {
+    await ctx.text("f24");
+    return;
+  }
+
+  const result = await upsertIntegration({
+    database: ctx.db,
+    userId: ctx.dbEntities.user.userId,
+    kind: "f24",
+    credentials,
+  });
+  if (!result.success) {
+    await ctx.text("integration_save_failed");
+    return;
+  }
+
+  await ctx.text("integration_saved");
+});
+
 tickersComposer.command("restart", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
@@ -181,7 +247,7 @@ tickersComposer.command("integration_delete", async (ctx) => {
   }
 
   const kind = ctx.match?.trim() as IntegrationKind | undefined;
-  if (kind !== "ibkr") {
+  if (kind !== "ibkr" && kind !== "f24") {
     await ctx.text("integration_delete");
     return;
   }
