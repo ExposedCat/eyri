@@ -290,20 +290,10 @@ tickersComposer.command("restart", async (ctx) => {
 
   try {
     await ctx.reply("Restarting eyri...");
-    const output = await new Deno.Command("pm3", {
-      args: ["restart", "eyri"],
-    }).output();
 
-    if (!output.success) {
-      const error = new TextDecoder().decode(output.stderr).trim();
-      await ctx.reply(
-        `Restart failed:\n\n<code>${escapeHtml(
-          error || `pm3 exited with code ${output.code}`,
-        )}</code>`,
-        htmlReplyOptions,
-      );
-      return;
-    }
+    setTimeout(() => {
+      Deno.exit(0);
+    }, 1_000);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
