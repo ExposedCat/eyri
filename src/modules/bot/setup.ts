@@ -42,3 +42,21 @@ export function createBot(database: Database): Bot {
 
   return bot;
 }
+
+const botCommands = [
+  { command: "start", description: "Show help" },
+  { command: "stocks", description: "Show stock performance" },
+  { command: "options", description: "Show option performance" },
+  { command: "perf", description: "Show concise performance" },
+  { command: "dpnl", description: "Show daily PnL" },
+  { command: "history", description: "Show order history" },
+  { command: "when", description: "Preview performance at target prices" },
+  { command: "decorate", description: "Decorate a ticker" },
+  { command: "label", description: "Set or hide a ticker label" },
+  { command: "link", description: "Link a ticker label" },
+  { command: "restart", description: "Restart the bot" },
+] as const;
+
+export async function setupBotCommands(bot: Bot) {
+  await bot.api.setMyCommands(botCommands);
+}

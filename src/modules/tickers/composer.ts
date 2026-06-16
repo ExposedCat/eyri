@@ -633,7 +633,7 @@ tickersComposer.command("perf", async (ctx) => {
   }
 });
 
-tickersComposer.command("daily", async (ctx) => {
+tickersComposer.command("dpnl", async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;

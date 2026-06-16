@@ -1,5 +1,5 @@
 import { validateEnv } from "../../utils/env.ts";
-import { createBot } from "../bot/setup.ts";
+import { createBot, setupBotCommands } from "../bot/setup.ts";
 import type { Database } from "../database/setup.ts";
 import { connectToDb } from "../database/setup.ts";
 import { startFlexSyncLoop } from "../integrations/ibkr/flex.ts";
@@ -25,6 +25,7 @@ export async function startApp() {
   try {
     console.log("Starting bot...");
     const bot = createBot(database);
+    await setupBotCommands(bot);
 
     await new Promise((resolve) =>
       bot.start({
