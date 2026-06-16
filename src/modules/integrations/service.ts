@@ -39,6 +39,14 @@ function mergePosition(
     current.totalNow === null || next.totalNow === null
       ? null
       : current.totalNow + next.totalNow;
+  const dailyPnl =
+    current.dailyPnl === null || next.dailyPnl === null
+      ? null
+      : current.dailyPnl + next.dailyPnl;
+  const dailyPnlBaseline =
+    current.dailyPnlBaseline === null || next.dailyPnlBaseline === null
+      ? null
+      : current.dailyPnlBaseline + next.dailyPnlBaseline;
 
   return {
     ...current,
@@ -60,6 +68,12 @@ function mergePosition(
       current.realizedPnl === null || next.realizedPnl === null
         ? null
         : current.realizedPnl + next.realizedPnl,
+    dailyPnl,
+    dailyPnlPercentage:
+      dailyPnl === null || dailyPnlBaseline === null || dailyPnlBaseline === 0
+        ? null
+        : (dailyPnl / dailyPnlBaseline) * 100,
+    dailyPnlBaseline,
     openedAt:
       current.openedAt && next.openedAt
         ? current.openedAt < next.openedAt

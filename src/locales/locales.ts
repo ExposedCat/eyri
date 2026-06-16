@@ -1,6 +1,6 @@
 export const locales: Record<string, Record<string, string>> = {
   en: {
-    start: `Eyri (Icelandic "penny") manages your investment performance.\n\nUse /ibkr to set up an Interactive Brokers integration.\nUse /f24 to set up a Freedom24 integration.\nUse /integrations to see configured integrations.\nUse /tickers to see your positions performance.\nUse /perf to see concise performance.\nUse /daily to see daily performance.\nUse /history to see your order history.\nUse /restart to restart the bot.`,
+    start: `Eyri (Icelandic "penny") manages your investment performance.\n\nUse /ibkr to set up an Interactive Brokers integration.\nUse /f24 to set up a Freedom24 integration.\nUse /integrations to see configured integrations.\nUse /tickers to see stock performance.\nUse /options to see option performance.\nUse /perf to see concise performance.\nUse /daily to see daily performance.\nUse /history to see your order history.\nUse /createpack to create ticker emoji fallbacks.\nUse /syncpack to add new ticker emoji fallbacks.\nUse /removepack to remove ticker emoji fallbacks.\nUse /restart to restart the bot.`,
     no_positions: `No positions were returned by your configured integrations.`,
     when: `To see hypothetical performance, use this format:\n\n<code>/when TICKER=price TICKER2=price2 ...</code>`,
     decorate: `To decorate a ticker, use this format:\n\n<code>/decorate TICKER EMOJI</code>`,

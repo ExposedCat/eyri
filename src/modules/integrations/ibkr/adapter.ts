@@ -17,6 +17,10 @@ type IbkrConnectionConfig = {
   timeoutMs: number;
 };
 
+type IbkrPortfolioPosition = IntegrationPortfolioPosition & {
+  conId?: number;
+};
+
 function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -136,6 +140,14 @@ function normalizeNumber(value: number | undefined) {
   return value === undefined || value === Number.MAX_VALUE ? null : value;
 }
 
+function normalizePnlNumber(value: number | undefined) {
+  return value === undefined ||
+    !Number.isFinite(value) ||
+    value === Number.MAX_VALUE
+    ? null
+    : value;
+}
+
 function toPortfolioPosition(
   integration: Integration,
   contract: Contract,
@@ -146,7 +158,7 @@ function toPortfolioPosition(
   unrealizedPnl: number | undefined,
   realizedPnl: number | undefined,
   accountName: string | undefined,
-): IntegrationPortfolioPosition {
+): IbkrPortfolioPosition {
   const currentPrice = normalizeNumber(marketPrice);
   const totalNow = normalizeNumber(marketValue);
   const averageUnitPrice = normalizeNumber(averageCost);
@@ -172,7 +184,11 @@ function toPortfolioPosition(
     totalNow: resolvedTotalNow,
     unrealizedPnl: normalizeNumber(unrealizedPnl),
     realizedPnl: normalizeNumber(realizedPnl),
+    dailyPnl: null,
+    dailyPnlPercentage: null,
+    dailyPnlBaseline: null,
     openedAt: null,
+    conId: contract.conId,
   };
 }
 
@@ -254,7 +270,7 @@ function getOpenLotCostBasis(
 }
 
 function enrichPortfolioWithOrders(
-  positions: IntegrationPortfolioPosition[],
+  positions: IbkrPortfolioPosition[],
   orders: IntegrationOrder[],
 ) {
   if (orders.length === 0) {
@@ -276,13 +292,120 @@ function enrichPortfolioWithOrders(
   });
 }
 
+async function readDailyPnl(
+  api: IBApi,
+  positions: IbkrPortfolioPosition[],
+  accountId: string,
+  config: IbkrConnectionConfig,
+) {
+  const requestIdByConId = new Map<number, number>();
+  const dailyPnlByConId = new Map<
+    number,
+    { dailyPnl: number | null; marketValue: number | null }
+  >();
+
+  positions.forEach((position, index) => {
+    if (position.conId === undefined) {
+      return;
+    }
+    requestIdByConId.set(position.conId, 50_000 + index);
+  });
+
+  if (requestIdByConId.size === 0) {
+    return dailyPnlByConId;
+  }
+
+  await new Promise<void>((resolve) => {
+    let timeoutId: number | undefined;
+    const onPnlSingle = (
+      reqId: number,
+      _position: number,
+      dailyPnL: number,
+      _unrealizedPnL: number | undefined,
+      _realizedPnL: number | undefined,
+      value: number,
+    ) => {
+      const conId = [...requestIdByConId.entries()].find(
+        ([, requestId]) => requestId === reqId,
+      )?.[0];
+      if (conId === undefined) {
+        return;
+      }
+
+      dailyPnlByConId.set(conId, {
+        dailyPnl: normalizePnlNumber(dailyPnL),
+        marketValue: normalizePnlNumber(value),
+      });
+
+      if (dailyPnlByConId.size === requestIdByConId.size) {
+        cleanup();
+        resolve();
+      }
+    };
+    const cleanup = () => {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
+      api.off(EventName.pnlSingle, onPnlSingle);
+      for (const reqId of requestIdByConId.values()) {
+        try {
+          api.cancelPnLSingle(reqId);
+        } catch {
+          // Ignore cancellation failures; PnL enrichment is best-effort.
+        }
+      }
+    };
+
+    api.on(EventName.pnlSingle, onPnlSingle);
+    for (const [conId, reqId] of requestIdByConId.entries()) {
+      api.reqPnLSingle(reqId, accountId, "", conId);
+    }
+    timeoutId = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, config.timeoutMs);
+  });
+
+  return dailyPnlByConId;
+}
+
+async function enrichPortfolioWithDailyPnl(
+  api: IBApi,
+  positions: IbkrPortfolioPosition[],
+  accountId: string,
+  config: IbkrConnectionConfig,
+): Promise<IbkrPortfolioPosition[]> {
+  const dailyPnlByConId = await readDailyPnl(api, positions, accountId, config);
+
+  return positions.map((position) => {
+    const dailyPnl = position.conId
+      ? (dailyPnlByConId.get(position.conId)?.dailyPnl ?? null)
+      : null;
+    const marketValue = position.conId
+      ? (dailyPnlByConId.get(position.conId)?.marketValue ?? null)
+      : null;
+    const baseline =
+      dailyPnl === null || marketValue === null ? null : marketValue - dailyPnl;
+
+    return {
+      ...position,
+      dailyPnl,
+      dailyPnlBaseline: baseline,
+      dailyPnlPercentage:
+        dailyPnl === null || baseline === null || baseline === 0
+          ? null
+          : (dailyPnl / baseline) * 100,
+    };
+  });
+}
+
 async function getAccountPortfolio(
   api: IBApi,
   integration: Integration,
   accountId: string,
   config: IbkrConnectionConfig,
 ) {
-  const positions = new Map<string, IntegrationPortfolioPosition>();
+  const positions = new Map<string, IbkrPortfolioPosition>();
 
   try {
     await withTimeout(
@@ -373,8 +496,14 @@ export const ibkrAdapter: IntegrationAdapter = {
         accountId,
         config,
       );
-      return enrichPortfolioWithOrders(
+      const positionsWithDailyPnl = await enrichPortfolioWithDailyPnl(
+        api,
         positions,
+        accountId,
+        config,
+      );
+      return enrichPortfolioWithOrders(
+        positionsWithDailyPnl,
         readFlexOrders(database, integration),
       );
     } finally {

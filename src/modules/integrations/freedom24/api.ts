@@ -41,6 +41,23 @@ export type Freedom24OrderHistoryResponse = {
   };
 };
 
+export type Freedom24QuotesResponse = {
+  result?: {
+    q?: Freedom24Quote[] | Record<string, Freedom24Quote>;
+  };
+};
+
+export type Freedom24Quote = {
+  c?: string;
+  ltp?: string | number;
+  bbp?: string | number;
+  bap?: string | number;
+  pp?: string | number;
+  op?: string | number;
+  close_price?: string | number;
+  ClosePrice?: string | number;
+};
+
 export type Freedom24Order = {
   instr?: string;
   date?: string;

@@ -18,17 +18,22 @@ import {
   parseLabelCommand,
   parseLinkCommand,
   readTickerDecorations,
+  readTickerEmojiMappings,
   readTickerLabelLinks,
   readTickerLabelPreferences,
   setTickerDecoration,
   setTickerLabelLink,
   setTickerLabelPreference,
 } from "./decorations.ts";
+import { removeTickerEmojiPack, syncTickerEmojiPack } from "./emoji_pack.ts";
 import {
   buildIntegratedDailyPerformanceList,
   buildIntegratedHistory,
   buildIntegratedPerformanceList,
   buildIntegratedTickerList,
+  formatOptionTicker,
+  isOptionPosition,
+  isStockPosition,
   parsePriceOverrides,
 } from "./portfolio.ts";
 
@@ -86,11 +91,13 @@ async function readTickerDisplayPreferences(userId: number) {
       readTickerLabelPreferences(userId),
       readTickerLabelLinks(userId),
     ]);
+  const tickerEmojiMappings = await readTickerEmojiMappings();
 
   return {
     tickerDecorations,
     tickerLabelPreferences,
     tickerLabelLinks,
+    tickerEmojiMappings,
   };
 }
 
@@ -126,6 +133,68 @@ function formatIntegrationList(
       return `${integration.id}. ${escapeHtml(integration.kind)}`;
     })
     .join("\n");
+}
+
+function createTickerFormatter({
+  tickerDecorations,
+  tickerLabelPreferences,
+  tickerLabelLinks,
+  tickerEmojiMappings,
+}: Awaited<ReturnType<typeof readTickerDisplayPreferences>>) {
+  return (ticker: string) =>
+    formatOptionTicker(
+      ticker,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+      tickerEmojiMappings,
+    );
+}
+
+function formatPackSyncResult(
+  action: "created" | "synced",
+  result: Awaited<ReturnType<typeof syncTickerEmojiPack>>,
+) {
+  const parts = [
+    `Emoji pack ${action}: ${escapeHtml(result.packName)}`,
+    `Tickers: ${result.totalTickers}`,
+    `Added: ${result.added.length}`,
+    `Skipped: ${result.skipped.length}`,
+  ];
+
+  if (result.errors.length > 0) {
+    parts.push(
+      `Errors: ${result.errors.length}`,
+      `<code>${escapeHtml(result.errors.slice(0, 10).join("\n"))}</code>`,
+    );
+  }
+
+  parts.push(`https://t.me/addemoji/${escapeHtml(result.packName)}`);
+
+  return parts.join("\n");
+}
+
+function toDumpablePosition(position: unknown) {
+  return JSON.parse(
+    JSON.stringify(position, (_key, value) =>
+      value instanceof Date ? value.toISOString() : value,
+    ),
+  );
+}
+
+async function replyJsonDump(ctx: CustomContext, value: unknown) {
+  const json = JSON.stringify(value, null, 2);
+  const maxChunkLength = 3_500;
+  for (
+    let index = 0;
+    index < json.length || index === 0;
+    index += maxChunkLength
+  ) {
+    await ctx.reply(
+      `<code>${escapeHtml(json.slice(index, index + maxChunkLength))}</code>`,
+      htmlReplyOptions,
+    );
+  }
 }
 
 async function replyIntegrationError(ctx: CustomContext, error: unknown) {
@@ -313,14 +382,77 @@ tickersComposer.command("link", async (ctx) => {
   );
 });
 
+tickersComposer.command("createpack", async (ctx) => {
+  if (!ctx.dbEntities.user || !ctx.from) {
+    await ctx.text("start");
+    return;
+  }
+
+  try {
+    const result = await syncTickerEmojiPack({
+      api: ctx.api,
+      database: ctx.db,
+      ownerUserId: ctx.from.id,
+      recreate: true,
+    });
+    await ctx.reply(formatPackSyncResult("created", result), htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
+tickersComposer.command("syncpack", async (ctx) => {
+  if (!ctx.dbEntities.user || !ctx.from) {
+    await ctx.text("start");
+    return;
+  }
+
+  try {
+    const result = await syncTickerEmojiPack({
+      api: ctx.api,
+      database: ctx.db,
+      ownerUserId: ctx.from.id,
+      recreate: false,
+    });
+    await ctx.reply(formatPackSyncResult("synced", result), htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
+tickersComposer.command("removepack", async (ctx) => {
+  if (!ctx.dbEntities.user || !ctx.from) {
+    await ctx.text("start");
+    return;
+  }
+
+  try {
+    const result = await removeTickerEmojiPack({
+      api: ctx.api,
+      database: ctx.db,
+      ownerUserId: ctx.from.id,
+    });
+    await ctx.reply(
+      `Emoji pack removed: ${escapeHtml(result.packName)}`,
+      htmlReplyOptions,
+    );
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
 tickersComposer.command("tickers", async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
   }
 
-  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
-    await readTickerDisplayPreferences(ctx.from.id);
+  const {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  } = await readTickerDisplayPreferences(ctx.from.id);
 
   if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
     await ctx.text("no_integrations");
@@ -333,10 +465,11 @@ tickersComposer.command("tickers", async (ctx) => {
       ctx.dbEntities.user.userId,
     );
     const priceList = await buildIntegratedTickerList({
-      positions,
+      positions: positions.filter(isStockPosition),
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
     });
 
     if (priceList.length === 0) {
@@ -350,14 +483,125 @@ tickersComposer.command("tickers", async (ctx) => {
   }
 });
 
+tickersComposer.command("options", async (ctx) => {
+  if (!ctx.dbEntities.user || !ctx.from) {
+    await ctx.text("start");
+    return;
+  }
+
+  const preferences = await readTickerDisplayPreferences(ctx.from.id);
+  const {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  } = preferences;
+  const formatTicker = createTickerFormatter({
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  });
+
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
+    return;
+  }
+
+  try {
+    const positions = await fetchIntegratedPortfolio(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    const priceList = await buildIntegratedTickerList({
+      positions: positions.filter(isOptionPosition),
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
+    });
+
+    if (priceList.length === 0) {
+      await ctx.text("no_positions");
+      return;
+    }
+
+    await ctx.reply(priceList, htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
+tickersComposer.command("dump_options", async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
+    return;
+  }
+
+  try {
+    const positions = await fetchIntegratedPortfolio(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    await replyJsonDump(
+      ctx,
+      positions.filter(isOptionPosition).map(toDumpablePosition),
+    );
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
+tickersComposer.command("dump_tickers", async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
+    return;
+  }
+
+  try {
+    const positions = await fetchIntegratedPortfolio(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    await replyJsonDump(
+      ctx,
+      positions.filter(isStockPosition).map(toDumpablePosition),
+    );
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
 tickersComposer.command("perf", async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
   }
 
-  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
-    await readTickerDisplayPreferences(ctx.from.id);
+  const preferences = await readTickerDisplayPreferences(ctx.from.id);
+  const {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  } = preferences;
+  const formatTicker = createTickerFormatter({
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  });
 
   if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
     await ctx.text("no_integrations");
@@ -374,6 +618,8 @@ tickersComposer.command("perf", async (ctx) => {
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
     });
 
     if (performanceList.length === 0) {
@@ -393,8 +639,19 @@ tickersComposer.command("daily", async (ctx) => {
     return;
   }
 
-  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
-    await readTickerDisplayPreferences(ctx.from.id);
+  const preferences = await readTickerDisplayPreferences(ctx.from.id);
+  const {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  } = preferences;
+  const formatTicker = createTickerFormatter({
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  });
 
   if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
     await ctx.text("no_integrations");
@@ -411,6 +668,8 @@ tickersComposer.command("daily", async (ctx) => {
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
     });
 
     if (performanceList.length === 0) {
@@ -430,8 +689,12 @@ tickersComposer.command("history", async (ctx) => {
     return;
   }
 
-  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
-    await readTickerDisplayPreferences(ctx.from.id);
+  const {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  } = await readTickerDisplayPreferences(ctx.from.id);
 
   if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
     await ctx.text("no_integrations");
@@ -448,6 +711,7 @@ tickersComposer.command("history", async (ctx) => {
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
     });
 
     if (history.length === 0) {
@@ -478,8 +742,19 @@ tickersComposer.command("when", async (ctx) => {
     return;
   }
 
-  const { tickerDecorations, tickerLabelPreferences, tickerLabelLinks } =
-    await readTickerDisplayPreferences(ctx.from.id);
+  const preferences = await readTickerDisplayPreferences(ctx.from.id);
+  const {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  } = preferences;
+  const formatTicker = createTickerFormatter({
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  });
 
   if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
     await ctx.text("no_integrations");
@@ -497,6 +772,8 @@ tickersComposer.command("when", async (ctx) => {
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
     });
 
     if (priceList.length === 0) {

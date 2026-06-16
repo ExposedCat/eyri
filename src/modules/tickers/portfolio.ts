@@ -6,6 +6,7 @@ import type {
 import {
   formatDecoratedTicker,
   type TickerDecorations,
+  type TickerEmojiMappings,
   type TickerLabelLinks,
   type TickerLabelPreferences,
 } from "./decorations.ts";
@@ -16,6 +17,8 @@ type BuildIntegratedTickerListArgs = {
   tickerDecorations?: TickerDecorations;
   tickerLabelPreferences?: TickerLabelPreferences;
   tickerLabelLinks?: TickerLabelLinks;
+  tickerEmojiMappings?: TickerEmojiMappings;
+  formatTicker?: (ticker: string) => string;
 };
 
 type BuildIntegratedHistoryArgs = {
@@ -23,6 +26,7 @@ type BuildIntegratedHistoryArgs = {
   tickerDecorations?: TickerDecorations;
   tickerLabelPreferences?: TickerLabelPreferences;
   tickerLabelLinks?: TickerLabelLinks;
+  tickerEmojiMappings?: TickerEmojiMappings;
 };
 
 type IntegratedPositionPerformance = {
@@ -48,6 +52,113 @@ const formatWholeMoney = (value: number, currency = "USD") =>
 const formatAmount = (value: number) => value.toFixed(2);
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 365.2425 / 12;
+const optionMonthQuarters: Record<string, string> = {
+  JAN: "Q1",
+  FEB: "Q1",
+  MAR: "Q1",
+  APR: "Q2",
+  MAY: "Q2",
+  JUN: "Q2",
+  JUL: "Q3",
+  AUG: "Q3",
+  SEP: "Q3",
+  OCT: "Q4",
+  NOV: "Q4",
+  DEC: "Q4",
+};
+
+type ParsedOptionTicker = {
+  underlying: string;
+  month: string;
+  year: string;
+  strike: string;
+};
+
+export function isOptionTicker(ticker: string) {
+  return ticker.trim().startsWith("+");
+}
+
+export function isOptionPosition(position: IntegrationPortfolioPosition) {
+  return isOptionTicker(position.ticker);
+}
+
+export function isStockPosition(position: IntegrationPortfolioPosition) {
+  return !isOptionPosition(position);
+}
+
+function parseOptionTicker(ticker: string): ParsedOptionTicker | null {
+  const match = ticker
+    .trim()
+    .toUpperCase()
+    .match(/^\+(.+)\.(\d{1,2})([A-Z]{3})(\d{4})\.([CP])(.+)$/);
+  if (!match) {
+    return null;
+  }
+
+  const [, underlying, , month, year, , strike] = match;
+  return { underlying, month, year, strike };
+}
+
+function formatOptionStrike(strike: string) {
+  const number = Number(strike);
+  if (!Number.isFinite(number)) {
+    return strike;
+  }
+
+  return Number.isInteger(number)
+    ? number.toFixed(0)
+    : number.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function formatTickerName(
+  ticker: string,
+  tickerDecorations?: TickerDecorations,
+  tickerLabelPreferences?: TickerLabelPreferences,
+  tickerLabelLinks?: TickerLabelLinks,
+  tickerEmojiMappings?: TickerEmojiMappings,
+  formatter?: (ticker: string) => string,
+) {
+  if (formatter) {
+    return formatter(ticker);
+  }
+
+  return formatDecoratedTicker(
+    ticker,
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  );
+}
+
+export function formatOptionTicker(
+  ticker: string,
+  tickerDecorations?: TickerDecorations,
+  tickerLabelPreferences?: TickerLabelPreferences,
+  tickerLabelLinks?: TickerLabelLinks,
+  tickerEmojiMappings?: TickerEmojiMappings,
+) {
+  const parsed = parseOptionTicker(ticker);
+  if (!parsed) {
+    return formatDecoratedTicker(
+      ticker,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+      tickerEmojiMappings,
+    );
+  }
+
+  const underlying = formatDecoratedTicker(
+    parsed.underlying,
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  );
+  const quarter = optionMonthQuarters[parsed.month] ?? parsed.month;
+  return `${underlying} → $${formatOptionStrike(parsed.strike)} ${quarter}'${parsed.year.slice(-2)}`;
+}
 
 function getElapsedMonthCount(startDate: Date, endDate: Date) {
   const elapsedDays = Math.max(
@@ -108,6 +219,19 @@ function getSortedIntegratedPositions(
     return (
       totalInputB - totalInputA ||
       positionA.ticker.localeCompare(positionB.ticker)
+    );
+  });
+}
+
+function getSortedIntegratedPerformances(
+  performances: IntegratedPositionPerformance[],
+) {
+  return [...performances].sort((performanceA, performanceB) => {
+    const totalChangeA = performanceA.totalChange ?? Number.NEGATIVE_INFINITY;
+    const totalChangeB = performanceB.totalChange ?? Number.NEGATIVE_INFINITY;
+    return (
+      totalChangeB - totalChangeA ||
+      performanceA.position.ticker.localeCompare(performanceB.position.ticker)
     );
   });
 }
@@ -207,17 +331,48 @@ function buildIntegratedPortfolioTotals(
   const totalChange = totals.totalNow - totals.totalInput;
   const totalPercentageChange =
     totals.totalInput === 0 ? 0 : (totalChange / totals.totalInput) * 100;
+  const dailyPnlTotals = performances.reduce(
+    (totals, { position }) => {
+      if (position.dailyPnl === null) {
+        totals.hasMissingDailyPnl = true;
+        return totals;
+      }
+
+      totals.dailyPnl += position.dailyPnl;
+      if (
+        position.dailyPnlBaseline === null ||
+        position.dailyPnlBaseline === 0
+      ) {
+        totals.hasMissingDailyPnlPercentage = true;
+        return totals;
+      }
+
+      totals.dailyPnlBaseline += position.dailyPnlBaseline;
+      return totals;
+    },
+    {
+      dailyPnl: 0,
+      dailyPnlBaseline: 0,
+      hasMissingDailyPnl: false,
+      hasMissingDailyPnlPercentage: false,
+    },
+  );
+  const dailyPnlPercentage =
+    dailyPnlTotals.hasMissingDailyPnlPercentage ||
+    dailyPnlTotals.dailyPnlBaseline === 0
+      ? null
+      : (dailyPnlTotals.dailyPnl / dailyPnlTotals.dailyPnlBaseline) * 100;
 
   return {
     ...totals,
     totalChange,
     totalPercentageChange,
-    dailyChange:
-      elapsedPeriod.days === null ? null : totalChange / elapsedPeriod.days,
-    dailyPercentageChange:
-      elapsedPeriod.days === null
-        ? null
-        : totalPercentageChange / elapsedPeriod.days,
+    dailyChange: dailyPnlTotals.hasMissingDailyPnl
+      ? null
+      : dailyPnlTotals.dailyPnl,
+    dailyPercentageChange: dailyPnlTotals.hasMissingDailyPnl
+      ? null
+      : dailyPnlPercentage,
     monthlyChange:
       elapsedPeriod.months === null ? null : totalChange / elapsedPeriod.months,
     monthlyPercentageChange:
@@ -234,23 +389,29 @@ export async function buildIntegratedTickerList({
   tickerDecorations,
   tickerLabelPreferences,
   tickerLabelLinks,
+  tickerEmojiMappings,
+  formatTicker,
 }: BuildIntegratedTickerListArgs) {
   if (positions.length === 0) {
     return "";
   }
 
   const now = new Date();
-  const performances = getSortedIntegratedPositions(positions).map((position) =>
-    buildIntegratedPositionPerformance(position, now, priceOverrides),
+  const performances = getSortedIntegratedPerformances(
+    getSortedIntegratedPositions(positions).map((position) =>
+      buildIntegratedPositionPerformance(position, now, priceOverrides),
+    ),
   );
 
   const tickerLines = performances.map((performance) => {
     const { position } = performance;
-    const tickerName = formatDecoratedTicker(
+    const tickerName = formatTickerName(
       position.ticker,
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
     );
 
     if (
@@ -321,23 +482,29 @@ export async function buildIntegratedPerformanceList({
   tickerDecorations,
   tickerLabelPreferences,
   tickerLabelLinks,
+  tickerEmojiMappings,
+  formatTicker,
 }: BuildIntegratedTickerListArgs) {
   if (positions.length === 0) {
     return "";
   }
 
   const now = new Date();
-  const performances = getSortedIntegratedPositions(positions).map((position) =>
-    buildIntegratedPositionPerformance(position, now, priceOverrides),
+  const performances = getSortedIntegratedPerformances(
+    getSortedIntegratedPositions(positions).map((position) =>
+      buildIntegratedPositionPerformance(position, now, priceOverrides),
+    ),
   );
 
   const lines = performances.map((performance) => {
     const { position } = performance;
-    const tickerName = formatDecoratedTicker(
+    const tickerName = formatTickerName(
       position.ticker,
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
     );
     if (
       performance.totalChange === null ||
@@ -371,47 +538,50 @@ export async function buildIntegratedDailyPerformanceList({
   tickerDecorations,
   tickerLabelPreferences,
   tickerLabelLinks,
+  tickerEmojiMappings,
+  formatTicker,
 }: BuildIntegratedTickerListArgs) {
   if (positions.length === 0) {
     return "";
   }
 
   const now = new Date();
-  const performances = getSortedIntegratedPositions(positions).map((position) =>
-    buildIntegratedPositionPerformance(position, now, priceOverrides),
+  const performances = getSortedIntegratedPerformances(
+    getSortedIntegratedPositions(positions).map((position) =>
+      buildIntegratedPositionPerformance(position, now, priceOverrides),
+    ),
   );
 
   const lines = performances.map((performance) => {
     const { position } = performance;
-    const tickerName = formatDecoratedTicker(
+    const tickerName = formatTickerName(
       position.ticker,
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
     );
-    if (
-      performance.totalChange === null ||
-      performance.totalPercentageChange === null ||
-      performance.elapsedPeriod.days === null
-    ) {
-      return `${tickerName} ? ?/d (${performance.elapsedPeriod.label})`;
+    if (position.dailyPnl === null) {
+      return `${tickerName} ? ? today`;
     }
 
-    return `${tickerName} ${formatMoneyChange(
-      performance.totalPercentageChange / performance.elapsedPeriod.days,
-      "%",
-    )} ${formatMoneyChange(
-      performance.totalChange / performance.elapsedPeriod.days,
-    )}/d (${performance.elapsedPeriod.label})`;
+    const percentage =
+      position.dailyPnlPercentage === null
+        ? "?"
+        : formatMoneyChange(position.dailyPnlPercentage, "%");
+    return `${tickerName} ${percentage} ${formatMoneyChange(position.dailyPnl)} today`;
   });
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalLine =
-    totals.dailyChange === null || totals.dailyPercentageChange === null
-      ? `Total: ? ?/d (${totals.elapsedPeriod.label})`
-      : `Total: ${formatMoneyChange(totals.dailyPercentageChange, "%")} ${formatMoneyChange(
-          totals.dailyChange,
-        )}/d (${totals.elapsedPeriod.label})`;
+    totals.dailyChange === null
+      ? "Total: ? ? today"
+      : `Total: ${
+          totals.dailyPercentageChange === null
+            ? "?"
+            : formatMoneyChange(totals.dailyPercentageChange, "%")
+        } ${formatMoneyChange(totals.dailyChange)} today`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -511,6 +681,7 @@ export function buildIntegratedHistory({
   tickerDecorations,
   tickerLabelPreferences,
   tickerLabelLinks,
+  tickerEmojiMappings,
 }: BuildIntegratedHistoryArgs) {
   const sorted = buildIntegratedHistoryGroups(orders);
   if (sorted.length === 0) {
@@ -531,6 +702,7 @@ export function buildIntegratedHistory({
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
+      tickerEmojiMappings,
     );
     lines.push(
       `${formatUtcDate(group.date)} ${tickerName} ${group.quantity.toFixed(

@@ -10,6 +10,8 @@ import {
   type Freedom24OrderHistoryResponse,
   type Freedom24PortfolioPosition,
   type Freedom24PortfolioResponse,
+  type Freedom24Quote,
+  type Freedom24QuotesResponse,
   makeTradernetApiRequest,
 } from "./api.ts";
 import { parseFreedom24Credentials } from "./credentials.ts";
@@ -17,6 +19,11 @@ import { parseFreedom24Credentials } from "./credentials.ts";
 const COMPLETED_ORDER_STATUS = 21;
 const BUY_OPERATION = 1;
 const SELL_OPERATION = 3;
+
+type QuotePrices = {
+  currentPrice: number | null;
+  previousClose: number | null;
+};
 
 function getHistoryDateRange(years: number) {
   const to = new Date();
@@ -34,24 +41,58 @@ function normalizeNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function normalizePositiveNumber(value: unknown) {
+  const number = normalizeNumber(value);
+  return number !== null && number > 0 ? number : null;
+}
+
+function normalizeTradernetNumber(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const parsed = Number(value.replace(",", "."));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
+function normalizePositiveTradernetNumber(value: unknown) {
+  const number = normalizeTradernetNumber(value);
+  return number !== null && number > 0 ? number : null;
+}
+
 function getPositionTicker(position: Freedom24PortfolioPosition) {
   return position.i?.trim() || position.base_contract_code?.trim() || "UNKNOWN";
 }
 
-function getPositionCurrentPrice(position: Freedom24PortfolioPosition) {
-  const marketPrice = normalizeNumber(position.mkt_price);
-  if (marketPrice !== null && marketPrice > 0) {
+function getPositionCurrentPrice(
+  position: Freedom24PortfolioPosition,
+  quotePrices: QuotePrices | undefined,
+) {
+  if (
+    quotePrices?.currentPrice !== undefined &&
+    quotePrices.currentPrice !== null &&
+    quotePrices.currentPrice > 0
+  ) {
+    return quotePrices.currentPrice;
+  }
+
+  const marketPrice = normalizePositiveNumber(position.mkt_price);
+  if (marketPrice !== null) {
     return marketPrice;
   }
 
-  const closePrice = normalizeNumber(position.close_price);
-  if (closePrice !== null && closePrice > 0) {
+  const closePrice = normalizePositiveNumber(position.close_price);
+  if (closePrice !== null) {
     return closePrice;
   }
 
   const marketValue = normalizeNumber(position.market_value);
   const quantity = normalizeNumber(position.q);
-  const faceValue = normalizeNumber(position.face_val_a) ?? 1;
+  const faceValue = normalizePositiveNumber(position.face_val_a) ?? 1;
   if (marketValue !== null && quantity !== null && quantity !== 0) {
     return marketValue / quantity / faceValue;
   }
@@ -62,31 +103,55 @@ function getPositionCurrentPrice(position: Freedom24PortfolioPosition) {
 function toPortfolioPosition(
   integration: Integration,
   position: Freedom24PortfolioPosition,
+  quotePrices: Map<string, QuotePrices>,
+  dailyRealizedPnlByTicker: Map<string, number>,
 ): IntegrationPortfolioPosition | null {
   const amount = normalizeNumber(position.q);
   if (amount === null || amount === 0) {
     return null;
   }
 
-  const faceValue = normalizeNumber(position.face_val_a) ?? 1;
+  const ticker = getPositionTicker(position);
+  const faceValue = normalizePositiveNumber(position.face_val_a) ?? 1;
   const averageUnitPrice = normalizeNumber(position.price_a);
-  const currentPrice = getPositionCurrentPrice(position);
+  const currentPrice = getPositionCurrentPrice(
+    position,
+    quotePrices.get(ticker),
+  );
   const totalInput =
     averageUnitPrice === null ? null : averageUnitPrice * faceValue * amount;
   const apiMarketValue = normalizeNumber(position.market_value);
   const totalNow =
-    apiMarketValue ??
+    (apiMarketValue !== null && apiMarketValue > 0 ? apiMarketValue : null) ??
     (currentPrice === null ? null : currentPrice * faceValue * amount);
+  const resolvedCurrentPrice =
+    totalNow !== null && amount !== 0
+      ? totalNow / amount / faceValue
+      : currentPrice;
+  const previousClose = quotePrices.get(ticker)?.previousClose ?? null;
+  const openDailyPnl =
+    resolvedCurrentPrice === null || previousClose === null
+      ? null
+      : (resolvedCurrentPrice - previousClose) * faceValue * amount;
+  const dailyRealizedPnl =
+    dailyRealizedPnlByTicker.get(ticker.trim().toUpperCase()) ?? 0;
+  const dailyPnl =
+    openDailyPnl === null && dailyRealizedPnl === 0
+      ? null
+      : (openDailyPnl ?? 0) + dailyRealizedPnl;
+  const dailyPnlBaseline =
+    previousClose === null ? null : previousClose * faceValue * amount;
 
   return {
     integrationId: integration.id,
     integrationKind: integration.kind,
     account: "Freedom24",
-    ticker: getPositionTicker(position),
+    ticker,
     amount,
     averageUnitPrice:
       averageUnitPrice === null ? null : averageUnitPrice * faceValue,
-    currentPrice: currentPrice === null ? null : currentPrice * faceValue,
+    currentPrice:
+      resolvedCurrentPrice === null ? null : resolvedCurrentPrice * faceValue,
     currency: position.curr?.trim() || position.base_currency?.trim() || "USD",
     totalInput,
     totalNow,
@@ -94,6 +159,12 @@ function toPortfolioPosition(
       normalizeNumber(position.profit_close) ??
       (totalNow !== null && totalInput !== null ? totalNow - totalInput : null),
     realizedPnl: normalizeNumber(position.profit_price),
+    dailyPnl,
+    dailyPnlPercentage:
+      dailyPnl === null || dailyPnlBaseline === null || dailyPnlBaseline === 0
+        ? null
+        : (dailyPnl / dailyPnlBaseline) * 100,
+    dailyPnlBaseline,
     openedAt: null,
   };
 }
@@ -160,6 +231,53 @@ function getOrderPrice(order: Freedom24Order, quantity: number) {
   }
 
   return normalizeNumber(order.p);
+}
+
+function isToday(date: Date) {
+  const now = new Date();
+  return (
+    date.getUTCFullYear() === now.getUTCFullYear() &&
+    date.getUTCMonth() === now.getUTCMonth() &&
+    date.getUTCDate() === now.getUTCDate()
+  );
+}
+
+function getTodayRealizedPnlByTicker(orders: Freedom24Order[]) {
+  const realizedPnlByTicker = new Map<string, number>();
+
+  for (const order of orders) {
+    if (
+      order.stat !== COMPLETED_ORDER_STATUS ||
+      order.oper !== SELL_OPERATION ||
+      !order.trade ||
+      order.trade.length === 0
+    ) {
+      continue;
+    }
+
+    const ticker = getOrderTicker(order).trim().toUpperCase();
+    const realizedPnl = order.trade.reduce((sum, trade) => {
+      if (!trade.date) {
+        return sum;
+      }
+
+      const date = new Date(trade.date);
+      if (Number.isNaN(+date) || !isToday(date)) {
+        return sum;
+      }
+
+      return sum + (normalizeNumber(trade.profit) ?? 0);
+    }, 0);
+
+    if (realizedPnl !== 0) {
+      realizedPnlByTicker.set(
+        ticker,
+        (realizedPnlByTicker.get(ticker) ?? 0) + realizedPnl,
+      );
+    }
+  }
+
+  return realizedPnlByTicker;
 }
 
 function toIntegrationOrder(
@@ -281,8 +399,72 @@ async function fetchOrderHistoryResponse(integration: Integration) {
   return response.orders?.order ?? [];
 }
 
+function getQuoteCurrentPrice(quote: Freedom24Quote) {
+  return (
+    normalizeTradernetNumber(quote.ltp) ??
+    normalizeTradernetNumber(quote.bbp) ??
+    normalizeTradernetNumber(quote.bap) ??
+    normalizeTradernetNumber(quote.close_price) ??
+    normalizeTradernetNumber(quote.ClosePrice) ??
+    normalizeTradernetNumber(quote.pp) ??
+    normalizeTradernetNumber(quote.op)
+  );
+}
+
+function getQuotePreviousClose(quote: Freedom24Quote) {
+  return (
+    normalizePositiveTradernetNumber(quote.pp) ??
+    normalizePositiveTradernetNumber(quote.close_price) ??
+    normalizePositiveTradernetNumber(quote.ClosePrice)
+  );
+}
+
+async function fetchQuotePrices(
+  integration: Integration,
+  tickers: string[],
+): Promise<Map<string, QuotePrices>> {
+  const credentials = parseFreedom24Credentials(integration.credentials);
+  const prices = new Map<string, QuotePrices>();
+
+  await Promise.all(
+    tickers.map(async (ticker) => {
+      try {
+        const response = await makeTradernetApiRequest<Freedom24QuotesResponse>(
+          credentials.apiKey,
+          credentials.secretKey,
+          "getStockQuotesJson",
+          { tickers: ticker },
+        );
+        const quotes = response.result?.q
+          ? Array.isArray(response.result.q)
+            ? response.result.q
+            : Object.values(response.result.q)
+          : [];
+        const quote = quotes.find((item) => item.c === ticker) ?? quotes.at(0);
+        if (quote) {
+          prices.set(ticker, {
+            currentPrice: getQuoteCurrentPrice(quote),
+            previousClose: getQuotePreviousClose(quote),
+          });
+        }
+      } catch (error) {
+        console.error(`Failed to fetch Freedom24 quote for ${ticker}:`, error);
+      }
+    }),
+  );
+
+  return prices;
+}
+
 async function fetchIntegrationOrderHistory(integration: Integration) {
   const orders = await fetchOrderHistoryResponse(integration);
+  return mapIntegrationOrderHistory(integration, orders);
+}
+
+function mapIntegrationOrderHistory(
+  integration: Integration,
+  orders: Freedom24Order[],
+) {
   return orders.flatMap((order) => {
     const mapped = toIntegrationOrder(integration, order);
     return mapped ? [mapped] : [];
@@ -291,15 +473,25 @@ async function fetchIntegrationOrderHistory(integration: Integration) {
 
 export const freedom24Adapter: IntegrationAdapter = {
   async fetchPortfolio(_database: Database, integration: Integration) {
-    const [portfolioResponse, orders] = await Promise.all([
+    const [portfolioResponse, rawOrders] = await Promise.all([
       fetchPortfolioResponse(integration),
-      fetchIntegrationOrderHistory(integration),
+      fetchOrderHistoryResponse(integration),
     ]);
+    const orders = mapIntegrationOrderHistory(integration, rawOrders);
+    const dailyRealizedPnlByTicker = getTodayRealizedPnlByTicker(rawOrders);
+    const rawPositions = portfolioResponse.result?.ps?.pos ?? [];
+    const tickers = [...new Set(rawPositions.map(getPositionTicker))];
+    const quotePrices = await fetchQuotePrices(integration, tickers);
 
     return (
-      portfolioResponse.result?.ps?.pos
-        ?.flatMap((position) => {
-          const mapped = toPortfolioPosition(integration, position);
+      rawPositions
+        .flatMap((position) => {
+          const mapped = toPortfolioPosition(
+            integration,
+            position,
+            quotePrices,
+            dailyRealizedPnlByTicker,
+          );
           if (!mapped) {
             return [];
           }

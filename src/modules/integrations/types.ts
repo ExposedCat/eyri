@@ -14,6 +14,9 @@ export type IntegrationPortfolioPosition = {
   totalNow: number | null;
   unrealizedPnl: number | null;
   realizedPnl: number | null;
+  dailyPnl: number | null;
+  dailyPnlPercentage: number | null;
+  dailyPnlBaseline: number | null;
   openedAt: Date | null;
 };
 

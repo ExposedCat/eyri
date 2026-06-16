@@ -11,6 +11,7 @@ export type TickerDecoration = {
 export type TickerDecorations = Record<string, TickerDecoration[]>;
 export type TickerLabelPreferences = Record<string, string | false>;
 export type TickerLabelLinks = Record<string, string>;
+export type TickerEmojiMappings = Record<string, TickerDecoration>;
 
 type TickerDecorationRow = {
   ticker: string;
@@ -28,6 +29,12 @@ type TickerLabelPreferenceRow = {
 type TickerLabelLinkRow = {
   ticker: string;
   tag: string;
+};
+
+type TickerEmojiMappingRow = {
+  ticker: string;
+  custom_emoji_id: string;
+  emoji_text: string;
 };
 
 type TableColumn = {
@@ -125,6 +132,31 @@ function createTickerLabelLinksTable(db: Database) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, ticker)
+    )
+  `);
+}
+
+function createTickerEmojiPacksTable(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticker_emoji_packs (
+      owner_user_id TEXT PRIMARY KEY,
+      pack_name TEXT NOT NULL,
+      pack_title TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+function createTickerEmojiMappingsTable(db: Database) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticker_emoji_mappings (
+      ticker TEXT PRIMARY KEY,
+      pack_name TEXT NOT NULL,
+      custom_emoji_id TEXT NOT NULL,
+      emoji_text TEXT NOT NULL DEFAULT '💰',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
 }
@@ -310,6 +342,14 @@ function ensureSchema(db: Database) {
   } else if (!hasExpectedTickerLabelLinksSchema(db)) {
     migrateTickerLabelLinksTable(db);
   }
+
+  if (!tableExists(db, "ticker_emoji_packs")) {
+    createTickerEmojiPacksTable(db);
+  }
+
+  if (!tableExists(db, "ticker_emoji_mappings")) {
+    createTickerEmojiMappingsTable(db);
+  }
 }
 
 export async function readTickerDecorations(
@@ -446,6 +486,28 @@ export async function readTickerLabelLinks(
   );
 }
 
+export async function readTickerEmojiMappings(): Promise<TickerEmojiMappings> {
+  const db = await getDatabase();
+  ensureSchema(db);
+  const rows = db
+    .prepare(`
+      SELECT ticker, custom_emoji_id, emoji_text
+      FROM ticker_emoji_mappings
+    `)
+    .all() as TickerEmojiMappingRow[];
+
+  return Object.fromEntries(
+    rows.map((row) => [
+      normalizeTicker(row.ticker),
+      {
+        tgEmoji: row.custom_emoji_id,
+        text: row.emoji_text,
+        isCustomEmoji: true,
+      },
+    ]),
+  );
+}
+
 export async function setTickerLabelLink(
   userId: string | number,
   ticker: string,
@@ -517,6 +579,7 @@ export function formatDecoratedTicker(
   decorations?: TickerDecorations,
   labelPreferences?: TickerLabelPreferences,
   labelLinks?: TickerLabelLinks,
+  emojiMappings?: TickerEmojiMappings,
 ) {
   const normalizedTicker = normalizeTicker(ticker);
   const labelPreference = labelPreferences?.[normalizedTicker];
@@ -526,7 +589,9 @@ export function formatDecoratedTicker(
   const decorated =
     tickerDecorations && tickerDecorations.length > 0
       ? formatTickerDecorations(tickerDecorations)
-      : null;
+      : emojiMappings?.[normalizedTicker]
+        ? formatTickerDecoration(emojiMappings[normalizedTicker])
+        : null;
   if (!decorated) {
     return label === null ? "" : formatTickerLabel(label, linkTag);
   }
