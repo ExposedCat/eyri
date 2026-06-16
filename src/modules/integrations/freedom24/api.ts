@@ -53,6 +53,7 @@ export type Freedom24Quote = {
   bbp?: string | number;
   bap?: string | number;
   pp?: string | number;
+  p5?: string | number;
   op?: string | number;
   close_price?: string | number;
   ClosePrice?: string | number;

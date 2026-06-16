@@ -68,36 +68,8 @@ function getPositionTicker(position: Freedom24PortfolioPosition) {
   return position.i?.trim() || position.base_contract_code?.trim() || "UNKNOWN";
 }
 
-function getPositionCurrentPrice(
-  position: Freedom24PortfolioPosition,
-  quotePrices: QuotePrices | undefined,
-) {
-  if (
-    quotePrices?.currentPrice !== undefined &&
-    quotePrices.currentPrice !== null &&
-    quotePrices.currentPrice > 0
-  ) {
-    return quotePrices.currentPrice;
-  }
-
-  const marketPrice = normalizePositiveNumber(position.mkt_price);
-  if (marketPrice !== null) {
-    return marketPrice;
-  }
-
-  const closePrice = normalizePositiveNumber(position.close_price);
-  if (closePrice !== null) {
-    return closePrice;
-  }
-
-  const marketValue = normalizeNumber(position.market_value);
-  const quantity = normalizeNumber(position.q);
-  const faceValue = normalizePositiveNumber(position.face_val_a) ?? 1;
-  if (marketValue !== null && quantity !== null && quantity !== 0) {
-    return marketValue / quantity / faceValue;
-  }
-
-  return null;
+function getPositionCurrentPrice(quotePrices: QuotePrices | undefined) {
+  return quotePrices?.currentPrice ?? null;
 }
 
 function toPortfolioPosition(
@@ -114,20 +86,12 @@ function toPortfolioPosition(
   const ticker = getPositionTicker(position);
   const faceValue = normalizePositiveNumber(position.face_val_a) ?? 1;
   const averageUnitPrice = normalizeNumber(position.price_a);
-  const currentPrice = getPositionCurrentPrice(
-    position,
-    quotePrices.get(ticker),
-  );
+  const currentPrice = getPositionCurrentPrice(quotePrices.get(ticker));
   const totalInput =
     averageUnitPrice === null ? null : averageUnitPrice * faceValue * amount;
-  const apiMarketValue = normalizeNumber(position.market_value);
   const totalNow =
-    (apiMarketValue !== null && apiMarketValue > 0 ? apiMarketValue : null) ??
-    (currentPrice === null ? null : currentPrice * faceValue * amount);
-  const resolvedCurrentPrice =
-    totalNow !== null && amount !== 0
-      ? totalNow / amount / faceValue
-      : currentPrice;
+    currentPrice === null ? null : currentPrice * faceValue * amount;
+  const resolvedCurrentPrice = currentPrice;
   const previousClose = quotePrices.get(ticker)?.previousClose ?? null;
   const openDailyPnl =
     resolvedCurrentPrice === null || previousClose === null
@@ -400,22 +364,15 @@ async function fetchOrderHistoryResponse(integration: Integration) {
 }
 
 function getQuoteCurrentPrice(quote: Freedom24Quote) {
-  return (
-    normalizeTradernetNumber(quote.ltp) ??
-    normalizeTradernetNumber(quote.bbp) ??
-    normalizeTradernetNumber(quote.bap) ??
-    normalizeTradernetNumber(quote.close_price) ??
-    normalizeTradernetNumber(quote.ClosePrice) ??
-    normalizeTradernetNumber(quote.pp) ??
-    normalizeTradernetNumber(quote.op)
-  );
+  return normalizePositiveTradernetNumber(quote.ltp);
 }
 
 function getQuotePreviousClose(quote: Freedom24Quote) {
   return (
     normalizePositiveTradernetNumber(quote.pp) ??
     normalizePositiveTradernetNumber(quote.close_price) ??
-    normalizePositiveTradernetNumber(quote.ClosePrice)
+    normalizePositiveTradernetNumber(quote.ClosePrice) ??
+    normalizePositiveTradernetNumber(quote.p5)
   );
 }
 

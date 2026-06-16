@@ -441,7 +441,7 @@ tickersComposer.command("removepack", async (ctx) => {
   }
 });
 
-tickersComposer.command("tickers", async (ctx) => {
+tickersComposer.command("stocks", async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
