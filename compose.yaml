@@ -1,5 +1,6 @@
 services:
   ib_gateway:
+    container_name: ib_gateway
     image: docker.io/gnzsnz/ib-gateway:10.34.1a@sha256:d1779edb24f50ca44d4bd20d4098ffd5b2b81ca98cf21e6676ed465befb7dd44
     restart: unless-stopped
     env_file:
@@ -34,6 +35,7 @@ services:
       retries: 1
     volumes:
       - eyri-data:/app/data
+      - ${XDG_RUNTIME_DIR}/podman/podman.sock:/run/podman/podman.sock
 
 volumes:
   ib-gateway-settings:

@@ -54,7 +54,7 @@ const botCommands = [
   { command: "decorate", description: "Decorate a ticker" },
   { command: "label", description: "Set or hide a ticker label" },
   { command: "link", description: "Link a ticker label" },
-  { command: "restart", description: "Restart the bot" },
+  { command: "restart", description: "Restart IB Gateway" },
 ] as const;
 
 export async function setupBotCommands(bot: Bot) {

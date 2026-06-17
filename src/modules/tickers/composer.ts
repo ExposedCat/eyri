@@ -11,6 +11,7 @@ import {
   fetchIntegratedOrderHistory,
   fetchIntegratedPortfolio,
 } from "../integrations/service.ts";
+import { getIbkrHostPort } from "../integrations/ibkr/credentials.ts";
 import {
   escapeHtml,
   formatTickerDecorations,
@@ -205,6 +206,110 @@ async function replyIntegrationError(ctx: CustomContext, error: unknown) {
   );
 }
 
+async function replyRestartError(ctx: CustomContext, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  await ctx.reply(
+    `Failed to restart IB Gateway:\n\n<code>${escapeHtml(message)}</code>`,
+    htmlReplyOptions,
+  );
+}
+
+const PODMAN_SOCKET_PATH = "/run/podman/podman.sock";
+
+function getRestartContainerName(credentials: Record<string, unknown>) {
+  const instanceUrl = credentials.instanceUrl;
+  if (typeof instanceUrl !== "string" || instanceUrl.trim().length === 0) {
+    throw new Error(
+      "IBKR integration does not have an instance URL configured",
+    );
+  }
+
+  return getIbkrHostPort(instanceUrl).host;
+}
+
+function encodePodmanPathSegment(value: string) {
+  return encodeURIComponent(value);
+}
+
+function parseHttpStatus(response: string) {
+  const statusLine = response.split("\r\n", 1)[0];
+  const match = /^HTTP\/\d(?:\.\d)?\s+(\d+)/.exec(statusLine);
+  if (!match) {
+    throw new Error("Podman returned an invalid HTTP response");
+  }
+
+  return Number(match[1]);
+}
+
+function parseHttpBody(response: string) {
+  const separatorIndex = response.indexOf("\r\n\r\n");
+  if (separatorIndex === -1) {
+    return "";
+  }
+
+  return response.slice(separatorIndex + 4).trim();
+}
+
+async function readConnection(conn: Deno.Conn) {
+  const chunks: Uint8Array[] = [];
+  const buffer = new Uint8Array(8_192);
+
+  while (true) {
+    const bytesRead = await conn.read(buffer);
+    if (bytesRead === null) {
+      break;
+    }
+
+    chunks.push(buffer.slice(0, bytesRead));
+  }
+
+  const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const output = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return new TextDecoder().decode(output);
+}
+
+async function restartIbGateway(credentials: Record<string, unknown>) {
+  const containerName = getRestartContainerName(credentials);
+  const path = `/containers/${encodePodmanPathSegment(containerName)}/restart`;
+  const request = [
+    `POST ${path} HTTP/1.1`,
+    "Host: podman",
+    "Content-Length: 0",
+    "Connection: close",
+    "",
+    "",
+  ].join("\r\n");
+
+  const conn = await Deno.connect({
+    transport: "unix",
+    path: PODMAN_SOCKET_PATH,
+  });
+
+  try {
+    await conn.write(new TextEncoder().encode(request));
+    const response = await readConnection(conn);
+    const status = parseHttpStatus(response);
+    if (status >= 200 && status < 300) {
+      return;
+    }
+
+    const body = parseHttpBody(response);
+    throw new Error(
+      body
+        ? `Podman returned ${status}: ${body.slice(0, 500)}`
+        : `Podman returned ${status}`,
+    );
+  } finally {
+    conn.close();
+  }
+}
+
 tickersComposer.command("integrations", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
@@ -289,13 +394,20 @@ tickersComposer.command("restart", async (ctx) => {
   }
 
   try {
-    await ctx.reply("Restarting eyri...");
+    await ctx.reply("Restarting IB Gateway...");
 
-    setTimeout(() => {
-      Deno.exit(0);
-    }, 1_000);
+    const integration = getUserIntegrations(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    ).find((item) => item.kind === "ibkr");
+    if (!integration) {
+      throw new Error("IBKR integration is not configured");
+    }
+
+    await restartIbGateway(integration.credentials);
+    await ctx.reply("IB Gateway restart requested.");
   } catch (error) {
-    await replyIntegrationError(ctx, error);
+    await replyRestartError(ctx, error);
   }
 });
 
