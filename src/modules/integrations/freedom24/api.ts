@@ -5,6 +5,10 @@ type TradernetApiError = {
   message?: unknown;
 };
 
+type TradernetRequestOptions = {
+  onRawResponse?: (text: string) => void;
+};
+
 export type Freedom24PortfolioResponse = {
   result?: {
     ps?: {
@@ -57,6 +61,7 @@ export type Freedom24Quote = {
   op?: string | number;
   close_price?: string | number;
   ClosePrice?: string | number;
+  marketStatus?: string;
 };
 
 export type Freedom24Order = {
@@ -119,6 +124,7 @@ export async function makeTradernetApiRequest<T>(
   secretKey: string,
   cmd: string,
   params: Record<string, string> = {},
+  options: TradernetRequestOptions = {},
 ): Promise<T> {
   const nonce = Date.now().toString();
   let signatureString = `apiKey=${apiKey}&cmd=${cmd}&nonce=${nonce}`;
@@ -146,6 +152,7 @@ export async function makeTradernetApiRequest<T>(
   });
 
   const text = await response.text();
+  options.onRawResponse?.(text);
   let body: unknown;
   try {
     body = text ? JSON.parse(text) : null;

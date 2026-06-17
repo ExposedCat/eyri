@@ -68,6 +68,11 @@ function getPositionTicker(position: Freedom24PortfolioPosition) {
   return position.i?.trim() || position.base_contract_code?.trim() || "UNKNOWN";
 }
 
+function shouldLogRawStockResponse(ticker: string) {
+  const normalizedTicker = ticker.trim().toUpperCase();
+  return normalizedTicker === "CRDO" || normalizedTicker === "CRDO.US";
+}
+
 function getPositionCurrentPrice(quotePrices: QuotePrices | undefined) {
   return quotePrices?.currentPrice ?? null;
 }
@@ -363,15 +368,26 @@ async function fetchOrderHistoryResponse(integration: Integration) {
   return response.orders?.order ?? [];
 }
 
+function isQuoteMarketOpen(quote: Freedom24Quote) {
+  return quote.marketStatus?.trim().toUpperCase() === "OPEN";
+}
+
 function getQuoteCurrentPrice(quote: Freedom24Quote) {
+  if (isQuoteMarketOpen(quote)) {
+    return (
+      normalizePositiveTradernetNumber(quote.bbp) ??
+      normalizePositiveTradernetNumber(quote.ltp)
+    );
+  }
+
   return normalizePositiveTradernetNumber(quote.ltp);
 }
 
 function getQuotePreviousClose(quote: Freedom24Quote) {
   return (
-    normalizePositiveTradernetNumber(quote.pp) ??
     normalizePositiveTradernetNumber(quote.close_price) ??
     normalizePositiveTradernetNumber(quote.ClosePrice) ??
+    normalizePositiveTradernetNumber(quote.pp) ??
     normalizePositiveTradernetNumber(quote.p5)
   );
 }
@@ -386,11 +402,22 @@ async function fetchQuotePrices(
   await Promise.all(
     tickers.map(async (ticker) => {
       try {
+        const logRawResponse = shouldLogRawStockResponse(ticker);
         const response = await makeTradernetApiRequest<Freedom24QuotesResponse>(
           credentials.apiKey,
           credentials.secretKey,
           "getStockQuotesJson",
           { tickers: ticker },
+          logRawResponse
+            ? {
+                onRawResponse: (rawResponse) => {
+                  console.log(
+                    `Raw Freedom24 stock response for ${ticker}:`,
+                    rawResponse,
+                  );
+                },
+              }
+            : undefined,
         );
         const quotes = response.result?.q
           ? Array.isArray(response.result.q)
