@@ -574,6 +574,15 @@ function formatTickerLabel(label: string, linkTag?: string) {
   )}">${formattedLabel}</a>`;
 }
 
+function getDefaultTickerLabelLink(ticker: string) {
+  const usTickerMatch = ticker.match(/^(.+)\.US$/);
+  if (!usTickerMatch) {
+    return undefined;
+  }
+
+  return `${usTickerMatch[1]}:NASDAQ`;
+}
+
 export function formatDecoratedTicker(
   ticker: string,
   decorations?: TickerDecorations,
@@ -584,7 +593,11 @@ export function formatDecoratedTicker(
   const normalizedTicker = normalizeTicker(ticker);
   const labelPreference = labelPreferences?.[normalizedTicker];
   const label = labelPreference === false ? null : (labelPreference ?? ticker);
-  const linkTag = label === null ? undefined : labelLinks?.[normalizedTicker];
+  const linkTag =
+    label === null
+      ? undefined
+      : (labelLinks?.[normalizedTicker] ??
+        getDefaultTickerLabelLink(normalizedTicker));
   const tickerDecorations = decorations?.[normalizedTicker];
   const decorated =
     tickerDecorations && tickerDecorations.length > 0
