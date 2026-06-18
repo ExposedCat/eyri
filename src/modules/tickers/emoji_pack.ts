@@ -2,6 +2,7 @@ import { InputFile, type Api } from "grammy";
 import type { Database } from "../database/setup.ts";
 import { getAllIntegrations } from "../database/integration.ts";
 import { fetchIntegrationOrderHistory } from "../integrations/service.ts";
+import { isDisplayableOrder } from "./portfolio.ts";
 
 type TickerEmojiPackRow = {
   owner_user_id: string;
@@ -177,6 +178,10 @@ async function collectAllHistoryTickers(
     try {
       const orders = await fetchIntegrationOrderHistory(database, integration);
       for (const order of orders) {
+        if (!isDisplayableOrder(order)) {
+          continue;
+        }
+
         upsertCollectedTicker(tickers, order.ticker);
       }
     } catch (error) {

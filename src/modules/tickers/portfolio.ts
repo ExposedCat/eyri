@@ -56,6 +56,10 @@ const formatWholeMoney = (value: number, currency = "USD") =>
 const formatAmount = (value: number) => value.toFixed(2);
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 365.2425 / 12;
+const GAINER_LOSER_SEPARATOR = Array.from(
+  { length: 7 },
+  () => '<tg-emoji emoji-id="5463362738845671608">.</tg-emoji>',
+).join("");
 const optionMonthQuarters: Record<string, string> = {
   JAN: "Q1",
   FEB: "Q1",
@@ -229,15 +233,49 @@ function getSortedIntegratedPositions(
 
 function getSortedIntegratedPerformances(
   performances: IntegratedPositionPerformance[],
+  getChange: (performance: IntegratedPositionPerformance) => number | null = (
+    performance,
+  ) => performance.totalChange,
 ) {
   return [...performances].sort((performanceA, performanceB) => {
-    const totalChangeA = performanceA.totalChange ?? Number.NEGATIVE_INFINITY;
-    const totalChangeB = performanceB.totalChange ?? Number.NEGATIVE_INFINITY;
+    const totalChangeA = getChange(performanceA) ?? Number.NEGATIVE_INFINITY;
+    const totalChangeB = getChange(performanceB) ?? Number.NEGATIVE_INFINITY;
     return (
       totalChangeB - totalChangeA ||
       performanceA.position.ticker.localeCompare(performanceB.position.ticker)
     );
   });
+}
+
+function buildSeparatedChangeLines<T>(
+  items: T[],
+  getChange: (item: T) => number | null,
+  renderLine: (item: T) => string,
+) {
+  const gainers: string[] = [];
+  const losers: string[] = [];
+  const unknown: string[] = [];
+
+  for (const item of items) {
+    const change = getChange(item);
+    const line = renderLine(item);
+    if (change === null) {
+      unknown.push(line);
+    } else if (change < 0) {
+      losers.push(line);
+    } else {
+      gainers.push(line);
+    }
+  }
+
+  return [
+    ...gainers,
+    ...(gainers.length > 0 && losers.length > 0
+      ? [GAINER_LOSER_SEPARATOR]
+      : []),
+    ...losers,
+    ...unknown,
+  ];
 }
 
 function buildIntegratedPositionPerformance(
@@ -421,9 +459,7 @@ function buildIntegratedSoldPerformances(orders: IntegrationOrder[]) {
   const soldByDisplayKey = new Map<string, IntegratedSoldPerformance>();
 
   const sortedOrders = [...orders]
-    .filter(
-      (order) => order.price !== null && !isCurrencyConversionOrder(order),
-    )
+    .filter(isDisplayableOrder)
     .sort((orderA, orderB) => orderA.date.getTime() - orderB.date.getTime());
 
   for (const order of sortedOrders) {
@@ -643,30 +679,34 @@ export async function buildIntegratedPerformanceList({
     ),
   );
 
-  const lines = performances.map((performance) => {
-    const { position } = performance;
-    const tickerName = formatTickerName(
-      position.ticker,
-      tickerDecorations,
-      tickerLabelPreferences,
-      tickerLabelLinks,
-      tickerEmojiMappings,
-      formatTicker,
-    );
-    if (
-      performance.totalChange === null ||
-      performance.totalPercentageChange === null
-    ) {
-      return `${tickerName} ? ? (${performance.elapsedPeriod.label})`;
-    }
+  const lines = buildSeparatedChangeLines(
+    performances,
+    (performance) => performance.totalChange,
+    (performance) => {
+      const { position } = performance;
+      const tickerName = formatTickerName(
+        position.ticker,
+        tickerDecorations,
+        tickerLabelPreferences,
+        tickerLabelLinks,
+        tickerEmojiMappings,
+        formatTicker,
+      );
+      if (
+        performance.totalChange === null ||
+        performance.totalPercentageChange === null
+      ) {
+        return `${tickerName} ? ? (${performance.elapsedPeriod.label})`;
+      }
 
-    return `${tickerName} ${formatMoneyChange(
-      performance.totalPercentageChange,
-      "%",
-    )} ${formatMoneyChange(
-      performance.totalChange,
-    )} (${performance.elapsedPeriod.label})`;
-  });
+      return `${tickerName} ${formatMoneyChange(
+        performance.totalPercentageChange,
+        "%",
+      )} ${formatMoneyChange(
+        performance.totalChange,
+      )} (${performance.elapsedPeriod.label})`;
+    },
+  );
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalLine =
@@ -692,25 +732,29 @@ export async function buildIntegratedSoldPerformanceList({
     return "";
   }
 
-  const lines = performances.map((performance) => {
-    const tickerName = formatTickerName(
-      performance.ticker,
-      tickerDecorations,
-      tickerLabelPreferences,
-      tickerLabelLinks,
-      tickerEmojiMappings,
-      formatTicker,
-    );
-    const elapsedPeriod = getElapsedPeriod(
-      performance.openedAt,
-      performance.closedAt ?? new Date(),
-    );
+  const lines = buildSeparatedChangeLines(
+    performances,
+    (performance) => performance.realizedPnl,
+    (performance) => {
+      const tickerName = formatTickerName(
+        performance.ticker,
+        tickerDecorations,
+        tickerLabelPreferences,
+        tickerLabelLinks,
+        tickerEmojiMappings,
+        formatTicker,
+      );
+      const elapsedPeriod = getElapsedPeriod(
+        performance.openedAt,
+        performance.closedAt ?? new Date(),
+      );
 
-    return `${tickerName} ${formatMoneyChange(
-      performance.realizedPercentageChange,
-      "%",
-    )} ${formatMoneyChange(performance.realizedPnl)} (${elapsedPeriod.label})`;
-  });
+      return `${tickerName} ${formatMoneyChange(
+        performance.realizedPercentageChange,
+        "%",
+      )} ${formatMoneyChange(performance.realizedPnl)} (${elapsedPeriod.label})`;
+    },
+  );
 
   const totals = buildIntegratedSoldTotals(performances);
   const elapsedPeriod = getElapsedPeriod(
@@ -743,28 +787,33 @@ export async function buildIntegratedDailyPerformanceList({
     getSortedIntegratedPositions(positions).map((position) =>
       buildIntegratedPositionPerformance(position, now, priceOverrides),
     ),
+    (performance) => performance.position.dailyPnl,
   );
 
-  const lines = performances.map((performance) => {
-    const { position } = performance;
-    const tickerName = formatTickerName(
-      position.ticker,
-      tickerDecorations,
-      tickerLabelPreferences,
-      tickerLabelLinks,
-      tickerEmojiMappings,
-      formatTicker,
-    );
-    if (position.dailyPnl === null) {
-      return `${tickerName} ? ? today`;
-    }
+  const lines = buildSeparatedChangeLines(
+    performances,
+    (performance) => performance.position.dailyPnl,
+    (performance) => {
+      const { position } = performance;
+      const tickerName = formatTickerName(
+        position.ticker,
+        tickerDecorations,
+        tickerLabelPreferences,
+        tickerLabelLinks,
+        tickerEmojiMappings,
+        formatTicker,
+      );
+      if (position.dailyPnl === null) {
+        return `${tickerName} ? ? today`;
+      }
 
-    const percentage =
-      position.dailyPnlPercentage === null
-        ? "?"
-        : formatMoneyChange(position.dailyPnlPercentage, "%");
-    return `${tickerName} ${percentage} ${formatMoneyChange(position.dailyPnl)} today`;
-  });
+      const percentage =
+        position.dailyPnlPercentage === null
+          ? "?"
+          : formatMoneyChange(position.dailyPnlPercentage, "%");
+      return `${tickerName} ${percentage} ${formatMoneyChange(position.dailyPnl)} today`;
+    },
+  );
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalLine =
@@ -822,6 +871,12 @@ function isCurrencyConversionOrder(order: IntegrationOrder) {
   );
 }
 
+export function isDisplayableOrder(
+  order: IntegrationOrder,
+): order is IntegrationOrder & { price: number } {
+  return order.price !== null && !isCurrencyConversionOrder(order);
+}
+
 function getOrderHistoryKey(order: IntegrationOrder) {
   return [
     order.date.toISOString().slice(0, 10),
@@ -843,11 +898,7 @@ function buildIntegratedHistoryGroups(orders: IntegrationOrder[]) {
   >();
 
   for (const order of orders) {
-    if (
-      order.quantity <= 0 ||
-      order.price === null ||
-      isCurrencyConversionOrder(order)
-    ) {
+    if (order.quantity <= 0 || !isDisplayableOrder(order)) {
       continue;
     }
 
