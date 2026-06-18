@@ -1,4 +1,11 @@
-import { type Contract, EventName, IBApi } from "@stoqey/ib";
+import {
+  type Contract,
+  EventName,
+  type Execution,
+  type ExecutionFilter,
+  IBApi,
+} from "@stoqey/ib";
+import { getAllIntegrations } from "../../database/integration.ts";
 import type { Integration } from "../../database/integration.ts";
 import type { Database } from "../../database/setup.ts";
 import type {
@@ -8,6 +15,10 @@ import type {
 } from "../types.ts";
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
 import { readFlexOrders } from "./flex.ts";
+
+const EXECUTION_SYNC_INTERVAL_MS = 15 * 1000;
+const EXECUTION_CLIENT_ID_OFFSET = 1000;
+const EXECUTION_SYNC_REQUEST_ID = 90_000;
 
 type IbkrConnectionConfig = {
   host: string;
@@ -19,6 +30,17 @@ type IbkrConnectionConfig = {
 
 type IbkrPortfolioPosition = IntegrationPortfolioPosition & {
   conId?: number;
+};
+
+type IbkrExecutionRow = {
+  integration_id: number;
+  account: string | null;
+  ticker: string;
+  date: string;
+  quantity: number;
+  price: number | null;
+  currency: string | null;
+  asset_category: string | null;
 };
 
 function withTimeout<T>(
@@ -40,6 +62,16 @@ function withTimeout<T>(
 
 function normalizeError(error: unknown) {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function normalizeIbkrCallbackError(args: unknown[]) {
+  const message = args.find((arg): arg is string => typeof arg === "string");
+  if (message) {
+    return new Error(message);
+  }
+
+  const error = args.find((arg): arg is Error => arg instanceof Error);
+  return error ?? new Error(args.map(String).join(" "));
 }
 
 function wait(ms: number) {
@@ -136,6 +168,17 @@ function getTicker(contract: Contract) {
   return contract.localSymbol ?? contract.symbol ?? String(contract.conId);
 }
 
+function formatDateKey(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function getTodayUtc() {
+  const today = new Date();
+  return new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
+  );
+}
+
 function normalizeNumber(value: number | undefined) {
   return value === undefined || value === Number.MAX_VALUE ? null : value;
 }
@@ -146,6 +189,227 @@ function normalizePnlNumber(value: number | undefined) {
     value === Number.MAX_VALUE
     ? null
     : value;
+}
+
+function normalizeExecutionNumber(value: number | undefined) {
+  return value === undefined ||
+    !Number.isFinite(value) ||
+    value === Number.MAX_VALUE
+    ? null
+    : value;
+}
+
+function getSignedExecutionQuantity(execution: Execution) {
+  const shares = normalizeExecutionNumber(execution.shares);
+  if (shares === null || shares === 0) {
+    return null;
+  }
+
+  const side = execution.side?.toUpperCase();
+  if (side === "SLD" || side === "SELL" || side === "S") {
+    return -Math.abs(shares);
+  }
+  if (side === "BOT" || side === "BUY" || side === "B") {
+    return Math.abs(shares);
+  }
+
+  return shares;
+}
+
+function parseExecutionDate(value: string | undefined) {
+  if (!value) {
+    return getTodayUtc();
+  }
+
+  const datePart = value.match(/\d{4}-?\d{2}-?\d{2}/)?.[0];
+  if (!datePart) {
+    return getTodayUtc();
+  }
+
+  const normalized = datePart.replaceAll("-", "");
+  const year = Number(normalized.slice(0, 4));
+  const month = Number(normalized.slice(4, 6));
+  const day = Number(normalized.slice(6, 8));
+  if ([year, month, day].some(Number.isNaN)) {
+    return getTodayUtc();
+  }
+
+  return new Date(Date.UTC(year, month - 1, day));
+}
+
+function ensureExecutionSchema(database: Database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS ibkr_executions (
+      integration_id INTEGER NOT NULL,
+      exec_id TEXT NOT NULL,
+      account TEXT,
+      ticker TEXT NOT NULL,
+      date TEXT NOT NULL,
+      quantity REAL NOT NULL,
+      price REAL,
+      currency TEXT,
+      asset_category TEXT,
+      synced_at TEXT NOT NULL,
+      PRIMARY KEY (integration_id, exec_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS ibkr_executions_integration_date_idx
+      ON ibkr_executions(integration_id, date);
+  `);
+}
+
+function toExecutionOrder(
+  integration: Integration,
+  contract: Contract,
+  execution: Execution,
+) {
+  const execId = execution.execId;
+  const quantity = getSignedExecutionQuantity(execution);
+  if (!execId || quantity === null) {
+    return null;
+  }
+
+  return {
+    execId,
+    order: {
+      integrationId: integration.id,
+      integrationKind: integration.kind,
+      account: execution.acctNumber ?? "",
+      ticker: getTicker(contract),
+      date: parseExecutionDate(execution.time),
+      quantity,
+      price: normalizeExecutionNumber(execution.price),
+      currency: contract.currency ?? "USD",
+      assetCategory: contract.secType ?? null,
+    },
+  };
+}
+
+function writeExecutionOrders(
+  database: Database,
+  integration: Integration,
+  orders: { execId: string; order: IntegrationOrder }[],
+) {
+  ensureExecutionSchema(database);
+  const syncedAt = new Date().toISOString();
+  const insertExecution = database.prepare(`
+    INSERT INTO ibkr_executions (
+      integration_id,
+      exec_id,
+      account,
+      ticker,
+      date,
+      quantity,
+      price,
+      currency,
+      asset_category,
+      synced_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(integration_id, exec_id) DO UPDATE SET
+      account = excluded.account,
+      ticker = excluded.ticker,
+      date = excluded.date,
+      quantity = excluded.quantity,
+      price = excluded.price,
+      currency = excluded.currency,
+      asset_category = excluded.asset_category,
+      synced_at = excluded.synced_at
+  `);
+
+  for (const { execId, order } of orders) {
+    insertExecution.run(
+      integration.id,
+      execId,
+      order.account,
+      order.ticker,
+      formatDateKey(order.date),
+      order.quantity,
+      order.price,
+      order.currency,
+      order.assetCategory,
+      syncedAt,
+    );
+  }
+}
+
+async function fetchTodayExecutions(
+  api: IBApi,
+  integration: Integration,
+  accountId: string,
+  config: IbkrConnectionConfig,
+) {
+  const orders: { execId: string; order: IntegrationOrder }[] = [];
+  const filter: ExecutionFilter = { acctCode: accountId };
+
+  await withTimeout(
+    new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        api.off(EventName.execDetails, onExecDetails);
+        api.off(EventName.execDetailsEnd, onExecDetailsEnd);
+        api.off(EventName.error, onError);
+      };
+      const onExecDetails = (
+        reqId: number,
+        contract: Contract,
+        execution: Execution,
+      ) => {
+        if (reqId !== EXECUTION_SYNC_REQUEST_ID) {
+          return;
+        }
+
+        const order = toExecutionOrder(integration, contract, execution);
+        if (order) {
+          orders.push(order);
+        }
+      };
+      const onExecDetailsEnd = (reqId: number) => {
+        if (reqId !== EXECUTION_SYNC_REQUEST_ID) {
+          return;
+        }
+
+        cleanup();
+        resolve();
+      };
+      const onError = (...args: unknown[]) => {
+        cleanup();
+        reject(normalizeIbkrCallbackError(args));
+      };
+
+      api.on(EventName.execDetails, onExecDetails);
+      api.once(EventName.execDetailsEnd, onExecDetailsEnd);
+      api.once(EventName.error, onError);
+      api.reqExecutions(EXECUTION_SYNC_REQUEST_ID, filter);
+    }),
+    config.timeoutMs,
+    `Timed out waiting for IBKR executions for ${accountId}`,
+  );
+
+  return orders;
+}
+
+async function syncIntegrationExecutions(
+  database: Database,
+  integration: Integration,
+) {
+  const { config } = getConnectionConfig(integration);
+  const executionConfig = {
+    ...config,
+    clientId: config.clientId + EXECUTION_CLIENT_ID_OFFSET,
+  };
+  const api = await connect(executionConfig);
+
+  try {
+    const accountId = await getManagedAccount(api, executionConfig);
+    const orders = await fetchTodayExecutions(
+      api,
+      integration,
+      accountId,
+      executionConfig,
+    );
+    writeExecutionOrders(database, integration, orders);
+  } finally {
+    api.disconnect();
+  }
 }
 
 function toPortfolioPosition(
@@ -483,6 +747,120 @@ function getConnectionConfig(integration: Integration) {
   };
 }
 
+export async function syncIbkrExecutions(database: Database) {
+  const integrations = getAllIntegrations(database).filter(
+    (integration) => integration.kind === "ibkr",
+  );
+
+  for (const integration of integrations) {
+    try {
+      await syncIntegrationExecutions(database, integration);
+    } catch (error) {
+      console.error(
+        `Failed to sync IBKR executions integration=${integration.id}:`,
+        error,
+      );
+    }
+  }
+}
+
+let isExecutionSyncRunning = false;
+let executionSyncTimer: number | null = null;
+
+export function startIbkrExecutionSyncLoop(database: Database) {
+  ensureExecutionSchema(database);
+  if (executionSyncTimer !== null) {
+    return;
+  }
+
+  const run = async () => {
+    if (isExecutionSyncRunning) {
+      return;
+    }
+
+    isExecutionSyncRunning = true;
+    try {
+      await syncIbkrExecutions(database);
+    } finally {
+      isExecutionSyncRunning = false;
+    }
+  };
+
+  executionSyncTimer = setInterval(run, EXECUTION_SYNC_INTERVAL_MS);
+  run();
+}
+
+export function readExecutionOrders(
+  database: Database,
+  integration: Integration,
+): IntegrationOrder[] {
+  ensureExecutionSchema(database);
+  const rows = database
+    .prepare(`
+      SELECT
+        integration_id,
+        account,
+        ticker,
+        date,
+        quantity,
+        price,
+        currency,
+        asset_category
+      FROM ibkr_executions
+      WHERE integration_id = ?
+      ORDER BY date
+    `)
+    .all(integration.id) as IbkrExecutionRow[];
+
+  return rows.map((row) => ({
+    integrationId: row.integration_id,
+    integrationKind: integration.kind,
+    account: row.account ?? "",
+    ticker: row.ticker,
+    date: new Date(row.date),
+    quantity: row.quantity,
+    price: row.price,
+    currency: row.currency ?? "USD",
+    assetCategory: row.asset_category,
+  }));
+}
+
+function getOrderMergeKey(order: IntegrationOrder) {
+  return [
+    formatDateKey(order.date),
+    order.ticker,
+    order.quantity,
+    order.price ?? "",
+    order.currency,
+    order.assetCategory ?? "",
+  ].join(":");
+}
+
+function readIbkrOrders(database: Database, integration: Integration) {
+  const merged = new Map<string, IntegrationOrder>();
+  const flexOrders = readFlexOrders(database, integration);
+  const latestFlexDate = flexOrders.reduce(
+    (latest, order) =>
+      latest === null || order.date > latest ? order.date : latest,
+    null as Date | null,
+  );
+
+  for (const order of flexOrders) {
+    merged.set(getOrderMergeKey(order), order);
+  }
+  for (const order of readExecutionOrders(database, integration)) {
+    if (latestFlexDate && order.date <= latestFlexDate) {
+      continue;
+    }
+
+    merged.set(getOrderMergeKey(order), order);
+  }
+
+  return [...merged.values()].sort(
+    (a, b) => a.date.getTime() - b.date.getTime(),
+  );
+}
+
 export const ibkrAdapter: IntegrationAdapter = {
   async fetchPortfolio(database: Database, integration: Integration) {
     const { config } = getConnectionConfig(integration);
@@ -504,7 +882,7 @@ export const ibkrAdapter: IntegrationAdapter = {
       );
       return enrichPortfolioWithOrders(
         positionsWithDailyPnl,
-        readFlexOrders(database, integration),
+        readIbkrOrders(database, integration),
       );
     } finally {
       api.disconnect();
@@ -512,7 +890,7 @@ export const ibkrAdapter: IntegrationAdapter = {
   },
 
   async fetchOrderHistory(database: Database, integration: Integration) {
-    return readFlexOrders(database, integration);
+    return readIbkrOrders(database, integration);
   },
 
   async probe(integration: Integration) {

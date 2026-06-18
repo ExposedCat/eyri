@@ -8,7 +8,7 @@ import { type IbkrCredentials, parseIbkrCredentials } from "./credentials.ts";
 
 const FLEX_BASE_URL =
   "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService";
-const FLEX_SYNC_INTERVAL_MS = 10 * 1000;
+const FLEX_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const FLEX_BATCH_DAYS = 365;
 const DEFAULT_FLEX_MAX_YEARS = 5;
 

@@ -31,6 +31,7 @@ import {
   buildIntegratedDailyPerformanceList,
   buildIntegratedHistory,
   buildIntegratedPerformanceList,
+  buildIntegratedSoldPerformanceList,
   buildIntegratedTickerList,
   formatOptionTicker,
   isOptionPosition,
@@ -717,6 +718,56 @@ tickersComposer.command("perf", async (ctx) => {
     );
     const performanceList = await buildIntegratedPerformanceList({
       positions,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
+    });
+
+    if (performanceList.length === 0) {
+      await ctx.text("no_positions");
+      return;
+    }
+
+    await ctx.reply(performanceList, htmlReplyOptions);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
+tickersComposer.command("sold", async (ctx) => {
+  if (!ctx.dbEntities.user || !ctx.from) {
+    await ctx.text("start");
+    return;
+  }
+
+  const preferences = await readTickerDisplayPreferences(ctx.from.id);
+  const {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  } = preferences;
+  const formatTicker = createTickerFormatter({
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  });
+
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
+    return;
+  }
+
+  try {
+    const orders = await fetchIntegratedOrderHistory(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    const performanceList = await buildIntegratedSoldPerformanceList({
+      orders,
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,

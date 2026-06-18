@@ -48,6 +48,7 @@ const botCommands = [
   { command: "stocks", description: "Show stock performance" },
   { command: "options", description: "Show option performance" },
   { command: "perf", description: "Show concise performance" },
+  { command: "sold", description: "Show sold position performance" },
   { command: "dpnl", description: "Show daily PnL" },
   { command: "history", description: "Show order history" },
   { command: "when", description: "Preview performance at target prices" },

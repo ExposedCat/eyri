@@ -29,6 +29,10 @@ type BuildIntegratedHistoryArgs = {
   tickerEmojiMappings?: TickerEmojiMappings;
 };
 
+type BuildIntegratedSoldPerformanceArgs = BuildIntegratedHistoryArgs & {
+  formatTicker?: (ticker: string) => string;
+};
+
 type IntegratedPositionPerformance = {
   position: IntegrationPortfolioPosition;
   currentPrice: number | null;
@@ -383,6 +387,149 @@ function buildIntegratedPortfolioTotals(
   };
 }
 
+type IntegratedSoldPerformance = {
+  ticker: string;
+  currency: string;
+  cost: number;
+  proceeds: number;
+  realizedPnl: number;
+  realizedPercentageChange: number;
+  openedAt: Date | null;
+  closedAt: Date | null;
+};
+
+function getOrderPositionKey(order: IntegrationOrder) {
+  return [
+    order.integrationId,
+    order.account.trim().toUpperCase(),
+    order.ticker.trim().toUpperCase(),
+    order.currency.trim().toUpperCase(),
+  ].join(":");
+}
+
+function buildIntegratedSoldPerformances(orders: IntegrationOrder[]) {
+  const lotsByKey = new Map<
+    string,
+    {
+      ticker: string;
+      currency: string;
+      quantity: number;
+      price: number;
+      date: Date;
+    }[]
+  >();
+  const soldByDisplayKey = new Map<string, IntegratedSoldPerformance>();
+
+  const sortedOrders = [...orders]
+    .filter(
+      (order) => order.price !== null && !isCurrencyConversionOrder(order),
+    )
+    .sort((orderA, orderB) => orderA.date.getTime() - orderB.date.getTime());
+
+  for (const order of sortedOrders) {
+    const orderKey = getOrderPositionKey(order);
+    const lots = lotsByKey.get(orderKey) ?? [];
+
+    if (order.quantity > 0) {
+      lots.push({
+        ticker: order.ticker,
+        currency: order.currency,
+        quantity: order.quantity,
+        price: order.price ?? 0,
+        date: order.date,
+      });
+      lotsByKey.set(orderKey, lots);
+      continue;
+    }
+
+    let remainingSellQuantity = Math.abs(order.quantity);
+    while (remainingSellQuantity > 0 && lots.length > 0) {
+      const lot = lots[0];
+      const quantity = Math.min(lot.quantity, remainingSellQuantity);
+      const cost = quantity * lot.price;
+      const proceeds = quantity * (order.price ?? 0);
+      const realizedPnl = proceeds - cost;
+      const displayKey = [
+        order.ticker.trim().toUpperCase(),
+        order.currency.trim().toUpperCase(),
+      ].join(":");
+      const sold = soldByDisplayKey.get(displayKey) ?? {
+        ticker: order.ticker,
+        currency: order.currency,
+        cost: 0,
+        proceeds: 0,
+        realizedPnl: 0,
+        realizedPercentageChange: 0,
+        openedAt: null,
+        closedAt: null,
+      };
+
+      sold.cost += cost;
+      sold.proceeds += proceeds;
+      sold.realizedPnl += realizedPnl;
+      sold.openedAt =
+        sold.openedAt === null || lot.date < sold.openedAt
+          ? lot.date
+          : sold.openedAt;
+      sold.closedAt =
+        sold.closedAt === null || order.date > sold.closedAt
+          ? order.date
+          : sold.closedAt;
+      sold.realizedPercentageChange =
+        sold.cost === 0 ? 0 : (sold.realizedPnl / sold.cost) * 100;
+      soldByDisplayKey.set(displayKey, sold);
+
+      lot.quantity -= quantity;
+      remainingSellQuantity -= quantity;
+      if (lot.quantity <= 0) {
+        lots.shift();
+      }
+    }
+
+    lotsByKey.set(orderKey, lots);
+  }
+
+  return [...soldByDisplayKey.values()].sort(
+    (soldA, soldB) =>
+      soldB.realizedPnl - soldA.realizedPnl ||
+      soldA.ticker.localeCompare(soldB.ticker),
+  );
+}
+
+function buildIntegratedSoldTotals(performances: IntegratedSoldPerformance[]) {
+  const totals = performances.reduce(
+    (totals, performance) => {
+      totals.cost += performance.cost;
+      totals.proceeds += performance.proceeds;
+      totals.realizedPnl += performance.realizedPnl;
+      totals.openedAt =
+        performance.openedAt &&
+        (totals.openedAt === null || performance.openedAt < totals.openedAt)
+          ? performance.openedAt
+          : totals.openedAt;
+      totals.closedAt =
+        performance.closedAt &&
+        (totals.closedAt === null || performance.closedAt > totals.closedAt)
+          ? performance.closedAt
+          : totals.closedAt;
+      return totals;
+    },
+    {
+      cost: 0,
+      proceeds: 0,
+      realizedPnl: 0,
+      openedAt: null as Date | null,
+      closedAt: null as Date | null,
+    },
+  );
+
+  return {
+    ...totals,
+    realizedPercentageChange:
+      totals.cost === 0 ? 0 : (totals.realizedPnl / totals.cost) * 100,
+  };
+}
+
 export async function buildIntegratedTickerList({
   positions,
   priceOverrides,
@@ -528,6 +675,52 @@ export async function buildIntegratedPerformanceList({
       : `Total: ${formatMoneyChange(totals.totalPercentageChange, "%")} ${formatMoneyChange(
           totals.totalChange,
         )} (${totals.elapsedPeriod.label})`;
+
+  return [...lines, totalLine].join("\n\n");
+}
+
+export async function buildIntegratedSoldPerformanceList({
+  orders,
+  tickerDecorations,
+  tickerLabelPreferences,
+  tickerLabelLinks,
+  tickerEmojiMappings,
+  formatTicker,
+}: BuildIntegratedSoldPerformanceArgs) {
+  const performances = buildIntegratedSoldPerformances(orders);
+  if (performances.length === 0) {
+    return "";
+  }
+
+  const lines = performances.map((performance) => {
+    const tickerName = formatTickerName(
+      performance.ticker,
+      tickerDecorations,
+      tickerLabelPreferences,
+      tickerLabelLinks,
+      tickerEmojiMappings,
+      formatTicker,
+    );
+    const elapsedPeriod = getElapsedPeriod(
+      performance.openedAt,
+      performance.closedAt ?? new Date(),
+    );
+
+    return `${tickerName} ${formatMoneyChange(
+      performance.realizedPercentageChange,
+      "%",
+    )} ${formatMoneyChange(performance.realizedPnl)} (${elapsedPeriod.label})`;
+  });
+
+  const totals = buildIntegratedSoldTotals(performances);
+  const elapsedPeriod = getElapsedPeriod(
+    totals.openedAt,
+    totals.closedAt ?? new Date(),
+  );
+  const totalLine = `Total: ${formatMoneyChange(
+    totals.realizedPercentageChange,
+    "%",
+  )} ${formatMoneyChange(totals.realizedPnl)} (${elapsedPeriod.label})`;
 
   return [...lines, totalLine].join("\n\n");
 }

@@ -2,6 +2,7 @@ import { validateEnv } from "../../utils/env.ts";
 import { createBot, setupBotCommands } from "../bot/setup.ts";
 import type { Database } from "../database/setup.ts";
 import { connectToDb } from "../database/setup.ts";
+import { startIbkrExecutionSyncLoop } from "../integrations/ibkr/adapter.ts";
 import { startFlexSyncLoop } from "../integrations/ibkr/flex.ts";
 
 export async function startApp() {
@@ -44,5 +45,16 @@ export async function startApp() {
     console.log("Flex sync loop started");
   } catch (error) {
     console.error("Error occurred while starting Flex sync loop:", error);
+  }
+
+  try {
+    console.log("Starting IBKR execution sync loop...");
+    startIbkrExecutionSyncLoop(database);
+    console.log("IBKR execution sync loop started");
+  } catch (error) {
+    console.error(
+      "Error occurred while starting IBKR execution sync loop:",
+      error,
+    );
   }
 }
