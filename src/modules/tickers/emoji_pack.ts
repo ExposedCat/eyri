@@ -1,7 +1,7 @@
 import { InputFile, type Api } from "grammy";
 import type { Database } from "../database/setup.ts";
 import { getAllIntegrations } from "../database/integration.ts";
-import { fetchIntegrationPortfolio } from "../integrations/service.ts";
+import { fetchIntegrationOrderHistory } from "../integrations/service.ts";
 
 type TickerEmojiPackRow = {
   owner_user_id: string;
@@ -148,7 +148,26 @@ function toPortfolioTickerIcon(ticker: string): PortfolioTickerIcon {
   };
 }
 
-async function collectAllPortfolioTickers(
+function upsertCollectedTicker(
+  tickers: Map<string, PortfolioTickerIcon>,
+  tickerName: string,
+) {
+  const ticker = toPortfolioTickerIcon(tickerName);
+  if (!ticker.ticker) {
+    return;
+  }
+
+  const existingTicker = tickers.get(ticker.ticker);
+  if (existingTicker) {
+    existingTicker.aliases = [
+      ...new Set([...existingTicker.aliases, ...ticker.aliases]),
+    ].sort();
+  } else {
+    tickers.set(ticker.ticker, ticker);
+  }
+}
+
+async function collectAllHistoryTickers(
   database: Database,
 ): Promise<{ tickers: PortfolioTickerIcon[]; errors: string[] }> {
   const tickers = new Map<string, PortfolioTickerIcon>();
@@ -156,19 +175,9 @@ async function collectAllPortfolioTickers(
 
   for (const integration of getAllIntegrations(database)) {
     try {
-      const positions = await fetchIntegrationPortfolio(database, integration);
-      for (const position of positions) {
-        const ticker = toPortfolioTickerIcon(position.ticker);
-        if (ticker.ticker) {
-          const existingTicker = tickers.get(ticker.ticker);
-          if (existingTicker) {
-            existingTicker.aliases = [
-              ...new Set([...existingTicker.aliases, ...ticker.aliases]),
-            ].sort();
-          } else {
-            tickers.set(ticker.ticker, ticker);
-          }
-        }
+      const orders = await fetchIntegrationOrderHistory(database, integration);
+      for (const order of orders) {
+        upsertCollectedTicker(tickers, order.ticker);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -395,7 +404,7 @@ export async function syncTickerEmojiPack({
     ? getPackName(ownerUserId, bot.username, true)
     : (existingPack?.pack_name ?? getPackName(ownerUserId, bot.username));
   const packTitle = getPackTitle(ownerUserId);
-  const { tickers, errors } = await collectAllPortfolioTickers(database);
+  const { tickers, errors } = await collectAllHistoryTickers(database);
 
   if (tickers.length === 0) {
     throw new Error("No tickers were returned by configured integrations");

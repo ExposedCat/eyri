@@ -161,6 +161,14 @@ export async function fetchIntegrationPortfolio(
   return await adapter.fetchPortfolio(database, integration);
 }
 
+export async function fetchIntegrationOrderHistory(
+  database: Database,
+  integration: Integration,
+) {
+  const adapter = getAdapter(integration);
+  return await adapter.fetchOrderHistory(database, integration);
+}
+
 export async function fetchIntegratedOrderHistory(
   database: Database,
   userId: number,
