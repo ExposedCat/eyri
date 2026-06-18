@@ -14,6 +14,7 @@ import {
 type BuildIntegratedTickerListArgs = {
   positions: IntegrationPortfolioPosition[];
   priceOverrides?: Record<string, number>;
+  separateGainersLosers?: boolean;
   tickerDecorations?: TickerDecorations;
   tickerLabelPreferences?: TickerLabelPreferences;
   tickerLabelLinks?: TickerLabelLinks;
@@ -57,7 +58,7 @@ const formatAmount = (value: number) => value.toFixed(2);
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 365.2425 / 12;
 const GAINER_LOSER_SEPARATOR = Array.from(
-  { length: 7 },
+  { length: 12 },
   () => '<tg-emoji emoji-id="5463362738845671608">➖</tg-emoji>',
 ).join("");
 const optionMonthQuarters: Record<string, string> = {
@@ -569,6 +570,7 @@ function buildIntegratedSoldTotals(performances: IntegratedSoldPerformance[]) {
 export async function buildIntegratedTickerList({
   positions,
   priceOverrides,
+  separateGainersLosers = false,
   tickerDecorations,
   tickerLabelPreferences,
   tickerLabelLinks,
@@ -586,7 +588,7 @@ export async function buildIntegratedTickerList({
     ),
   );
 
-  const tickerLines = performances.map((performance) => {
+  const renderTickerLine = (performance: IntegratedPositionPerformance) => {
     const { position } = performance;
     const tickerName = formatTickerName(
       position.ticker,
@@ -639,7 +641,14 @@ export async function buildIntegratedTickerList({
         position.currency,
       )} x ${performance.elapsedPeriod.label} (${monthlySummary})`,
     ].join("\n");
-  });
+  };
+  const tickerLines = separateGainersLosers
+    ? buildSeparatedChangeLines(
+        performances,
+        (performance) => performance.totalChange,
+        renderTickerLine,
+      )
+    : performances.map(renderTickerLine);
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalSummary =

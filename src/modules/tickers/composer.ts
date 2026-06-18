@@ -569,6 +569,7 @@ tickersComposer.command("stocks", async (ctx) => {
     );
     const priceList = await buildIntegratedTickerList({
       positions: positions.filter(isStockPosition),
+      separateGainersLosers: true,
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
@@ -618,6 +619,7 @@ tickersComposer.command("options", async (ctx) => {
     );
     const priceList = await buildIntegratedTickerList({
       positions: positions.filter(isOptionPosition),
+      separateGainersLosers: true,
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
