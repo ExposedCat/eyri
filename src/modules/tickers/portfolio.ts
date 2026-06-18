@@ -617,14 +617,14 @@ export async function buildIntegratedTickerList({
 
     const monthlySummary =
       performance.elapsedPeriod.months === null
-        ? "? ?/m"
+        ? "? ?"
         : `${formatMoneyChange(
             performance.totalChange / performance.elapsedPeriod.months,
           )} ${formatMoneyChange(
             performance.totalPercentageChange /
               performance.elapsedPeriod.months,
             "%",
-          )}/m`;
+          )}`;
 
     return [
       `${tickerName} ${formatMoneyChange(performance.totalChange)} ${formatMoneyChange(
