@@ -58,7 +58,7 @@ const formatAmount = (value: number) => value.toFixed(2);
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 365.2425 / 12;
 const GAINER_LOSER_SEPARATOR = Array.from(
-  { length: 12 },
+  { length: 10 },
   () => '<tg-emoji emoji-id="5463362738845671608">➖</tg-emoji>',
 ).join("");
 const optionMonthQuarters: Record<string, string> = {
