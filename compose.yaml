@@ -23,6 +23,8 @@ services:
       - ib_gateway
     env_file:
       - .env
+    environment:
+      PODMAN_SOCKET_PATH: /run/podman/podman.sock
     healthcheck:
       test:
         [
@@ -33,9 +35,11 @@ services:
       timeout: 45s
       start_period: 2m
       retries: 1
+    security_opt:
+      - label=disable
     volumes:
       - eyri-data:/app/data
-      - ${XDG_RUNTIME_DIR}/podman/podman.sock:/run/podman/podman.sock
+      - ${XDG_RUNTIME_DIR}/podman/podman.sock:/run/podman/podman.sock:rw
 
 volumes:
   ib-gateway-settings:

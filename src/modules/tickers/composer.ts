@@ -215,7 +215,11 @@ async function replyRestartError(ctx: CustomContext, error: unknown) {
   );
 }
 
-const PODMAN_SOCKET_PATH = "/run/podman/podman.sock";
+const DEFAULT_PODMAN_SOCKET_PATH = "/run/podman/podman.sock";
+
+function getPodmanSocketPath() {
+  return Deno.env.get("PODMAN_SOCKET_PATH") ?? DEFAULT_PODMAN_SOCKET_PATH;
+}
 
 function getRestartContainerName(credentials: Record<string, unknown>) {
   const instanceUrl = credentials.instanceUrl;
@@ -277,6 +281,7 @@ async function readConnection(conn: Deno.Conn) {
 
 async function restartIbGateway(credentials: Record<string, unknown>) {
   const containerName = getRestartContainerName(credentials);
+  const socketPath = getPodmanSocketPath();
   const path = `/containers/${encodePodmanPathSegment(containerName)}/restart`;
   const request = [
     `POST ${path} HTTP/1.1`,
@@ -287,10 +292,27 @@ async function restartIbGateway(credentials: Record<string, unknown>) {
     "",
   ].join("\r\n");
 
-  const conn = await Deno.connect({
-    transport: "unix",
-    path: PODMAN_SOCKET_PATH,
-  });
+  let conn: Deno.Conn;
+  try {
+    conn = await Deno.connect({
+      transport: "unix",
+      path: socketPath,
+    });
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      throw new Error(
+        `Podman socket not found at ${socketPath}. Start the host user socket with "systemctl --user enable --now podman.socket" and mount it into the app container.`,
+      );
+    }
+
+    if (error instanceof Deno.errors.PermissionDenied) {
+      throw new Error(
+        `Podman socket at ${socketPath} is not accessible from the app container. Mount the host socket read-write and disable SELinux container labeling for this service.`,
+      );
+    }
+
+    throw error;
+  }
 
   try {
     await conn.write(new TextEncoder().encode(request));

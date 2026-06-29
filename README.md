@@ -25,3 +25,14 @@ user's IBKR integration. The bot derives the container name from the saved IBKR
 
 The app container talks to the host Podman API through
 `/run/podman/podman.sock`, which is mounted by `compose.yaml`.
+
+Before starting the compose stack, enable the host user Podman socket:
+
+```sh
+systemctl --user enable --now podman.socket
+```
+
+`eyri_app` mounts that socket read-write and disables SELinux container
+labeling for the service so `/restart` can connect to the socket from inside
+the app container. If you use a different in-container socket path, set
+`PODMAN_SOCKET_PATH` to match it.
