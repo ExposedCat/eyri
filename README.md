@@ -16,6 +16,19 @@ an Interactive Brokers integration for the current user.
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
 
+## Buckets
+
+Use `/buckets` to list buckets, `/bucket new NAME` to create one, and
+`/bucket remove NAME` to delete one. Bucket names can contain up to 20 letters,
+numbers, and underscores, and must start with a letter.
+
+Use `/bucket move NAME` to render order history with `/move_NAME_IDX` and
+`/remove_NAME_IDX` shortcuts. Moving a transaction puts it in that bucket and
+removes it from any other bucket. Unbucketed `/perf`, `/stocks`, `/options`,
+`/dpnl`, and `/history` views exclude bucketed transactions; pass `NAME` to
+`/perf NAME`, `/stocks NAME`, `/options NAME`, `/dpnl NAME`, or `/history NAME`
+to view a bucket.
+
 ## Restarting IB Gateway
 
 Use `/restart` in Telegram to request an IB Gateway restart for the current

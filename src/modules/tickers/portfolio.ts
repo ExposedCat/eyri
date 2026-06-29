@@ -28,10 +28,30 @@ type BuildIntegratedHistoryArgs = {
   tickerLabelPreferences?: TickerLabelPreferences;
   tickerLabelLinks?: TickerLabelLinks;
   tickerEmojiMappings?: TickerEmojiMappings;
+  formatLineSuffix?: (
+    group: IntegratedHistoryGroup,
+    displayIndex: number,
+  ) => string;
 };
 
 type BuildIntegratedSoldPerformanceArgs = BuildIntegratedHistoryArgs & {
   formatTicker?: (ticker: string) => string;
+};
+
+type BuildBucketedPortfolioPositionsArgs = {
+  orders: IntegrationOrder[];
+  livePositions: IntegrationPortfolioPosition[];
+  transactionBuckets: Map<string, string>;
+  bucketName: string | null;
+};
+
+export type IntegratedHistoryGroup = {
+  transactionKey: string;
+  date: Date;
+  ticker: string;
+  currency: string;
+  quantity: number;
+  total: number;
 };
 
 type IntegratedPositionPerformance = {
@@ -57,6 +77,7 @@ const formatWholeMoney = (value: number, currency = "USD") =>
 const formatAmount = (value: number) => value.toFixed(2);
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 365.2425 / 12;
+const FLOAT_EPSILON = 1e-9;
 const GAINER_LOSER_SEPARATOR = Array.from(
   { length: 10 },
   () => '<tg-emoji emoji-id="5463362738845671608">➖</tg-emoji>',
@@ -217,6 +238,33 @@ function getPriceOverride(
   ticker: string,
 ) {
   return priceOverrides?.[ticker] ?? priceOverrides?.[ticker.toUpperCase()];
+}
+
+function normalizePositionKeyPart(value: string) {
+  return value.trim().toUpperCase();
+}
+
+export function getOrderTransactionKey(order: IntegrationOrder) {
+  return JSON.stringify([
+    order.date.toISOString().slice(0, 10),
+    normalizePositionKeyPart(order.ticker),
+    normalizePositionKeyPart(order.currency),
+  ]);
+}
+
+function getBucketLotKey(order: IntegrationOrder) {
+  return JSON.stringify([
+    order.integrationId,
+    normalizePositionKeyPart(order.ticker),
+    normalizePositionKeyPart(order.currency),
+  ]);
+}
+
+function getPositionDisplayKey(ticker: string, currency: string) {
+  return JSON.stringify([
+    normalizePositionKeyPart(ticker),
+    normalizePositionKeyPart(currency),
+  ]);
 }
 
 function getSortedIntegratedPositions(
@@ -886,33 +934,197 @@ export function isDisplayableOrder(
   return order.price !== null && !isCurrencyConversionOrder(order);
 }
 
-function getOrderHistoryKey(order: IntegrationOrder) {
-  return [
-    order.date.toISOString().slice(0, 10),
-    order.ticker,
-    order.currency,
-  ].join(":");
+export function filterHistoryOrdersByBucket(
+  orders: IntegrationOrder[],
+  transactionBuckets: Map<string, string>,
+  bucketName: string | null,
+) {
+  return orders.filter((order) => {
+    if (order.quantity <= 0 || !isDisplayableOrder(order)) {
+      return false;
+    }
+
+    return (
+      (transactionBuckets.get(getOrderTransactionKey(order)) ?? null) ===
+      bucketName
+    );
+  });
 }
 
-function buildIntegratedHistoryGroups(orders: IntegrationOrder[]) {
-  const grouped = new Map<
-    string,
-    {
-      date: Date;
-      ticker: string;
-      currency: string;
-      quantity: number;
-      total: number;
+export function buildBucketedPortfolioPositions({
+  orders,
+  livePositions,
+  transactionBuckets,
+  bucketName,
+}: BuildBucketedPortfolioPositionsArgs) {
+  type OpenLot = {
+    integrationId: number;
+    integrationKind: string;
+    account: string;
+    ticker: string;
+    currency: string;
+    quantity: number;
+    price: number;
+    date: Date;
+    bucketName: string | null;
+  };
+
+  type PositionDraft = {
+    integrationId: number;
+    integrationKind: string;
+    accounts: Set<string>;
+    ticker: string;
+    currency: string;
+    amount: number;
+    totalInput: number;
+    openedAt: Date | null;
+  };
+
+  const livePositionsByKey = new Map<string, IntegrationPortfolioPosition>();
+  for (const position of livePositions) {
+    const key = getPositionDisplayKey(position.ticker, position.currency);
+    if (!livePositionsByKey.has(key)) {
+      livePositionsByKey.set(key, position);
     }
-  >();
+  }
+
+  const lotsByKey = new Map<string, OpenLot[]>();
+  const sortedOrders = [...orders]
+    .filter(isDisplayableOrder)
+    .sort((orderA, orderB) => orderA.date.getTime() - orderB.date.getTime());
+
+  for (const order of sortedOrders) {
+    const key = getBucketLotKey(order);
+    const lots = lotsByKey.get(key) ?? [];
+
+    if (order.quantity > 0) {
+      lots.push({
+        integrationId: order.integrationId,
+        integrationKind: order.integrationKind,
+        account: order.account,
+        ticker: order.ticker,
+        currency: order.currency,
+        quantity: order.quantity,
+        price: order.price,
+        date: order.date,
+        bucketName:
+          transactionBuckets.get(getOrderTransactionKey(order)) ?? null,
+      });
+      lotsByKey.set(key, lots);
+      continue;
+    }
+
+    let remainingSellQuantity = Math.abs(order.quantity);
+    while (remainingSellQuantity > FLOAT_EPSILON && lots.length > 0) {
+      const lot = lots[0];
+      const consumedQuantity = Math.min(lot.quantity, remainingSellQuantity);
+      lot.quantity -= consumedQuantity;
+      remainingSellQuantity -= consumedQuantity;
+      if (lot.quantity <= FLOAT_EPSILON) {
+        lots.shift();
+      }
+    }
+
+    lotsByKey.set(key, lots);
+  }
+
+  const drafts = new Map<string, PositionDraft>();
+  for (const lots of lotsByKey.values()) {
+    for (const lot of lots) {
+      if (lot.quantity <= FLOAT_EPSILON || lot.bucketName !== bucketName) {
+        continue;
+      }
+
+      const key = getPositionDisplayKey(lot.ticker, lot.currency);
+      const draft = drafts.get(key) ?? {
+        integrationId: lot.integrationId,
+        integrationKind: lot.integrationKind,
+        accounts: new Set<string>(),
+        ticker: lot.ticker,
+        currency: lot.currency,
+        amount: 0,
+        totalInput: 0,
+        openedAt: null,
+      };
+
+      if (lot.account) {
+        draft.accounts.add(lot.account);
+      }
+      draft.amount += lot.quantity;
+      draft.totalInput += lot.quantity * lot.price;
+      draft.openedAt =
+        draft.openedAt === null || lot.date < draft.openedAt
+          ? lot.date
+          : draft.openedAt;
+      drafts.set(key, draft);
+    }
+  }
+
+  const positions = [...drafts.entries()].flatMap(([key, draft]) => {
+    if (draft.amount <= FLOAT_EPSILON) {
+      return [];
+    }
+
+    const livePosition = livePositionsByKey.get(key);
+    const currentPrice = livePosition?.currentPrice ?? null;
+    const totalNow = currentPrice === null ? null : draft.amount * currentPrice;
+    const liveAmount = Math.abs(livePosition?.amount ?? 0);
+    const liveShare =
+      liveAmount <= FLOAT_EPSILON ? null : draft.amount / liveAmount;
+    const dailyPnl =
+      liveShare === null ||
+      livePosition?.dailyPnl === null ||
+      livePosition?.dailyPnl === undefined
+        ? null
+        : livePosition.dailyPnl * liveShare;
+    const dailyPnlBaseline =
+      liveShare === null ||
+      livePosition?.dailyPnlBaseline === null ||
+      livePosition?.dailyPnlBaseline === undefined
+        ? null
+        : livePosition.dailyPnlBaseline * liveShare;
+
+    return [
+      {
+        integrationId: draft.integrationId,
+        integrationKind: draft.integrationKind,
+        account: [...draft.accounts].join(", ") || livePosition?.account || "",
+        ticker: draft.ticker,
+        amount: draft.amount,
+        averageUnitPrice: draft.totalInput / draft.amount,
+        currentPrice,
+        currency: draft.currency,
+        totalInput: draft.totalInput,
+        totalNow,
+        unrealizedPnl: totalNow === null ? null : totalNow - draft.totalInput,
+        realizedPnl: null,
+        dailyPnl,
+        dailyPnlPercentage:
+          dailyPnl === null ||
+          dailyPnlBaseline === null ||
+          dailyPnlBaseline === 0
+            ? null
+            : (dailyPnl / dailyPnlBaseline) * 100,
+        dailyPnlBaseline,
+        openedAt: draft.openedAt,
+      },
+    ];
+  });
+
+  return getSortedIntegratedPositions(positions);
+}
+
+export function buildIntegratedHistoryGroups(orders: IntegrationOrder[]) {
+  const grouped = new Map<string, IntegratedHistoryGroup>();
 
   for (const order of orders) {
     if (order.quantity <= 0 || !isDisplayableOrder(order)) {
       continue;
     }
 
-    const key = getOrderHistoryKey(order);
+    const key = getOrderTransactionKey(order);
     const group = grouped.get(key) ?? {
+      transactionKey: key,
       date: order.date,
       ticker: order.ticker,
       currency: order.currency,
@@ -925,7 +1137,9 @@ function buildIntegratedHistoryGroups(orders: IntegrationOrder[]) {
   }
 
   return [...grouped.values()].sort(
-    (groupA, groupB) => groupA.date.getTime() - groupB.date.getTime(),
+    (groupA, groupB) =>
+      groupA.date.getTime() - groupB.date.getTime() ||
+      groupA.ticker.localeCompare(groupB.ticker),
   );
 }
 
@@ -935,6 +1149,7 @@ export function buildIntegratedHistory({
   tickerLabelPreferences,
   tickerLabelLinks,
   tickerEmojiMappings,
+  formatLineSuffix,
 }: BuildIntegratedHistoryArgs) {
   const sorted = buildIntegratedHistoryGroups(orders);
   if (sorted.length === 0) {
@@ -946,7 +1161,7 @@ export function buildIntegratedHistory({
   let totalSpent = 0;
   let totalCurrency = "USD";
 
-  for (const group of sorted) {
+  for (const [index, group] of sorted.entries()) {
     const year = group.date.getUTCFullYear();
     const lines = grouped.get(year) ?? [];
     const averagePrice = group.total / group.quantity;
@@ -957,13 +1172,15 @@ export function buildIntegratedHistory({
       tickerLabelLinks,
       tickerEmojiMappings,
     );
+    const line = `${formatUtcDate(group.date)} ${tickerName} ${group.quantity.toFixed(
+      4,
+    )} x ${formatMoney(averagePrice, group.currency)} (${formatWholeMoney(
+      group.total,
+      group.currency,
+    )})`;
+    const lineSuffix = formatLineSuffix?.(group, index + 1);
     lines.push(
-      `${formatUtcDate(group.date)} ${tickerName} ${group.quantity.toFixed(
-        4,
-      )} x ${formatMoney(averagePrice, group.currency)} (${formatWholeMoney(
-        group.total,
-        group.currency,
-      )})`,
+      lineSuffix && lineSuffix.length > 0 ? `${line} ${lineSuffix}` : line,
     );
     grouped.set(year, lines);
 

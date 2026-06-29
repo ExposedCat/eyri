@@ -24,6 +24,31 @@ function ensureSchema(database: Database) {
 
     CREATE INDEX IF NOT EXISTS integrations_user_id_idx
       ON integrations(user_id);
+
+    CREATE TABLE IF NOT EXISTS portfolio_buckets (
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, name),
+      FOREIGN KEY (user_id) REFERENCES users(user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS portfolio_bucket_transactions (
+      user_id INTEGER NOT NULL,
+      transaction_key TEXT NOT NULL,
+      bucket_name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, transaction_key),
+      FOREIGN KEY (user_id) REFERENCES users(user_id),
+      FOREIGN KEY (user_id, bucket_name)
+        REFERENCES portfolio_buckets(user_id, name)
+        ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS portfolio_bucket_transactions_bucket_idx
+      ON portfolio_bucket_transactions(user_id, bucket_name);
   `);
 }
 

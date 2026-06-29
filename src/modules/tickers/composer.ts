@@ -1,6 +1,15 @@
 import { Composer } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
 import {
+  createBucket,
+  deleteBucket,
+  getUserBucket,
+  getUserBuckets,
+  moveTransactionToBucket,
+  readBucketAssignments,
+  removeTransactionFromBucket,
+} from "../database/bucket.ts";
+import {
   deleteIntegration,
   getUserIntegrations,
   hasUserIntegrations,
@@ -28,11 +37,14 @@ import {
 } from "./decorations.ts";
 import { removeTickerEmojiPack, syncTickerEmojiPack } from "./emoji_pack.ts";
 import {
+  buildBucketedPortfolioPositions,
   buildIntegratedDailyPerformanceList,
+  buildIntegratedHistoryGroups,
   buildIntegratedHistory,
   buildIntegratedPerformanceList,
   buildIntegratedSoldPerformanceList,
   buildIntegratedTickerList,
+  filterHistoryOrdersByBucket,
   formatOptionTicker,
   isOptionPosition,
   isStockPosition,
@@ -47,6 +59,114 @@ const htmlReplyOptions = {
     is_disabled: true,
   },
 };
+
+const BUCKET_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,19}$/;
+const BUCKET_ACTION_PATTERN =
+  /^\/(move|remove)_([A-Za-z][A-Za-z0-9_]{0,19})_(\d+)(?:@[A-Za-z0-9_]+)?(?:\s|$)/;
+
+function parseOptionalBucketName(input: unknown) {
+  const name = typeof input === "string" ? input.trim() : "";
+  return name && name.length > 0 ? name : null;
+}
+
+function isValidBucketName(name: string) {
+  return BUCKET_NAME_PATTERN.test(name);
+}
+
+function formatBucketNameHelp() {
+  return "Bucket names must be up to 20 characters, start with a letter, and contain only letters, numbers, and underscores.";
+}
+
+function parseBucketCommand(input: unknown) {
+  const parts =
+    typeof input === "string" ? input.trim().split(/\s+/).filter(Boolean) : [];
+  if (parts.length !== 2) {
+    return null;
+  }
+
+  const [action, name] = parts;
+  if (action !== "new" && action !== "remove" && action !== "move") {
+    return null;
+  }
+
+  return { action, name };
+}
+
+function formatBucketList(buckets: ReturnType<typeof getUserBuckets>) {
+  if (buckets.length === 0) {
+    return "No buckets yet.";
+  }
+
+  return buckets
+    .map((bucket, index) => `${index + 1}. ${escapeHtml(bucket.name)}`)
+    .join("\n");
+}
+
+async function resolveBucketName(ctx: CustomContext) {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return undefined;
+  }
+
+  const bucketName = parseOptionalBucketName(ctx.match);
+  if (bucketName === null) {
+    return null;
+  }
+
+  if (!isValidBucketName(bucketName)) {
+    await ctx.reply(formatBucketNameHelp());
+    return undefined;
+  }
+
+  const bucket = getUserBucket(ctx.db, ctx.dbEntities.user.userId, bucketName);
+  if (!bucket) {
+    await ctx.reply(
+      `Bucket not found: ${escapeHtml(bucketName)}`,
+      htmlReplyOptions,
+    );
+    return undefined;
+  }
+
+  return bucket.name;
+}
+
+async function fetchBucketedPositions(
+  ctx: CustomContext,
+  bucketName: string | null,
+) {
+  const userId = ctx.dbEntities.user?.userId;
+  if (!userId) {
+    return [];
+  }
+
+  const [livePositions, orders] = await Promise.all([
+    fetchIntegratedPortfolio(ctx.db, userId),
+    fetchIntegratedOrderHistory(ctx.db, userId),
+  ]);
+  const transactionBuckets = readBucketAssignments(ctx.db, userId);
+
+  return buildBucketedPortfolioPositions({
+    orders,
+    livePositions,
+    transactionBuckets,
+    bucketName,
+  });
+}
+
+async function fetchBucketedHistoryOrders(
+  ctx: CustomContext,
+  bucketName: string | null,
+) {
+  const userId = ctx.dbEntities.user?.userId;
+  if (!userId) {
+    return [];
+  }
+
+  const orders = await fetchIntegratedOrderHistory(ctx.db, userId);
+  const transactionBuckets = readBucketAssignments(ctx.db, userId);
+
+  return filterHistoryOrdersByBucket(orders, transactionBuckets, bucketName);
+}
 
 function parseIbkrCredentials(input: string) {
   const params = input.trim().split(/\s+/);
@@ -151,6 +271,55 @@ function createTickerFormatter({
       tickerLabelLinks,
       tickerEmojiMappings,
     );
+}
+
+async function replyBucketMoveHistory(ctx: CustomContext, bucketName: string) {
+  if (!ctx.dbEntities.user || !ctx.from) {
+    await ctx.text("start");
+    return;
+  }
+
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
+    return;
+  }
+
+  const {
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+  } = await readTickerDisplayPreferences(ctx.from.id);
+
+  const orders = await fetchIntegratedOrderHistory(
+    ctx.db,
+    ctx.dbEntities.user.userId,
+  );
+  const transactionBuckets = readBucketAssignments(
+    ctx.db,
+    ctx.dbEntities.user.userId,
+  );
+  const history = buildIntegratedHistory({
+    orders,
+    tickerDecorations,
+    tickerLabelPreferences,
+    tickerLabelLinks,
+    tickerEmojiMappings,
+    formatLineSuffix: (group, displayIndex) => {
+      const action =
+        transactionBuckets.get(group.transactionKey) === bucketName
+          ? "remove"
+          : "move";
+      return `/${action}_${bucketName}_${displayIndex}`;
+    },
+  });
+
+  if (history.length === 0) {
+    await ctx.text("no_positions");
+    return;
+  }
+
+  await ctx.reply(history, htmlReplyOptions);
 }
 
 function formatPackSyncResult(
@@ -346,6 +515,157 @@ tickersComposer.command("integrations", async (ctx) => {
   }
 
   await ctx.reply(formatIntegrationList(integrations), htmlReplyOptions);
+});
+
+tickersComposer.command("buckets", async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  const buckets = getUserBuckets(ctx.db, ctx.dbEntities.user.userId);
+  await ctx.reply(formatBucketList(buckets), htmlReplyOptions);
+});
+
+tickersComposer.command("bucket", async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  const parsed = parseBucketCommand(ctx.match);
+  if (!parsed || !isValidBucketName(parsed.name)) {
+    await ctx.reply(
+      [
+        "Use /bucket new NAME, /bucket remove NAME, or /bucket move NAME.",
+        formatBucketNameHelp(),
+      ].join("\n\n"),
+    );
+    return;
+  }
+
+  if (parsed.action === "new") {
+    const result = await createBucket({
+      database: ctx.db,
+      userId: ctx.dbEntities.user.userId,
+      name: parsed.name,
+    });
+    await ctx.reply(
+      result.success
+        ? `Bucket created: ${escapeHtml(parsed.name)}`
+        : (result.error ?? "Failed to create bucket"),
+      htmlReplyOptions,
+    );
+    return;
+  }
+
+  if (parsed.action === "remove") {
+    const result = await deleteBucket({
+      database: ctx.db,
+      userId: ctx.dbEntities.user.userId,
+      name: parsed.name,
+    });
+    await ctx.reply(
+      result.success
+        ? `Bucket removed: ${escapeHtml(parsed.name)}`
+        : (result.error ?? "Failed to remove bucket"),
+      htmlReplyOptions,
+    );
+    return;
+  }
+
+  const bucket = getUserBucket(ctx.db, ctx.dbEntities.user.userId, parsed.name);
+  if (!bucket) {
+    await ctx.reply(
+      `Bucket not found: ${escapeHtml(parsed.name)}`,
+      htmlReplyOptions,
+    );
+    return;
+  }
+
+  try {
+    await replyBucketMoveHistory(ctx, bucket.name);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
+});
+
+tickersComposer.hears(BUCKET_ACTION_PATTERN, async (ctx) => {
+  if (!ctx.dbEntities.user) {
+    await ctx.text("start");
+    return;
+  }
+
+  const text = ctx.message?.text;
+  if (!text) {
+    return;
+  }
+
+  const match = text.match(BUCKET_ACTION_PATTERN);
+  if (!match) {
+    return;
+  }
+
+  const [, action, bucketName, displayIndexValue] = match;
+  const displayIndex = Number(displayIndexValue);
+  if (
+    !isValidBucketName(bucketName) ||
+    !Number.isInteger(displayIndex) ||
+    displayIndex < 1
+  ) {
+    await ctx.reply(formatBucketNameHelp());
+    return;
+  }
+
+  const bucket = getUserBucket(ctx.db, ctx.dbEntities.user.userId, bucketName);
+  if (!bucket) {
+    await ctx.reply(
+      `Bucket not found: ${escapeHtml(bucketName)}`,
+      htmlReplyOptions,
+    );
+    return;
+  }
+
+  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+    await ctx.text("no_integrations");
+    return;
+  }
+
+  try {
+    const orders = await fetchIntegratedOrderHistory(
+      ctx.db,
+      ctx.dbEntities.user.userId,
+    );
+    const group = buildIntegratedHistoryGroups(orders)[displayIndex - 1];
+    if (!group) {
+      await ctx.reply(`Transaction not found: ${displayIndex}`);
+      return;
+    }
+
+    const result =
+      action === "move"
+        ? await moveTransactionToBucket({
+            database: ctx.db,
+            userId: ctx.dbEntities.user.userId,
+            bucketName: bucket.name,
+            transactionKey: group.transactionKey,
+          })
+        : await removeTransactionFromBucket({
+            database: ctx.db,
+            userId: ctx.dbEntities.user.userId,
+            bucketName: bucket.name,
+            transactionKey: group.transactionKey,
+          });
+
+    if (!result.success) {
+      await ctx.reply(result.error ?? "Failed to update bucket");
+      return;
+    }
+
+    await replyBucketMoveHistory(ctx, bucket.name);
+  } catch (error) {
+    await replyIntegrationError(ctx, error);
+  }
 });
 
 tickersComposer.command("ibkr", async (ctx) => {
@@ -572,6 +892,11 @@ tickersComposer.command("stocks", async (ctx) => {
     return;
   }
 
+  const bucketName = await resolveBucketName(ctx);
+  if (bucketName === undefined) {
+    return;
+  }
+
   const {
     tickerDecorations,
     tickerLabelPreferences,
@@ -585,10 +910,7 @@ tickersComposer.command("stocks", async (ctx) => {
   }
 
   try {
-    const positions = await fetchIntegratedPortfolio(
-      ctx.db,
-      ctx.dbEntities.user.userId,
-    );
+    const positions = await fetchBucketedPositions(ctx, bucketName);
     const priceList = await buildIntegratedTickerList({
       positions: positions.filter(isStockPosition),
       separateGainersLosers: true,
@@ -615,6 +937,11 @@ tickersComposer.command("options", async (ctx) => {
     return;
   }
 
+  const bucketName = await resolveBucketName(ctx);
+  if (bucketName === undefined) {
+    return;
+  }
+
   const preferences = await readTickerDisplayPreferences(ctx.from.id);
   const {
     tickerDecorations,
@@ -635,10 +962,7 @@ tickersComposer.command("options", async (ctx) => {
   }
 
   try {
-    const positions = await fetchIntegratedPortfolio(
-      ctx.db,
-      ctx.dbEntities.user.userId,
-    );
+    const positions = await fetchBucketedPositions(ctx, bucketName);
     const priceList = await buildIntegratedTickerList({
       positions: positions.filter(isOptionPosition),
       separateGainersLosers: true,
@@ -716,6 +1040,11 @@ tickersComposer.command("perf", async (ctx) => {
     return;
   }
 
+  const bucketName = await resolveBucketName(ctx);
+  if (bucketName === undefined) {
+    return;
+  }
+
   const preferences = await readTickerDisplayPreferences(ctx.from.id);
   const {
     tickerDecorations,
@@ -736,10 +1065,7 @@ tickersComposer.command("perf", async (ctx) => {
   }
 
   try {
-    const positions = await fetchIntegratedPortfolio(
-      ctx.db,
-      ctx.dbEntities.user.userId,
-    );
+    const positions = await fetchBucketedPositions(ctx, bucketName);
     const performanceList = await buildIntegratedPerformanceList({
       positions,
       tickerDecorations,
@@ -816,6 +1142,11 @@ tickersComposer.command("dpnl", async (ctx) => {
     return;
   }
 
+  const bucketName = await resolveBucketName(ctx);
+  if (bucketName === undefined) {
+    return;
+  }
+
   const preferences = await readTickerDisplayPreferences(ctx.from.id);
   const {
     tickerDecorations,
@@ -836,10 +1167,7 @@ tickersComposer.command("dpnl", async (ctx) => {
   }
 
   try {
-    const positions = await fetchIntegratedPortfolio(
-      ctx.db,
-      ctx.dbEntities.user.userId,
-    );
+    const positions = await fetchBucketedPositions(ctx, bucketName);
     const performanceList = await buildIntegratedDailyPerformanceList({
       positions,
       tickerDecorations,
@@ -866,6 +1194,11 @@ tickersComposer.command("history", async (ctx) => {
     return;
   }
 
+  const bucketName = await resolveBucketName(ctx);
+  if (bucketName === undefined) {
+    return;
+  }
+
   const {
     tickerDecorations,
     tickerLabelPreferences,
@@ -879,10 +1212,7 @@ tickersComposer.command("history", async (ctx) => {
   }
 
   try {
-    const orders = await fetchIntegratedOrderHistory(
-      ctx.db,
-      ctx.dbEntities.user.userId,
-    );
+    const orders = await fetchBucketedHistoryOrders(ctx, bucketName);
     const history = buildIntegratedHistory({
       orders,
       tickerDecorations,
