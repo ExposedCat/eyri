@@ -7,6 +7,8 @@ services:
       - .env-ibkr-1
     environment:
       TWS_SETTINGS_PATH: /home/ibgateway/Jts
+      AUTO_RESTART_TIME: "11:59 PM"
+      TWOFA_TIMEOUT_ACTION: restart
     ports:
       - "127.0.0.1:4001:4003"
       - "127.0.0.1:4002:4004"

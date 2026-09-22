@@ -31,6 +31,12 @@ to view a bucket.
 
 ## Restarting IB Gateway
 
+Gateway automatically restarts daily at 23:59 in the `TIME_ZONE` configured in
+`.env-ibkr-1` (currently UTC), replacing its scheduled logoff. This normally
+preserves authentication during the week; weekly 2FA is still required.
+After pulling this configuration, apply it with
+`podman compose up -d --force-recreate ib_gateway` and complete the initial login.
+
 Use `/restart` in Telegram to request an IB Gateway restart for the current
 user's IBKR integration. The bot derives the container name from the saved IBKR
 `instance_url` host. For example, `ib_gateway:4003` restarts the
