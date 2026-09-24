@@ -122,7 +122,7 @@ Deno.test("RSU awards persist separately for each user", async () => {
 	}
 });
 
-Deno.test("RSU totals count received shares and cutoff previews partition vestings inclusively", () => {
+Deno.test("RSU totals sum listed vestings and preserve inclusive cutoff totals", () => {
 	const awards = [
 		parseRsuAward(
 			"AAPL 40 100 25.09.25\n24.09.26 10\n25.09.26 10\n25.10.26 10\n25.11.26 10",
@@ -133,26 +133,27 @@ Deno.test("RSU totals count received shares and cutoff previews partition vestin
 	const prices = new Map([["AAPL", 150]]);
 	const now = new Date("2026-09-25T12:00:00Z");
 	const regular = getRsuView(awards, now);
-	equal(regular.received.length, 3);
+	equal(regular.total.length, 5);
+	deepStrictEqual(regular.total, regular.upcoming);
 	equal(regular.upcoming.length, 5);
 	equal(regular.missed.length, 0);
 	equal(
 		buildRsuSummary(
 			"Total",
-			regular.received,
+			regular.total,
 			prices,
 			regular.start,
 			regular.end,
 		),
-		"Total: $3,750.00 (+$750.00 +25.00%) over 1y 0m 0d",
+		"Total: $6,000.00 (+$1,000.00 +20.00%) over 1y 2m 0d",
 	);
 	const cutoff = parseRsuDate("25.10.2026");
 	const view = getRsuView(awards, now, cutoff);
-	equal(view.received.length, 5);
+	equal(view.total.length, 5);
 	equal(view.upcoming.length, 4);
 	equal(view.missed.length, 1);
 	equal(
-		buildRsuSummary("Total", view.received, prices, view.start, view.end),
+		buildRsuSummary("Total", view.total, prices, view.start, view.end),
 		"Total: $6,000.00 (+$1,000.00 +20.00%) over 1y 1m 0d",
 	);
 	equal(
@@ -170,26 +171,26 @@ Deno.test("RSU totals handle past cutoffs, completed awards, and missing prices 
 	const now = new Date("2026-09-25T12:00:00Z");
 	const completed = getRsuView(awards, now);
 	equal(completed.upcoming.length, 0);
-	equal(completed.received.length, 2);
+	equal(completed.total.length, 0);
 	equal(
 		buildRsuSummary(
 			"Total",
-			completed.received,
+			completed.total,
 			new Map(),
 			completed.start,
 			completed.end,
 		),
-		"Total: ? (? ?) over 1y 8m 24d",
+		"Total: $0.00 ($0.00 0.00%) over 0d",
 	);
 	const past = getRsuView(awards, now, "2025-06-01");
 	equal(past.upcoming.length, 0);
-	equal(past.received.length, 1);
+	equal(past.total.length, 1);
 	equal(past.missed.length, 1);
 	const before = getRsuView(awards, now, "2024-01-01");
 	equal(
 		buildRsuSummary(
 			"Total",
-			before.received,
+			before.total,
 			new Map(),
 			before.start,
 			before.end,
@@ -207,15 +208,18 @@ Deno.test("RSU totals handle past cutoffs, completed awards, and missing prices 
 		),
 		"Missed: $0.00 ($0.00 0.00%) over 0d",
 	);
-	const mixed = getRsuView([...awards, { ...awards[0], ticker: "MSFT" }], now);
+	const mixed = getRsuView(
+		[...awards, { ...awards[0], ticker: "MSFT" }],
+		new Date("2026-01-01T00:00:00Z"),
+	);
 	equal(
 		buildRsuSummary(
 			"Total",
-			mixed.received,
+			mixed.total,
 			new Map([["AAPL", 150]]),
 			mixed.start,
 			mixed.end,
 		),
-		"Total: ? (? ?) over 1y 8m 24d",
+		"Total: ? (? ?) over 1y 5m 0d",
 	);
 });

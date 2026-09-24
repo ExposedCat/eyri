@@ -16,6 +16,15 @@ an Interactive Brokers integration for the current user.
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
 
+## Portfolio chart
+
+Use `/portfolio` (or `/portfolio BUCKET`) to chart stock allocation, largest first.
+Bars show each holding's share of stock market value, with losing holdings below
+zero and returns below tickers. Currencies are charted separately; large portfolios
+continue across images. The header is the total stock value for that currency.
+The container includes Python and Matplotlib for rendering; local runs need
+`python3` with `matplotlib==3.11.2` installed.
+
 ## RSUs
 
 Use `/rsu` to list upcoming vesting dates, current values, and changes since award.
@@ -27,8 +36,9 @@ Record an award with a USD price and UTC dates; vesting amounts must total the a
 24.09.28 50
 ```
 
-Prices come from your IBKR integration. Total shows shares vested through today,
-valued at current prices, with the change from award value and time since the first award.
+Prices come from your IBKR integration. `/rsu` Total sums the listed vestings,
+valued at current prices, with the change from award value and the period from
+the first award to the final listed vesting date.
 Use `/rsu_rm TICKER` to remove all your awards for that ticker.
 Use `/rsu_at DD.MM.YYYY` to keep vestings through that date (inclusive), with a
 received Total and a Missed total for later vestings. Missed duration runs from the

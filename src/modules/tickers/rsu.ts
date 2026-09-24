@@ -114,7 +114,6 @@ type RsuVestingEntry = {
 
 export function getRsuView(awards: RsuAward[], now: Date, cutoff?: string) {
 	const today = now.toISOString().slice(0, 10);
-	const end = cutoff ?? today;
 	const vestings = awards.flatMap((award) =>
 		award.vesting.map((vesting) => ({
 			...vesting,
@@ -125,13 +124,20 @@ export function getRsuView(awards: RsuAward[], now: Date, cutoff?: string) {
 		first.date.localeCompare(second.date) ||
 		first.ticker.localeCompare(second.ticker)
 	);
+	const upcoming = vestings.filter((vesting) =>
+		vesting.date >= today && (!cutoff || vesting.date <= cutoff)
+	);
+	const end = cutoff ?? upcoming.at(-1)?.date ?? today;
+	const total = cutoff
+		? vestings.filter((vesting) => vesting.date <= cutoff)
+		: upcoming;
 	return {
-		upcoming: vestings.filter((vesting) =>
-			vesting.date >= today && (!cutoff || vesting.date <= cutoff)
-		),
-		received: vestings.filter((vesting) => vesting.date <= end),
+		upcoming,
+		total,
 		missed: cutoff ? vestings.filter((vesting) => vesting.date > cutoff) : [],
-		start: awards.map((award) => award.awardDate).sort()[0] ?? end,
+		start: total.length
+			? awards.map((award) => award.awardDate).sort()[0] ?? end
+			: end,
 		end,
 		lastVesting: vestings.at(-1)?.date ?? end,
 	};

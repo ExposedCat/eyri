@@ -1,4 +1,5 @@
-import { Composer } from "grammy";
+import { Composer, InputFile } from "grammy";
+import { buildPortfolioCharts, renderPortfolioChart } from "./portfolio_chart.ts";
 import type { CustomContext } from "../bot/types.ts";
 import {
   createBucket,
@@ -940,7 +941,7 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 			return;
 		}
 		const view = getRsuView(awards, now, cutoff);
-		const vestings = [...view.upcoming, ...view.received, ...view.missed];
+		const vestings = [...view.upcoming, ...view.total, ...view.missed];
 		const preferences = await readTickerDisplayPreferences(ctx.from.id);
 		const formatTicker = (ticker: string) =>
 			formatDecoratedTicker(
@@ -981,7 +982,7 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 		const groups = buildRsuGroups(view.upcoming, prices, formatTicker, now);
 		groups.push(...notes.map(escapeHtml));
 		groups.push(
-			buildRsuSummary("Total", view.received, prices, view.start, view.end),
+			buildRsuSummary("Total", view.total, prices, view.start, view.end),
 		);
 		if (cutoff) {
 			groups.push(
@@ -1012,6 +1013,35 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 			escapeHtml(error instanceof Error ? error.message : String(error)),
 			htmlReplyOptions,
 		);
+	}
+});
+
+tickersComposer.command("portfolio", async (ctx) => {
+	const bucketName = await resolveBucketName(ctx);
+	if (bucketName === undefined || !ctx.dbEntities.user) return;
+	if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+		await ctx.text("no_integrations");
+		return;
+	}
+	try {
+		const charts = buildPortfolioCharts(
+			await fetchBucketedPositions(ctx, bucketName),
+		);
+		if (!charts.length) {
+			await ctx.text("no_positions");
+			return;
+		}
+		for (const chart of charts) {
+			for (let offset = 0; offset < chart.holdings.length; offset += 12) {
+				const image = await renderPortfolioChart({
+					...chart,
+					holdings: chart.holdings.slice(offset, offset + 12),
+				});
+				await ctx.replyWithPhoto(new InputFile(image, "portfolio.png"));
+			}
+		}
+	} catch (error) {
+		await replyIntegrationError(ctx, error);
 	}
 });
 
