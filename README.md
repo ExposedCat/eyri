@@ -16,6 +16,20 @@ an Interactive Brokers integration for the current user.
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
 
+## RSUs
+
+Use `/rsu` to list upcoming vesting dates, current values, and changes since award.
+Record an award with a USD price and UTC dates; vesting amounts must total the award:
+
+```text
+/rsu AAPL 100 150 24.09.26
+24.09.27 50
+24.09.28 50
+```
+
+Prices come from your IBKR integration. Delayed, frozen, or previous-close prices
+are labeled when used.
+
 ## Buckets
 
 Use `/buckets` to list buckets, `/bucket new NAME` to create one, and

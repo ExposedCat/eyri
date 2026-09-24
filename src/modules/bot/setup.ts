@@ -46,6 +46,7 @@ export function createBot(database: Database): Bot {
 const botCommands = [
   { command: "start", description: "Show help" },
   { command: "stocks", description: "Show stock performance" },
+  { command: "rsu", description: "Show or record RSU vesting" },
   { command: "options", description: "Show option performance" },
   { command: "perf", description: "Show concise performance" },
   { command: "buckets", description: "Show portfolio buckets" },

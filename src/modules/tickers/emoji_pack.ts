@@ -173,6 +173,8 @@ async function collectAllHistoryTickers(
 ): Promise<{ tickers: PortfolioTickerIcon[]; errors: string[] }> {
   const tickers = new Map<string, PortfolioTickerIcon>();
   const errors: string[] = [];
+	const awards = database.prepare("SELECT DISTINCT ticker FROM rsu_awards").all() as { ticker: string }[];
+	for (const award of awards) upsertCollectedTicker(tickers, award.ticker);
 
   for (const integration of getAllIntegrations(database)) {
     try {

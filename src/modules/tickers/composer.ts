@@ -21,8 +21,12 @@ import {
   fetchIntegratedPortfolio,
 } from "../integrations/service.ts";
 import { getIbkrHostPort } from "../integrations/ibkr/credentials.ts";
+import { fetchIbkrStockQuotes } from "../integrations/ibkr/quotes.ts";
+import { getRsuAwards, saveRsuAward } from "../database/rsu.ts";
+import { buildRsuGroups, getUpcomingRsuVestings, parseRsuAward } from "./rsu.ts";
 import {
   escapeHtml,
+  formatDecoratedTicker,
   formatTickerDecorations,
   parseDecorateCommand,
   parseLabelCommand,
@@ -884,6 +888,95 @@ tickersComposer.command("removepack", async (ctx) => {
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
+});
+
+tickersComposer.command("rsu", async (ctx) => {
+	if (!ctx.dbEntities.user || !ctx.from) {
+		await ctx.text("start");
+		return;
+	}
+	const userId = ctx.dbEntities.user.userId;
+	try {
+		if (ctx.match.trim()) {
+			const award = parseRsuAward(ctx.match);
+			saveRsuAward(ctx.db, userId, award);
+			await ctx.reply(
+				`Saved ${award.amount} ${award.ticker} RSUs with ${award.vesting.length} vesting dates.`,
+			);
+			return;
+		}
+		const now = new Date();
+		const vestings = getUpcomingRsuVestings(getRsuAwards(ctx.db, userId), now);
+		if (!vestings.length) {
+			await ctx.reply(
+				"No upcoming RSU vesting dates.\n\nTo add an award (USD price, UTC dates):\n/rsu TICKER AMOUNT PRICE DD.MM.YY\nDD.MM.YY AMOUNT\nDD.MM.YY AMOUNT",
+			);
+			return;
+		}
+		const preferences = await readTickerDisplayPreferences(ctx.from.id);
+		const formatTicker = (ticker: string) =>
+			formatDecoratedTicker(
+				ticker,
+				preferences.tickerDecorations,
+				preferences.tickerLabelPreferences,
+				preferences.tickerLabelLinks,
+				preferences.tickerEmojiMappings,
+			);
+		const integration = getUserIntegrations(ctx.db, userId).find((item) =>
+			item.kind === "ibkr"
+		);
+		const prices = new Map<string, number>();
+		const notes: string[] = [];
+		if (integration) {
+			try {
+				const quotes = await fetchIbkrStockQuotes(
+					integration,
+					vestings.map((vesting) => vesting.ticker),
+				);
+				for (const [ticker, quote] of quotes) {
+					if (quote.price !== undefined) {
+						prices.set(ticker, quote.price);
+						const status = [
+							quote.delayed ? "delayed" : "",
+							quote.frozen ? "frozen" : "",
+							quote.previousClose ? "previous close" : "",
+						].filter(Boolean);
+						if (status.length) notes.push(`${ticker}: ${status.join(", ")}.`);
+					} else {
+						notes.push(
+							`${ticker}: price unavailable. ${quote.error ?? ""}`,
+						);
+					}
+				}
+			} catch (error) {
+				notes.push(
+					`Prices unavailable: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
+		} else notes.push("Configure /ibkr to fetch current RSU prices.");
+		const groups = buildRsuGroups(vestings, prices, formatTicker, now);
+		groups.push(...notes.map(escapeHtml));
+		let message = "";
+		for (const group of groups) {
+			let separator = "\n\n";
+			for (const line of group.split("\n")) {
+				if (message && message.length + line.length + separator.length > 3500) {
+					await ctx.reply(message, htmlReplyOptions);
+					message = "";
+				}
+				message += `${message ? separator : ""}${line}`;
+				separator = "\n";
+			}
+		}
+		if (message) await ctx.reply(message, htmlReplyOptions);
+	} catch (error) {
+		await ctx.reply(
+			escapeHtml(error instanceof Error ? error.message : String(error)),
+			htmlReplyOptions,
+		);
+	}
 });
 
 tickersComposer.command("stocks", async (ctx) => {

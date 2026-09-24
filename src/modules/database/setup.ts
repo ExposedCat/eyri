@@ -25,6 +25,20 @@ function ensureSchema(database: Database) {
     CREATE INDEX IF NOT EXISTS integrations_user_id_idx
       ON integrations(user_id);
 
+    CREATE TABLE IF NOT EXISTS rsu_awards (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL REFERENCES users(user_id),
+      ticker TEXT NOT NULL,
+      amount REAL NOT NULL CHECK (amount > 0),
+      price REAL NOT NULL CHECK (price > 0),
+      award_date TEXT NOT NULL,
+      vesting_json TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS rsu_awards_user_id_idx
+      ON rsu_awards(user_id);
+
     CREATE TABLE IF NOT EXISTS portfolio_buckets (
       user_id INTEGER NOT NULL,
       name TEXT NOT NULL,
