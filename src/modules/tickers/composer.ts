@@ -22,8 +22,8 @@ import {
 } from "../integrations/service.ts";
 import { getIbkrHostPort } from "../integrations/ibkr/credentials.ts";
 import { fetchIbkrStockQuotes } from "../integrations/ibkr/quotes.ts";
-import { getRsuAwards, saveRsuAward } from "../database/rsu.ts";
-import { buildRsuGroups, getUpcomingRsuVestings, parseRsuAward } from "./rsu.ts";
+import { getRsuAwards, removeRsuAwards, saveRsuAward } from "../database/rsu.ts";
+import { buildRsuGroups, buildRsuSummary, getRsuView, parseRsuAward, parseRsuDate } from "./rsu.ts";
 import {
   escapeHtml,
   formatDecoratedTicker,
@@ -890,14 +890,40 @@ tickersComposer.command("removepack", async (ctx) => {
   }
 });
 
-tickersComposer.command("rsu", async (ctx) => {
+tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 	if (!ctx.dbEntities.user || !ctx.from) {
 		await ctx.text("start");
 		return;
 	}
 	const userId = ctx.dbEntities.user.userId;
 	try {
-		if (ctx.match.trim()) {
+		const command = ctx.msg?.text?.split(/[\s@]/)[0];
+		const input = ctx.match.trim();
+		if (command === "/rsu_rm") {
+			const ticker = input.toUpperCase();
+			if (!/^[A-Z][A-Z0-9.-]{0,19}$/.test(ticker)) {
+				await ctx.reply("Use /rsu_rm TICKER.");
+				return;
+			}
+			const exists = getRsuAwards(ctx.db, userId).some((award) =>
+				award.ticker === ticker
+			);
+			removeRsuAwards(ctx.db, userId, ticker);
+			await ctx.reply(
+				exists
+					? `Removed all ${ticker} RSU awards.`
+					: `No RSU awards found for ${ticker}.`,
+			);
+			return;
+		}
+		let cutoff: string | undefined;
+		if (command === "/rsu_at") {
+			if (!/^\d{2}\.\d{2}\.\d{4}$/.test(input)) {
+				await ctx.reply("Use /rsu_at DD.MM.YYYY.");
+				return;
+			}
+			cutoff = parseRsuDate(input);
+		} else if (input) {
 			const award = parseRsuAward(ctx.match);
 			saveRsuAward(ctx.db, userId, award);
 			await ctx.reply(
@@ -906,13 +932,15 @@ tickersComposer.command("rsu", async (ctx) => {
 			return;
 		}
 		const now = new Date();
-		const vestings = getUpcomingRsuVestings(getRsuAwards(ctx.db, userId), now);
-		if (!vestings.length) {
+		const awards = getRsuAwards(ctx.db, userId);
+		if (!awards.length) {
 			await ctx.reply(
-				"No upcoming RSU vesting dates.\n\nTo add an award (USD price, UTC dates):\n/rsu TICKER AMOUNT PRICE DD.MM.YY\nDD.MM.YY AMOUNT\nDD.MM.YY AMOUNT",
+				"No RSU awards recorded.\n\nTo add an award (USD price, UTC dates):\n/rsu TICKER AMOUNT PRICE DD.MM.YY\nDD.MM.YY AMOUNT\nDD.MM.YY AMOUNT",
 			);
 			return;
 		}
+		const view = getRsuView(awards, now, cutoff);
+		const vestings = [...view.upcoming, ...view.received, ...view.missed];
 		const preferences = await readTickerDisplayPreferences(ctx.from.id);
 		const formatTicker = (ticker: string) =>
 			formatDecoratedTicker(
@@ -936,12 +964,6 @@ tickersComposer.command("rsu", async (ctx) => {
 				for (const [ticker, quote] of quotes) {
 					if (quote.price !== undefined) {
 						prices.set(ticker, quote.price);
-						const status = [
-							quote.delayed ? "delayed" : "",
-							quote.frozen ? "frozen" : "",
-							quote.previousClose ? "previous close" : "",
-						].filter(Boolean);
-						if (status.length) notes.push(`${ticker}: ${status.join(", ")}.`);
 					} else {
 						notes.push(
 							`${ticker}: price unavailable. ${quote.error ?? ""}`,
@@ -956,8 +978,22 @@ tickersComposer.command("rsu", async (ctx) => {
 				);
 			}
 		} else notes.push("Configure /ibkr to fetch current RSU prices.");
-		const groups = buildRsuGroups(vestings, prices, formatTicker, now);
+		const groups = buildRsuGroups(view.upcoming, prices, formatTicker, now);
 		groups.push(...notes.map(escapeHtml));
+		groups.push(
+			buildRsuSummary("Total", view.received, prices, view.start, view.end),
+		);
+		if (cutoff) {
+			groups.push(
+				buildRsuSummary(
+					"Missed",
+					view.missed,
+					prices,
+					cutoff,
+					view.lastVesting,
+				),
+			);
+		}
 		let message = "";
 		for (const group of groups) {
 			let separator = "\n\n";

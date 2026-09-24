@@ -46,3 +46,14 @@ export function getRsuAwards(database: Database, userId: number): RsuAward[] {
 		vesting: JSON.parse(row.vesting_json),
 	}));
 }
+
+export function removeRsuAwards(
+	database: Database,
+	userId: number,
+	ticker: string,
+) {
+	return database.prepare(
+		"DELETE FROM rsu_awards WHERE user_id = ? AND ticker = ?",
+	)
+		.run(userId, ticker.trim().toUpperCase());
+}

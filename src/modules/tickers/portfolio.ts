@@ -1,4 +1,4 @@
-import { formatMoneyChange } from "../../utils/money.ts";
+import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 import type {
   IntegrationOrder,
   IntegrationPortfolioPosition,
@@ -66,14 +66,8 @@ type IntegratedPositionPerformance = {
   elapsedPeriod: ReturnType<typeof getElapsedPeriod>;
 };
 
-const formatMoney = (value: number, currency = "USD") =>
-  currency === "USD"
-    ? `$${value.toFixed(2)}`
-    : `${value.toFixed(2)} ${currency}`;
 const formatWholeMoney = (value: number, currency = "USD") =>
-  currency === "USD"
-    ? `$${value.toFixed(0)}`
-    : `${value.toFixed(0)} ${currency}`;
+  formatMoney(value, currency, 0);
 const formatAmount = (value: number) => value.toFixed(2);
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 365.2425 / 12;

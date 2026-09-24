@@ -47,6 +47,8 @@ const botCommands = [
   { command: "start", description: "Show help" },
   { command: "stocks", description: "Show stock performance" },
   { command: "rsu", description: "Show or record RSU vesting" },
+	{ command: "rsu_rm", description: "Remove RSU awards for a ticker" },
+	{ command: "rsu_at", description: "Show RSUs with a vesting cutoff date" },
   { command: "options", description: "Show option performance" },
   { command: "perf", description: "Show concise performance" },
   { command: "buckets", description: "Show portfolio buckets" },

@@ -27,8 +27,12 @@ Record an award with a USD price and UTC dates; vesting amounts must total the a
 24.09.28 50
 ```
 
-Prices come from your IBKR integration. Delayed, frozen, or previous-close prices
-are labeled when used.
+Prices come from your IBKR integration. Total shows shares vested through today,
+valued at current prices, with the change from award value and time since the first award.
+Use `/rsu_rm TICKER` to remove all your awards for that ticker.
+Use `/rsu_at DD.MM.YYYY` to keep vestings through that date (inclusive), with a
+received Total and a Missed total for later vestings. Missed duration runs from the
+cutoff to the final vesting date. This preview does not change saved awards.
 
 ## Buckets
 

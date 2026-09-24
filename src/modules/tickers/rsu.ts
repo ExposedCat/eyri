@@ -1,9 +1,9 @@
 import type { RsuAward } from "../database/rsu.ts";
-import { formatMoneyChange } from "../../utils/money.ts";
+import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 
 const DAY_MS = 86_400_000;
 
-function parseDate(value: string) {
+export function parseRsuDate(value: string) {
 	const match = /^(\d{2})\.(\d{2})\.(\d{2}|\d{4})$/.exec(value);
 	if (!match) throw new Error("Use DD.MM.YY for dates.");
 	const day = Number(match[1]);
@@ -45,13 +45,13 @@ export function parseRsuAward(input: string): RsuAward {
 	}
 	const amount = parsePositiveNumber(parts[1]);
 	const price = parsePositiveNumber(parts[2]);
-	const awardDate = parseDate(parts[3]);
+	const awardDate = parseRsuDate(parts[3]);
 	const vesting = lines.map((line) => {
 		const values = line.split(/\s+/);
 		if (values.length !== 2) {
 			throw new Error("Each vesting line must be DD.MM.YY AMOUNT.");
 		}
-		const date = parseDate(values[0]);
+		const date = parseRsuDate(values[0]);
 		if (date < awardDate) {
 			throw new Error("Vesting cannot be before the award date.");
 		}
@@ -71,9 +71,16 @@ export function parseRsuAward(input: string): RsuAward {
 
 export function formatRsuTimeLeft(date: string, now: Date) {
 	const target = new Date(`${date}T00:00:00Z`);
-	if (date === now.toISOString().slice(0, 10)) return "today";
+	const today = now.toISOString().slice(0, 10);
+	if (date === today) return "today";
 	if (target.getTime() - now.getTime() < DAY_MS) return "less than 1D";
-	const today = new Date(`${now.toISOString().slice(0, 10)}T00:00:00Z`);
+	return formatRsuDuration(today, date);
+}
+
+export function formatRsuDuration(start: string, end: string) {
+	if (end <= start) return "0d";
+	const today = new Date(`${start}T00:00:00Z`);
+	const target = new Date(`${end}T00:00:00Z`);
 	let months = (target.getUTCFullYear() - today.getUTCFullYear()) * 12 +
 		target.getUTCMonth() - today.getUTCMonth();
 	const shiftMonths = (count: number) => {
@@ -98,25 +105,70 @@ export function formatRsuTimeLeft(date: string, now: Date) {
 		: `${days}d`;
 }
 
-export function getUpcomingRsuVestings(awards: RsuAward[], now: Date) {
+type RsuVestingEntry = {
+	date: string;
+	amount: number;
+	ticker: string;
+	awardPrice: number;
+};
+
+export function getRsuView(awards: RsuAward[], now: Date, cutoff?: string) {
 	const today = now.toISOString().slice(0, 10);
-	return awards.flatMap((award) =>
-		award.vesting
-			.filter((vesting) => vesting.date >= today)
-			.map((vesting) => ({
-				...vesting,
-				ticker: award.ticker,
-				awardPrice: award.price,
-			}))
-	)
-		.sort((first, second) =>
-			first.date.localeCompare(second.date) ||
-			first.ticker.localeCompare(second.ticker)
-		);
+	const end = cutoff ?? today;
+	const vestings = awards.flatMap((award) =>
+		award.vesting.map((vesting) => ({
+			...vesting,
+			ticker: award.ticker,
+			awardPrice: award.price,
+		}))
+	).sort((first, second) =>
+		first.date.localeCompare(second.date) ||
+		first.ticker.localeCompare(second.ticker)
+	);
+	return {
+		upcoming: vestings.filter((vesting) =>
+			vesting.date >= today && (!cutoff || vesting.date <= cutoff)
+		),
+		received: vestings.filter((vesting) => vesting.date <= end),
+		missed: cutoff ? vestings.filter((vesting) => vesting.date > cutoff) : [],
+		start: awards.map((award) => award.awardDate).sort()[0] ?? end,
+		end,
+		lastVesting: vestings.at(-1)?.date ?? end,
+	};
+}
+
+function formatRsuValue(value: number | undefined, cost: number) {
+	if (value === undefined) return "? (? ?)";
+	const change = value - cost;
+	const percentage = cost === 0 ? 0 : change / cost * 100;
+	return `${formatMoney(value)} (${formatMoneyChange(change)} ${
+		formatMoneyChange(percentage, "%")
+	})`;
+}
+
+export function buildRsuSummary(
+	label: "Total" | "Missed",
+	vestings: RsuVestingEntry[],
+	prices: Map<string, number>,
+	start: string,
+	end: string,
+) {
+	let value = 0;
+	let cost = 0;
+	let complete = true;
+	for (const vesting of vestings) {
+		const price = prices.get(vesting.ticker);
+		if (price === undefined) complete = false;
+		else value += vesting.amount * price;
+		cost += vesting.amount * vesting.awardPrice;
+	}
+	return `${label}: ${
+		formatRsuValue(complete ? value : undefined, cost)
+	} over ${formatRsuDuration(start, end)}`;
 }
 
 export function buildRsuGroups(
-	vestings: ReturnType<typeof getUpcomingRsuVestings>,
+	vestings: RsuVestingEntry[],
 	prices: Map<string, number>,
 	formatTicker: (ticker: string) => string,
 	now: Date,
@@ -137,17 +189,9 @@ export function buildRsuGroups(
 		const lines = [...tickers].map(([ticker, { amount, cost }]) => {
 			const price = prices.get(ticker);
 			const name = formatTicker(ticker);
-			if (price === undefined) return `${name} ? (? ?)`;
-			const value = amount * price;
-			const change = value - cost;
-			const percentage = change / cost * 100;
-			return `${name} $${value.toFixed(2)} (${
-				Math.abs(change) < 0.005 ? "$0.00" : formatMoneyChange(change)
-			} ${
-				Math.abs(percentage) < 0.005
-					? "0.00%"
-					: formatMoneyChange(percentage, "%")
-			})`;
+			return `${name} ${
+				formatRsuValue(price === undefined ? undefined : amount * price, cost)
+			}`;
 		});
 		return `${date.split("-").reverse().join(".")} (${
 			formatRsuTimeLeft(date, now)
