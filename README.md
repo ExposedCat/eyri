@@ -11,8 +11,9 @@
 ## Integrations
 
 Use `/integrations` to manage accounts in a rich message. Each account has an
-inline red Delete button. Choose **Add integration**, select **Freedom24** or
-**IBKR**, and send the requested credentials. `/cancel` cancels credential entry.
+inline red Delete button. Choose **Add integration**, select **Freedom24**,
+**IBKR** or **Trading 212**, and send the requested credentials. `/cancel` cancels
+credential entry.
 The selected provider is saved per user and chat, including across bot restarts.
 
 Use `/ibkr [instance_url] [flex_token] [flex_query_id]` in Telegram to persist
@@ -21,9 +22,31 @@ an Interactive Brokers integration for the current user.
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
 
-Both commands keep their existing formats; each successful submission adds a
+Use `/t212 [api_key] [secret_key] [live|demo]` to persist a read-only Trading 212
+integration. The environment defaults to `live`; demo credentials must be generated
+in the demo account. Generate a key and secret under Settings → API (Beta), with
+Portfolio and History - Orders read permissions, and leave trading permissions off.
+Invest and Stocks & Shares ISA accounts are supported.
+
+Trading 212 holdings and executed trades use instrument currency consistently,
+excluding account-currency FX effects and wallet fees/taxes from performance.
+US equity IDs such as `AAPL_US_EQ` display as `AAPL`; other listing IDs are preserved.
+Order history is cached in SQLite and paginated, then refreshed incrementally at
+most once per minute. A large first import can take time because of API rate limits.
+Unsupported corporate actions cause history-based calculations to report an error
+rather than produce misleading FIFO results. Portfolio views without bucket
+allocations use live holdings and do not require a history import.
+Daily P&L is unavailable because the API provides no previous-close baseline.
+Performance and history summaries keep separate totals for each currency; GBX
+prices retain their pence unit. Long portfolio and bucket messages continue across
+Telegram messages without changing transaction shortcut numbers.
+The published API terms require Trading 212's written consent for applications
+intended for other end-users; this integration is for personal account tracking.
+
+These commands keep their existing formats; each successful submission adds a
 new account. Users can connect multiple accounts from the same provider. Use
-`/integration_delete ID` or the account's Delete button to remove one account.
+`/integration_delete NUMBER` or the account's Delete button to remove one account.
+Numbers are positions in your `/integrations` list, starting at 1.
 The old `/integration_delete ibkr` or `/integration_delete f24` shortcut works
 only when the user has exactly one account of that provider.
 

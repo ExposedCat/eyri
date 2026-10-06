@@ -1,6 +1,7 @@
 import { Composer, InputFile } from "grammy";
 import { buildPortfolioCharts, renderPortfolioChart } from "./portfolio_chart.ts";
 import type { CustomContext } from "../bot/types.ts";
+import { splitMessageLines } from "../bot/message.ts";
 import {
   createBucket,
   deleteBucket,
@@ -62,6 +63,12 @@ const htmlReplyOptions = {
     is_disabled: true,
   },
 };
+
+async function replyPortfolioText(ctx: CustomContext, text: string) {
+  for (const chunk of splitMessageLines(text)) {
+    await ctx.reply(chunk, htmlReplyOptions);
+  }
+}
 
 const BUCKET_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,19}$/;
 const BUCKET_ACTION_PATTERN =
@@ -133,7 +140,7 @@ async function resolveBucketName(ctx: CustomContext) {
   return bucket.name;
 }
 
-async function fetchBucketedPositions(
+export async function fetchBucketedPositions(
   ctx: CustomContext,
   bucketName: string | null,
 ) {
@@ -142,12 +149,18 @@ async function fetchBucketedPositions(
     return [];
   }
 
+  const transactionBuckets = readBucketAssignments(ctx.db, userId);
+  // With no bucket allocations, live holdings already contain the full view.
+  // Trading 212 history may be slow to import or contain corporate actions
+  // that cannot be represented by the FIFO model.
+  if (bucketName === null && transactionBuckets.size === 0) {
+    return fetchIntegratedPortfolio(ctx.db, userId);
+  }
+
   const [livePositions, orders] = await Promise.all([
     fetchIntegratedPortfolio(ctx.db, userId),
     fetchIntegratedOrderHistory(ctx.db, userId),
   ]);
-  const transactionBuckets = readBucketAssignments(ctx.db, userId);
-
   return buildBucketedPortfolioPositions({
     orders,
     livePositions,
@@ -250,7 +263,7 @@ async function replyBucketMoveHistory(ctx: CustomContext, bucketName: string) {
     return;
   }
 
-  await ctx.reply(history, htmlReplyOptions);
+  await replyPortfolioText(ctx, history);
 }
 
 function formatPackSyncResult(
@@ -914,7 +927,7 @@ tickersComposer.command("stocks", async (ctx) => {
       return;
     }
 
-    await ctx.reply(priceList, htmlReplyOptions);
+    await replyPortfolioText(ctx, priceList);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
@@ -967,7 +980,7 @@ tickersComposer.command("options", async (ctx) => {
       return;
     }
 
-    await ctx.reply(priceList, htmlReplyOptions);
+    await replyPortfolioText(ctx, priceList);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
@@ -1091,7 +1104,7 @@ tickersComposer.command(["perf", "alltime"], async (ctx) => {
       return;
     }
 
-    await ctx.reply(performanceList, htmlReplyOptions);
+    await replyPortfolioText(ctx, performanceList);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
@@ -1141,7 +1154,7 @@ tickersComposer.command("sold", async (ctx) => {
       return;
     }
 
-    await ctx.reply(performanceList, htmlReplyOptions);
+    await replyPortfolioText(ctx, performanceList);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
@@ -1193,7 +1206,7 @@ tickersComposer.command("dpnl", async (ctx) => {
       return;
     }
 
-    await ctx.reply(performanceList, htmlReplyOptions);
+    await replyPortfolioText(ctx, performanceList);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
@@ -1237,7 +1250,7 @@ tickersComposer.command("history", async (ctx) => {
       return;
     }
 
-    await ctx.reply(history, htmlReplyOptions);
+    await replyPortfolioText(ctx, history);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
@@ -1299,7 +1312,7 @@ tickersComposer.command("when", async (ctx) => {
       return;
     }
 
-    await ctx.reply(priceList, htmlReplyOptions);
+    await replyPortfolioText(ctx, priceList);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }

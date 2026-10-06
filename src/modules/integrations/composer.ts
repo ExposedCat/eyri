@@ -18,16 +18,16 @@ function describeIntegration(integration: Integration) {
   if (integration.kind === "ibkr") {
     const url = String(integration.credentials.instanceUrl ?? "unknown");
     const account = integration.credentials.accountId;
-    return `${integration.id}. IBKR ${url}${
-      account ? `, account ${account}` : ""
-    }`;
+    return `IBKR ${url}${account ? `, account ${account}` : ""}`;
   }
   const key = String(integration.credentials.apiKey ?? "");
   // Never render a complete API key, including unusually short keys.
   const masked = key.length > 8
     ? `${key.slice(0, 4)}…${key.slice(-4)}`
     : "••••";
-  return `${integration.id}. Freedom24 ${masked}`;
+  return integration.kind === "t212"
+    ? `Trading 212 ${masked} (${integration.credentials.environment ?? "live"})`
+    : `Freedom24 ${masked}`;
 }
 
 export function buildIntegrationsMessage(
@@ -37,10 +37,10 @@ export function buildIntegrationsMessage(
   return {
     blocks: [
       { type: "heading", text: "Integrations", size: 2 },
-      ...integrations.map((integration) => ({
+      ...integrations.map((integration, index) => ({
         type: "paragraph" as const,
         text: [
-          `${describeIntegration(integration)}  `,
+          `${index + 1}. ${describeIntegration(integration)}  `,
           {
             type: "button" as const,
             button: {
@@ -116,6 +116,12 @@ export function parseIntegrationCredentials(
     const [instanceUrl, flexToken, flexQueryId] = params;
     return { instanceUrl, flexToken, flexQueryId };
   }
+  if (kind === "t212") {
+    if (params.length !== 2 && params.length !== 3) return null;
+    const [apiKey, secretKey, environment = "live"] = params;
+    if (environment !== "live" && environment !== "demo") return null;
+    return { apiKey, secretKey, environment };
+  }
   if (params.length !== 2 && params.length !== 3) return null;
   const [apiKey, secretKey, historyYears] = params;
   const years = historyYears === undefined ? 10 : Number(historyYears);
@@ -124,6 +130,9 @@ export function parseIntegrationCredentials(
 }
 
 function credentialPrompt(kind: IntegrationKind) {
+  if (kind === "t212") {
+    return "Send your Trading 212 credentials in this format:\n\n<code>[api_key] [secret_key] [live|demo]</code>\n\nThe environment is optional and defaults to live. Enable read-only Portfolio and History - Orders permissions; leave trading permissions disabled.\n\nUse /cancel to cancel.";
+  }
   return kind === "ibkr"
     ? "Send your IBKR credentials in this format:\n\n<code>[instance_url] [flex_token] [flex_query_id]</code>\n\nUse /cancel to cancel."
     : "Send your Freedom24 credentials in this format:\n\n<code>[api_key] [secret_key] [history_years]</code>\n\n<code>history_years</code> is optional and defaults to 10.\n\nUse /cancel to cancel.";
@@ -136,7 +145,7 @@ integrationsComposer.command("integrations", async (ctx) => {
 });
 
 integrationsComposer.callbackQuery(
-  /^integration:(\d+):(add|select|delete|back)(?::(ibkr|f24|\d+))?$/,
+  /^integration:(\d+):(add|select|delete|back)(?::(ibkr|f24|t212|\d+))?$/,
   async (ctx) => {
     const userId = ctx.dbEntities.user?.userId;
     const [, owner, action, value] = ctx.match;
@@ -179,6 +188,10 @@ integrationsComposer.callbackQuery(
                 text: "IBKR",
                 callback_data: `integration:${userId}:select:ibkr`,
               },
+              {
+                text: "Trading 212",
+                callback_data: `integration:${userId}:select:t212`,
+              },
             ],
           },
           {
@@ -190,7 +203,10 @@ integrationsComposer.callbackQuery(
           },
         ],
       }, true);
-    } else if (action === "select" && (value === "ibkr" || value === "f24")) {
+    } else if (
+      action === "select" &&
+      (value === "ibkr" || value === "f24" || value === "t212")
+    ) {
       const prompt = await ctx.reply(credentialPrompt(value), {
         parse_mode: "HTML",
         reply_markup: { force_reply: true, selective: true },
@@ -208,7 +224,7 @@ integrationsComposer.callbackQuery(
   },
 );
 
-for (const kind of ["ibkr", "f24"] as const) {
+for (const kind of ["ibkr", "f24", "t212"] as const) {
   integrationsComposer.command(kind, async (ctx) => {
     if (!ctx.dbEntities.user || !ctx.chat) return;
     const userId = ctx.dbEntities.user.userId;
@@ -237,11 +253,10 @@ integrationsComposer.command("integration_delete", async (ctx) => {
   if (!userId) return;
   const input = ctx.match.trim();
   // Keep the old provider shortcut only when it identifies a single account.
-  const accounts = getUserIntegrations(ctx.db, userId).filter((item) =>
-    item.kind === input
-  );
+  const integrations = getUserIntegrations(ctx.db, userId);
+  const accounts = integrations.filter((item) => item.kind === input);
   const integrationId = /^\d+$/.test(input)
-    ? Number(input)
+    ? integrations[Number(input) - 1]?.id
     : accounts.length === 1
     ? accounts[0].id
     : null;

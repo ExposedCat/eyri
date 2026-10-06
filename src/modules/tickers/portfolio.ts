@@ -75,6 +75,24 @@ type IntegratedPositionPerformance = {
 const formatWholeMoney = (value: number, currency = "USD") =>
   formatMoney(value, currency, 0);
 const formatAmount = (value: number) => value.toFixed(2);
+
+function formatCurrencyChange(value: number, currency: string) {
+  if (currency === "USD") return formatMoneyChange(value);
+  const rounded = Number(value.toFixed(2));
+  return `${rounded > 0 ? "+" : ""}${formatMoney(rounded, currency)}`;
+}
+
+function groupByCurrency<T extends { currency: string }>(items: T[]) {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const currency = item.currency.trim().toUpperCase();
+    const group = groups.get(currency) ?? [];
+    group.push(item);
+    groups.set(currency, group);
+  }
+  return groups;
+}
+
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 const DAYS_PER_MONTH = 365.2425 / 12;
 const FLOAT_EPSILON = 1e-9;
@@ -187,7 +205,9 @@ export function formatOptionTicker(
     tickerEmojiMappings,
   );
   const quarter = optionMonthQuarters[parsed.month] ?? parsed.month;
-  return `${underlying} → $${formatOptionStrike(parsed.strike)} ${quarter}'${parsed.year.slice(-2)}`;
+  return `${underlying} → $${formatOptionStrike(parsed.strike)} ${quarter}'${
+    parsed.year.slice(-2)
+  }`;
 }
 
 function getElapsedMonthCount(startDate: Date, endDate: Date) {
@@ -332,8 +352,8 @@ function buildIntegratedPositionPerformance(
   now: Date,
   priceOverrides?: Record<string, number>,
 ): IntegratedPositionPerformance {
-  const currentPrice =
-    getPriceOverride(priceOverrides, position.ticker) ?? position.currentPrice;
+  const currentPrice = getPriceOverride(priceOverrides, position.ticker) ??
+    position.currentPrice;
   const totalInput = position.totalInput;
   const averageUnitPrice = position.averageUnitPrice;
   const elapsedPeriod = getElapsedPeriod(position.openedAt, now);
@@ -359,8 +379,9 @@ function buildIntegratedPositionPerformance(
 
   const totalNow = position.amount * currentPrice;
   const totalChange = totalNow - totalInput;
-  const totalPercentageChange =
-    totalInput === 0 ? 0 : (totalChange / totalInput) * 100;
+  const totalPercentageChange = totalInput === 0
+    ? 0
+    : (totalChange / totalInput) * 100;
 
   return {
     position,
@@ -384,8 +405,8 @@ function buildIntegratedPortfolioTotals(
       !position.openedAt
         ? earliest
         : !earliest || position.openedAt < earliest
-          ? position.openedAt
-          : earliest,
+        ? position.openedAt
+        : earliest,
     null as Date | null,
   );
   const elapsedPeriod = getElapsedPeriod(earliestPortfolioDate, now);
@@ -420,8 +441,9 @@ function buildIntegratedPortfolioTotals(
   }
 
   const totalChange = totals.totalNow - totals.totalInput;
-  const totalPercentageChange =
-    totals.totalInput === 0 ? 0 : (totalChange / totals.totalInput) * 100;
+  const totalPercentageChange = totals.totalInput === 0
+    ? 0
+    : (totalChange / totals.totalInput) * 100;
   const dailyPnlTotals = performances.reduce(
     (totals, { position }) => {
       if (position.dailyPnl === null) {
@@ -430,8 +452,8 @@ function buildIntegratedPortfolioTotals(
       }
 
       totals.dailyPnl += position.dailyPnl;
-      const baseline =
-        position.dailyPnlTotalBaseline ?? position.dailyPnlBaseline;
+      const baseline = position.dailyPnlTotalBaseline ??
+        position.dailyPnlBaseline;
       if (baseline === null || baseline === 0) {
         totals.hasMissingDailyPnlPercentage = true;
         return totals;
@@ -447,11 +469,10 @@ function buildIntegratedPortfolioTotals(
       hasMissingDailyPnlPercentage: false,
     },
   );
-  const dailyPnlPercentage =
-    dailyPnlTotals.hasMissingDailyPnlPercentage ||
-    dailyPnlTotals.dailyPnlBaseline === 0
-      ? null
-      : (dailyPnlTotals.dailyPnl / dailyPnlTotals.dailyPnlBaseline) * 100;
+  const dailyPnlPercentage = dailyPnlTotals.hasMissingDailyPnlPercentage ||
+      dailyPnlTotals.dailyPnlBaseline === 0
+    ? null
+    : (dailyPnlTotals.dailyPnl / dailyPnlTotals.dailyPnlBaseline) * 100;
 
   return {
     ...totals,
@@ -463,12 +484,12 @@ function buildIntegratedPortfolioTotals(
     dailyPercentageChange: dailyPnlTotals.hasMissingDailyPnl
       ? null
       : dailyPnlPercentage,
-    monthlyChange:
-      elapsedPeriod.months === null ? null : totalChange / elapsedPeriod.months,
-    monthlyPercentageChange:
-      elapsedPeriod.months === null
-        ? null
-        : totalPercentageChange / elapsedPeriod.months,
+    monthlyChange: elapsedPeriod.months === null
+      ? null
+      : totalChange / elapsedPeriod.months,
+    monthlyPercentageChange: elapsedPeriod.months === null
+      ? null
+      : totalPercentageChange / elapsedPeriod.months,
     elapsedPeriod,
   };
 }
@@ -526,7 +547,8 @@ function buildIntegratedSoldPerformances(
         quantity: order.quantity,
         price: order.price ?? 0,
         date: order.date,
-        bucketName: transactionBuckets?.get(getOrderTransactionKey(order)) ?? null,
+        bucketName: transactionBuckets?.get(getOrderTransactionKey(order)) ??
+          null,
       });
       lotsByKey.set(orderKey, lots);
       continue;
@@ -565,16 +587,15 @@ function buildIntegratedSoldPerformances(
       sold.cost += cost;
       sold.proceeds += proceeds;
       sold.realizedPnl += realizedPnl;
-      sold.openedAt =
-        sold.openedAt === null || lot.date < sold.openedAt
-          ? lot.date
-          : sold.openedAt;
-      sold.closedAt =
-        sold.closedAt === null || order.date > sold.closedAt
-          ? order.date
-          : sold.closedAt;
-      sold.realizedPercentageChange =
-        sold.cost === 0 ? 0 : (sold.realizedPnl / sold.cost) * 100;
+      sold.openedAt = sold.openedAt === null || lot.date < sold.openedAt
+        ? lot.date
+        : sold.openedAt;
+      sold.closedAt = sold.closedAt === null || order.date > sold.closedAt
+        ? order.date
+        : sold.closedAt;
+      sold.realizedPercentageChange = sold.cost === 0
+        ? 0
+        : (sold.realizedPnl / sold.cost) * 100;
       soldByDisplayKey.set(displayKey, sold);
 
       lot.quantity -= quantity;
@@ -600,16 +621,14 @@ function buildIntegratedSoldTotals(performances: IntegratedSoldPerformance[]) {
       totals.cost += performance.cost;
       totals.proceeds += performance.proceeds;
       totals.realizedPnl += performance.realizedPnl;
-      totals.openedAt =
-        performance.openedAt &&
-        (totals.openedAt === null || performance.openedAt < totals.openedAt)
-          ? performance.openedAt
-          : totals.openedAt;
-      totals.closedAt =
-        performance.closedAt &&
-        (totals.closedAt === null || performance.closedAt > totals.closedAt)
-          ? performance.closedAt
-          : totals.closedAt;
+      totals.openedAt = performance.openedAt &&
+          (totals.openedAt === null || performance.openedAt < totals.openedAt)
+        ? performance.openedAt
+        : totals.openedAt;
+      totals.closedAt = performance.closedAt &&
+          (totals.closedAt === null || performance.closedAt > totals.closedAt)
+        ? performance.closedAt
+        : totals.closedAt;
       return totals;
     },
     {
@@ -623,8 +642,9 @@ function buildIntegratedSoldTotals(performances: IntegratedSoldPerformance[]) {
 
   return {
     ...totals,
-    realizedPercentageChange:
-      totals.cost === 0 ? 0 : (totals.realizedPnl / totals.cost) * 100,
+    realizedPercentageChange: totals.cost === 0
+      ? 0
+      : (totals.realizedPnl / totals.cost) * 100,
   };
 }
 
@@ -637,7 +657,27 @@ export async function buildIntegratedTickerList({
   tickerLabelLinks,
   tickerEmojiMappings,
   formatTicker,
-}: BuildIntegratedTickerListArgs) {
+}: BuildIntegratedTickerListArgs): Promise<string> {
+  const currencyGroups = groupByCurrency(positions);
+  if (currencyGroups.size > 1) {
+    const sections = await Promise.all(
+      [...currencyGroups].map(async ([currency, group]) => {
+        const output = await buildIntegratedTickerList({
+          positions: group,
+          priceOverrides,
+          separateGainersLosers,
+          tickerDecorations,
+          tickerLabelPreferences,
+          tickerLabelLinks,
+          tickerEmojiMappings,
+          formatTicker,
+        });
+        return output ? `${currency}\n${output}` : "";
+      }),
+    );
+    return sections.filter(Boolean).join("\n\n");
+  }
+
   if (positions.length === 0) {
     return "";
   }
@@ -645,7 +685,7 @@ export async function buildIntegratedTickerList({
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
     getSortedIntegratedPositions(positions).map((position) =>
-      buildIntegratedPositionPerformance(position, now, priceOverrides),
+      buildIntegratedPositionPerformance(position, now, priceOverrides)
     ),
   );
 
@@ -676,51 +716,71 @@ export async function buildIntegratedTickerList({
       ].join("\n");
     }
 
-    const monthlySummary =
-      performance.elapsedPeriod.months === null
-        ? "? ?"
-        : `${formatMoneyChange(
-            performance.totalChange / performance.elapsedPeriod.months,
-          )} ${formatMoneyChange(
-            performance.totalPercentageChange /
-              performance.elapsedPeriod.months,
-            "%",
-          )}`;
+    const monthlySummary = performance.elapsedPeriod.months === null
+      ? "? ?"
+      : `${
+        formatCurrencyChange(
+          performance.totalChange / performance.elapsedPeriod.months,
+          position.currency,
+        )
+      } ${
+        formatMoneyChange(
+          performance.totalPercentageChange /
+            performance.elapsedPeriod.months,
+          "%",
+        )
+      }`;
 
     return [
-      `${tickerName} ${formatMoneyChange(performance.totalChange)} ${formatMoneyChange(
-        performance.totalPercentageChange,
-        "%",
-      )}`,
-      `${formatMoney(performance.averageUnitPrice, position.currency)} x ${formatAmount(
-        position.amount,
-      )} (${formatMoney(performance.currentPrice, position.currency)} ${formatMoneyChange(
-        performance.currentVsAverageChange,
-      )})`,
-      `${formatMoney(performance.totalInput, position.currency)} -> ${formatMoney(
-        performance.totalNow,
-        position.currency,
-      )} x ${performance.elapsedPeriod.label} (${monthlySummary})`,
+      `${tickerName} ${
+        formatCurrencyChange(performance.totalChange, position.currency)
+      } ${
+        formatMoneyChange(
+          performance.totalPercentageChange,
+          "%",
+        )
+      }`,
+      `${formatMoney(performance.averageUnitPrice, position.currency)} x ${
+        formatAmount(
+          position.amount,
+        )
+      } (${formatMoney(performance.currentPrice, position.currency)} ${
+        formatCurrencyChange(
+          performance.currentVsAverageChange,
+          position.currency,
+        )
+      })`,
+      `${formatMoney(performance.totalInput, position.currency)} -> ${
+        formatMoney(
+          performance.totalNow,
+          position.currency,
+        )
+      } x ${performance.elapsedPeriod.label} (${monthlySummary})`,
     ].join("\n");
   };
   const tickerLines = separateGainersLosers
     ? buildSeparatedChangeLines(
-        performances,
-        (performance) => performance.totalChange,
-        renderTickerLine,
-      )
+      performances,
+      (performance) => performance.totalChange,
+      renderTickerLine,
+    )
     : performances.map(renderTickerLine);
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalReturn =
     totals.totalChange === null || totals.totalPercentageChange === null
       ? "? ?"
-      : `${formatMoneyChange(totals.totalChange)} ${formatMoneyChange(totals.totalPercentageChange, "%")}`;
+      : `${formatCurrencyChange(totals.totalChange, positions[0].currency)} ${
+        formatMoneyChange(totals.totalPercentageChange, "%")
+      }`;
   const monthlyReturn =
     totals.monthlyChange === null || totals.monthlyPercentageChange === null
       ? ""
-      : ` / ${formatMoneyChange(totals.monthlyChange)} ${formatMoneyChange(totals.monthlyPercentageChange, "%")}`;
-  const totalSummary = `${totalReturn}${monthlyReturn} (${totals.elapsedPeriod.label})`;
+      : ` / ${
+        formatCurrencyChange(totals.monthlyChange, positions[0].currency)
+      } ${formatMoneyChange(totals.monthlyPercentageChange, "%")}`;
+  const totalSummary =
+    `${totalReturn}${monthlyReturn} (${totals.elapsedPeriod.label})`;
 
   return [...tickerLines, totalSummary].join("\n\n");
 }
@@ -733,7 +793,26 @@ export async function buildIntegratedPerformanceList({
   tickerLabelLinks,
   tickerEmojiMappings,
   formatTicker,
-}: BuildIntegratedTickerListArgs) {
+}: BuildIntegratedTickerListArgs): Promise<string> {
+  const currencyGroups = groupByCurrency(positions);
+  if (currencyGroups.size > 1) {
+    const sections = await Promise.all(
+      [...currencyGroups].map(async ([currency, group]) => {
+        const output = await buildIntegratedPerformanceList({
+          positions: group,
+          priceOverrides,
+          tickerDecorations,
+          tickerLabelPreferences,
+          tickerLabelLinks,
+          tickerEmojiMappings,
+          formatTicker,
+        });
+        return output ? `${currency}\n${output}` : "";
+      }),
+    );
+    return sections.filter(Boolean).join("\n\n");
+  }
+
   if (positions.length === 0) {
     return "";
   }
@@ -741,7 +820,7 @@ export async function buildIntegratedPerformanceList({
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
     getSortedIntegratedPositions(positions).map((position) =>
-      buildIntegratedPositionPerformance(position, now, priceOverrides),
+      buildIntegratedPositionPerformance(position, now, priceOverrides)
     ),
   );
 
@@ -765,12 +844,17 @@ export async function buildIntegratedPerformanceList({
         return `${tickerName} ? ? (${performance.elapsedPeriod.label})`;
       }
 
-      return `${tickerName} ${formatMoneyChange(
-        performance.totalPercentageChange,
-        "%",
-      )} ${formatMoneyChange(
-        performance.totalChange,
-      )} (${performance.elapsedPeriod.label})`;
+      return `${tickerName} ${
+        formatMoneyChange(
+          performance.totalPercentageChange,
+          "%",
+        )
+      } ${
+        formatCurrencyChange(
+          performance.totalChange,
+          position.currency,
+        )
+      } (${performance.elapsedPeriod.label})`;
     },
   );
 
@@ -778,9 +862,12 @@ export async function buildIntegratedPerformanceList({
   const totalLine =
     totals.totalChange === null || totals.totalPercentageChange === null
       ? `Total: ? ? (${totals.elapsedPeriod.label})`
-      : `Total: ${formatMoneyChange(totals.totalPercentageChange, "%")} ${formatMoneyChange(
+      : `Total: ${formatMoneyChange(totals.totalPercentageChange, "%")} ${
+        formatCurrencyChange(
           totals.totalChange,
-        )} (${totals.elapsedPeriod.label})`;
+          positions[0].currency,
+        )
+      } (${totals.elapsedPeriod.label})`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -792,7 +879,25 @@ export async function buildIntegratedSoldPerformanceList({
   tickerLabelLinks,
   tickerEmojiMappings,
   formatTicker,
-}: BuildIntegratedSoldPerformanceArgs) {
+}: BuildIntegratedSoldPerformanceArgs): Promise<string> {
+  const currencyGroups = groupByCurrency(orders);
+  if (currencyGroups.size > 1) {
+    const sections = await Promise.all(
+      [...currencyGroups].map(async ([currency, group]) => {
+        const output = await buildIntegratedSoldPerformanceList({
+          orders: group,
+          tickerDecorations,
+          tickerLabelPreferences,
+          tickerLabelLinks,
+          tickerEmojiMappings,
+          formatTicker,
+        });
+        return output ? `${currency}\n${output}` : "";
+      }),
+    );
+    return sections.filter(Boolean).join("\n\n");
+  }
+
   const performances = buildIntegratedSoldPerformances(orders);
   if (performances.length === 0) {
     return "";
@@ -815,10 +920,14 @@ export async function buildIntegratedSoldPerformanceList({
         performance.closedAt ?? new Date(),
       );
 
-      return `${tickerName} ${formatMoneyChange(
-        performance.realizedPercentageChange,
-        "%",
-      )} ${formatMoneyChange(performance.realizedPnl)} (${elapsedPeriod.label})`;
+      return `${tickerName} ${
+        formatMoneyChange(
+          performance.realizedPercentageChange,
+          "%",
+        )
+      } ${
+        formatCurrencyChange(performance.realizedPnl, performance.currency)
+      } (${elapsedPeriod.label})`;
     },
   );
 
@@ -827,10 +936,14 @@ export async function buildIntegratedSoldPerformanceList({
     totals.openedAt,
     totals.closedAt ?? new Date(),
   );
-  const totalLine = `Total: ${formatMoneyChange(
-    totals.realizedPercentageChange,
-    "%",
-  )} ${formatMoneyChange(totals.realizedPnl)} (${elapsedPeriod.label})`;
+  const totalLine = `Total: ${
+    formatMoneyChange(
+      totals.realizedPercentageChange,
+      "%",
+    )
+  } ${
+    formatCurrencyChange(totals.realizedPnl, performances[0].currency)
+  } (${elapsedPeriod.label})`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -846,10 +959,37 @@ export async function buildIntegratedAllTimePerformanceList({
   formatTicker,
   transactionBuckets,
   bucketName = null,
-}: BuildIntegratedAllTimePerformanceArgs) {
+}: BuildIntegratedAllTimePerformanceArgs): Promise<string> {
+  const currencies = new Set(
+    [...positions, ...orders].map((item) => item.currency.trim().toUpperCase()),
+  );
+  if (currencies.size > 1) {
+    const sections = await Promise.all([...currencies].map(async (currency) => {
+      const output = await buildIntegratedAllTimePerformanceList({
+        positions: positions.filter((item) =>
+          item.currency.trim().toUpperCase() === currency
+        ),
+        orders: orders.filter((item) =>
+          item.currency.trim().toUpperCase() === currency
+        ),
+        priceOverrides,
+        tickerDecorations,
+        tickerLabelPreferences,
+        tickerLabelLinks,
+        tickerEmojiMappings,
+        formatTicker,
+        transactionBuckets,
+        bucketName,
+      });
+      return output ? `${currency}\n${output}` : "";
+    }));
+    return sections.filter(Boolean).join("\n\n");
+  }
+
   const now = new Date();
   type Performance = {
     ticker: string;
+    currency: string;
     cost: number | null;
     change: number | null;
     openedAt: Date | null;
@@ -891,6 +1031,7 @@ export async function buildIntegratedAllTimePerformanceList({
     );
     add(getPositionDisplayKey(position.ticker, position.currency), {
       ticker: position.ticker,
+      currency: position.currency,
       cost: performance.totalInput,
       change: performance.totalChange,
       openedAt: position.openedAt,
@@ -906,6 +1047,7 @@ export async function buildIntegratedAllTimePerformanceList({
   ) {
     add(getPositionDisplayKey(sold.ticker, sold.currency), {
       ticker: sold.ticker,
+      currency: sold.currency,
       cost: sold.cost,
       change: sold.realizedPnl,
       openedAt: sold.openedAt,
@@ -930,7 +1072,7 @@ export async function buildIntegratedAllTimePerformanceList({
       ? 0
       : performance.change / performance.cost * 100;
     return `${name} ${formatMoneyChange(percentage, "%")} ${
-      formatMoneyChange(performance.change)
+      formatCurrencyChange(performance.change, performance.currency)
     } (${elapsed.label})`;
   };
   const lines = buildSeparatedChangeLines(
@@ -951,6 +1093,7 @@ export async function buildIntegratedAllTimePerformanceList({
   );
   const total = performances.reduce((total, next) => merge(total, next), {
     ticker: "",
+    currency: performances[0].currency,
     cost: 0,
     change: 0,
     openedAt: null,
@@ -967,7 +1110,26 @@ export async function buildIntegratedDailyPerformanceList({
   tickerLabelLinks,
   tickerEmojiMappings,
   formatTicker,
-}: BuildIntegratedTickerListArgs) {
+}: BuildIntegratedTickerListArgs): Promise<string> {
+  const currencyGroups = groupByCurrency(positions);
+  if (currencyGroups.size > 1) {
+    const sections = await Promise.all(
+      [...currencyGroups].map(async ([currency, group]) => {
+        const output = await buildIntegratedDailyPerformanceList({
+          positions: group,
+          priceOverrides,
+          tickerDecorations,
+          tickerLabelPreferences,
+          tickerLabelLinks,
+          tickerEmojiMappings,
+          formatTicker,
+        });
+        return output ? `${currency}\n${output}` : "";
+      }),
+    );
+    return sections.filter(Boolean).join("\n\n");
+  }
+
   if (positions.length === 0) {
     return "";
   }
@@ -975,7 +1137,7 @@ export async function buildIntegratedDailyPerformanceList({
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
     getSortedIntegratedPositions(positions).map((position) =>
-      buildIntegratedPositionPerformance(position, now, priceOverrides),
+      buildIntegratedPositionPerformance(position, now, priceOverrides)
     ),
     (performance) => performance.position.dailyPnl,
   );
@@ -997,23 +1159,23 @@ export async function buildIntegratedDailyPerformanceList({
         return `${tickerName} ? ? today`;
       }
 
-      const percentage =
-        position.dailyPnlPercentage === null
-          ? "?"
-          : formatMoneyChange(position.dailyPnlPercentage, "%");
-      return `${tickerName} ${percentage} ${formatMoneyChange(position.dailyPnl)} today`;
+      const percentage = position.dailyPnlPercentage === null
+        ? "?"
+        : formatMoneyChange(position.dailyPnlPercentage, "%");
+      return `${tickerName} ${percentage} ${
+        formatCurrencyChange(position.dailyPnl, position.currency)
+      } today`;
     },
   );
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
-  const totalLine =
-    totals.dailyChange === null
-      ? "Total: ? ? today"
-      : `Total: ${
-          totals.dailyPercentageChange === null
-            ? "?"
-            : formatMoneyChange(totals.dailyPercentageChange, "%")
-        } ${formatMoneyChange(totals.dailyChange)} today`;
+  const totalLine = totals.dailyChange === null
+    ? "Total: ? ? today"
+    : `Total: ${
+      totals.dailyPercentageChange === null
+        ? "?"
+        : formatMoneyChange(totals.dailyPercentageChange, "%")
+    } ${formatCurrencyChange(totals.dailyChange, positions[0].currency)} today`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -1079,7 +1241,7 @@ export function filterHistoryOrdersByBucket(
 
     return (
       (transactionBuckets.get(getOrderTransactionKey(order)) ?? null) ===
-      bucketName
+        bucketName
     );
   });
 }
@@ -1097,7 +1259,7 @@ export function buildBucketedPortfolioPositions({
         livePositions,
         transactionBuckets,
         bucketName: name,
-      }),
+      })
     );
     const allocations = new Map<
       string,
@@ -1105,7 +1267,7 @@ export function buildBucketedPortfolioPositions({
     >();
     const liveKeys = new Set(
       livePositions.map((position) =>
-        getPositionDisplayKey(position.ticker, position.currency),
+        getPositionDisplayKey(position.ticker, position.currency)
       ),
     );
     for (const position of bucketed) {
@@ -1117,10 +1279,9 @@ export function buildBucketedPortfolioPositions({
       }
       const allocation = allocations.get(key) ?? { amount: 0, cost: 0 };
       allocation.amount += position.amount;
-      allocation.cost =
-        allocation.cost === null || position.totalInput === null
-          ? null
-          : allocation.cost + position.totalInput;
+      allocation.cost = allocation.cost === null || position.totalInput === null
+        ? null
+        : allocation.cost + position.totalInput;
       allocations.set(key, allocation);
     }
 
@@ -1144,8 +1305,9 @@ export function buildBucketedPortfolioPositions({
           position.totalInput === null || allocation.cost === null
             ? null
             : position.totalInput - allocation.cost;
-        const totalNow =
-          position.totalNow === null ? null : position.totalNow * share;
+        const totalNow = position.totalNow === null
+          ? null
+          : position.totalNow * share;
         return [
           {
             ...position,
@@ -1153,20 +1315,18 @@ export function buildBucketedPortfolioPositions({
             averageUnitPrice: totalInput === null ? null : totalInput / amount,
             totalInput,
             totalNow,
-            unrealizedPnl:
-              totalNow === null || totalInput === null
-                ? null
-                : totalNow - totalInput,
-            dailyPnl:
-              position.dailyPnl === null ? null : position.dailyPnl * share,
-            dailyPnlBaseline:
-              position.dailyPnlBaseline === null
-                ? null
-                : position.dailyPnlBaseline * share,
-            dailyPnlTotalBaseline:
-              position.dailyPnlTotalBaseline == null
-                ? position.dailyPnlTotalBaseline
-                : position.dailyPnlTotalBaseline * share,
+            unrealizedPnl: totalNow === null || totalInput === null
+              ? null
+              : totalNow - totalInput,
+            dailyPnl: position.dailyPnl === null
+              ? null
+              : position.dailyPnl * share,
+            dailyPnlBaseline: position.dailyPnlBaseline === null
+              ? null
+              : position.dailyPnlBaseline * share,
+            dailyPnlTotalBaseline: position.dailyPnlTotalBaseline == null
+              ? position.dailyPnlTotalBaseline
+              : position.dailyPnlTotalBaseline * share,
           },
         ];
       }),
@@ -1223,8 +1383,8 @@ export function buildBucketedPortfolioPositions({
         quantity: order.quantity,
         price: order.price,
         date: order.date,
-        bucketName:
-          transactionBuckets.get(getOrderTransactionKey(order)) ?? null,
+        bucketName: transactionBuckets.get(getOrderTransactionKey(order)) ??
+          null,
       });
       lotsByKey.set(key, lots);
       continue;
@@ -1268,10 +1428,9 @@ export function buildBucketedPortfolioPositions({
       }
       draft.amount += lot.quantity;
       draft.totalInput += lot.quantity * lot.price;
-      draft.openedAt =
-        draft.openedAt === null || lot.date < draft.openedAt
-          ? lot.date
-          : draft.openedAt;
+      draft.openedAt = draft.openedAt === null || lot.date < draft.openedAt
+        ? lot.date
+        : draft.openedAt;
       drafts.set(key, draft);
     }
   }
@@ -1296,20 +1455,19 @@ export function buildBucketedPortfolioPositions({
     const currentPrice = livePosition?.currentPrice ?? null;
     const totalNow = currentPrice === null ? null : draft.amount * currentPrice;
     const liveAmount = Math.abs(livePosition?.amount ?? 0);
-    const liveShare =
-      liveAmount <= FLOAT_EPSILON ? null : draft.amount / liveAmount;
-    const dailyPnl =
-      liveShare === null ||
-      livePosition?.dailyPnl === null ||
-      livePosition?.dailyPnl === undefined
-        ? null
-        : livePosition.dailyPnl * liveShare;
-    const dailyPnlBaseline =
-      liveShare === null ||
-      livePosition?.dailyPnlBaseline === null ||
-      livePosition?.dailyPnlBaseline === undefined
-        ? null
-        : livePosition.dailyPnlBaseline * liveShare;
+    const liveShare = liveAmount <= FLOAT_EPSILON
+      ? null
+      : draft.amount / liveAmount;
+    const dailyPnl = liveShare === null ||
+        livePosition?.dailyPnl === null ||
+        livePosition?.dailyPnl === undefined
+      ? null
+      : livePosition.dailyPnl * liveShare;
+    const dailyPnlBaseline = liveShare === null ||
+        livePosition?.dailyPnlBaseline === null ||
+        livePosition?.dailyPnlBaseline === undefined
+      ? null
+      : livePosition.dailyPnlBaseline * liveShare;
 
     return [
       {
@@ -1326,12 +1484,11 @@ export function buildBucketedPortfolioPositions({
         unrealizedPnl: totalNow === null ? null : totalNow - draft.totalInput,
         realizedPnl: null,
         dailyPnl,
-        dailyPnlPercentage:
-          dailyPnl === null ||
-          dailyPnlBaseline === null ||
-          dailyPnlBaseline === 0
-            ? null
-            : (dailyPnl / dailyPnlBaseline) * 100,
+        dailyPnlPercentage: dailyPnl === null ||
+            dailyPnlBaseline === null ||
+            dailyPnlBaseline === 0
+          ? null
+          : (dailyPnl / dailyPnlBaseline) * 100,
         dailyPnlBaseline,
         dailyPnlTotalBaseline:
           liveShare === null || livePosition?.dailyPnlTotalBaseline == null
@@ -1381,7 +1538,31 @@ export function buildIntegratedHistory({
   tickerLabelLinks,
   tickerEmojiMappings,
   formatLineSuffix,
-}: BuildIntegratedHistoryArgs) {
+}: BuildIntegratedHistoryArgs): string {
+  const currencyGroups = groupByCurrency(orders);
+  if (currencyGroups.size > 1) {
+    const indices = new Map(
+      buildIntegratedHistoryGroups(orders).map((
+        group,
+        index,
+      ) => [group.transactionKey, index + 1]),
+    );
+    return [...currencyGroups].map(([currency, groupOrders]) => {
+      const output = buildIntegratedHistory({
+        orders: groupOrders,
+        tickerDecorations,
+        tickerLabelPreferences,
+        tickerLabelLinks,
+        tickerEmojiMappings,
+        formatLineSuffix: formatLineSuffix
+          ? (group) =>
+            formatLineSuffix(group, indices.get(group.transactionKey)!)
+          : undefined,
+      });
+      return output ? `${currency}\n${output}` : "";
+    }).filter(Boolean).join("\n\n");
+  }
+
   const sorted = buildIntegratedHistoryGroups(orders);
   if (sorted.length === 0) {
     return "";
@@ -1403,12 +1584,16 @@ export function buildIntegratedHistory({
       tickerLabelLinks,
       tickerEmojiMappings,
     );
-    const line = `${formatUtcDate(group.date)} ${tickerName} ${group.quantity.toFixed(
-      4,
-    )} x ${formatMoney(averagePrice, group.currency)} (${formatWholeMoney(
-      group.total,
-      group.currency,
-    )})`;
+    const line = `${formatUtcDate(group.date)} ${tickerName} ${
+      group.quantity.toFixed(
+        4,
+      )
+    } x ${formatMoney(averagePrice, group.currency)} (${
+      formatWholeMoney(
+        group.total,
+        group.currency,
+      )
+    })`;
     const lineSuffix = formatLineSuffix?.(group, index + 1);
     lines.push(
       lineSuffix && lineSuffix.length > 0 ? `${line} ${lineSuffix}` : line,
@@ -1433,10 +1618,12 @@ export function buildIntegratedHistory({
     return `${header}\n${lines.join("\n")}`;
   });
 
-  return `${yearBlocks.join("\n\n")}\n\nTotal ${formatWholeMoney(
-    totalSpent,
-    totalCurrency,
-  )}`;
+  return `${yearBlocks.join("\n\n")}\n\nTotal ${
+    formatWholeMoney(
+      totalSpent,
+      totalCurrency,
+    )
+  }`;
 }
 
 export function parsePriceOverrides(

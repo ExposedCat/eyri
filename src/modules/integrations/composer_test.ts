@@ -192,6 +192,15 @@ Deno.test("rich integration menu adds multiple accounts, persists selection and 
       4,
     ]);
     equal(app.calls.at(-1)?.method, "editMessageText");
+    const firstRemainingRow = richMessage(app.calls).blocks[1];
+    ok(
+      firstRemainingRow.type === "paragraph" &&
+        Array.isArray(firstRemainingRow.text),
+    );
+    match(String(firstRemainingRow.text[0]), /^1\. Freedom24 /);
+    const remainingDelete = firstRemainingRow.text[1];
+    ok(typeof remainingDelete === "object");
+    equal(remainingDelete.button.callback_data, "integration:1:delete:2");
     // A duplicate click is answered without trying an identical edit.
     await app.click("integration:1:delete:1");
     equal(app.calls.at(-1)?.method, "answerCallbackQuery");
@@ -226,6 +235,61 @@ Deno.test("credential flow ignores other users, chats, old replies and commands;
     equal(getUserIntegrations(db, 1).length, 2);
     await app.text("/integration_delete 1");
     deepStrictEqual(getUserIntegrations(db, 1).map((item) => item.id), [2]);
+    await app.text("/integration_delete 1");
+    equal(getUserIntegrations(db, 1).length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("Trading 212 command and provider button save live/demo accounts and mask credentials", async () => {
+  const db = new Database(":memory:");
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1), (2)");
+    let app = harness(db);
+    await app.text("/t212");
+    match(
+      String(app.calls.at(-1)?.payload.text),
+      /\/t212.*\[api_key\].*\[secret_key\]/s,
+    );
+    await app.text("/t212 KEY SECRET production");
+    await app.text("/t212 KEY");
+    equal(getUserIntegrations(db, 1).length, 0);
+    await app.text("/t212 LIVEKEYONE LIVESECRET");
+    deepStrictEqual(getUserIntegrations(db, 1)[0].credentials, {
+      apiKey: "LIVEKEYONE",
+      secretKey: "LIVESECRET",
+      environment: "live",
+    });
+    await app.click("integration:1:add");
+    match(JSON.stringify(richMessage(app.calls)), /Trading 212.*select:t212/);
+    await app.click("integration:1:select:t212", 2);
+    equal(getIntegrationSetup(db, 2, 1), undefined);
+    await app.click("integration:1:select:t212");
+    equal(getIntegrationSetup(db, 1, 1)?.kind, "t212");
+    match(
+      String(app.calls.at(-1)?.payload.text),
+      /read-only.*trading permissions disabled/s,
+    );
+    app = harness(db);
+    await app.text("DEMO DEMOSECRET demo");
+    deepStrictEqual(getUserIntegrations(db, 1)[1].credentials, {
+      apiKey: "DEMO",
+      secretKey: "DEMOSECRET",
+      environment: "demo",
+    });
+    const menu = JSON.stringify(richMessage(app.calls));
+    match(menu, /Trading 212.*live.*Trading 212.*demo/);
+    for (
+      const credential of ["LIVEKEYONE", "LIVESECRET", "DEMOSECRET", "DEMO"]
+    ) {
+      ok(!menu.includes(credential));
+    }
+    await app.text("/integration_delete 2");
+    equal(getUserIntegrations(db, 1).length, 1);
+    await app.text("/integration_delete t212");
+    equal(getUserIntegrations(db, 1).length, 0);
   } finally {
     db.close();
   }

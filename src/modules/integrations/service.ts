@@ -5,6 +5,7 @@ import {
 import type { Database } from "../database/setup.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
+import { trading212Adapter } from "./trading212/adapter.ts";
 import type {
   IntegrationAdapter,
   IntegrationPortfolioPosition,
@@ -13,6 +14,7 @@ import type {
 const adapters: Record<Integration["kind"], IntegrationAdapter> = {
   f24: freedom24Adapter,
   ibkr: ibkrAdapter,
+  t212: trading212Adapter,
 };
 
 function getAdapter(integration: Integration) {
@@ -129,7 +131,7 @@ async function mapIntegrationData<T>(
         : String(result.reason);
       errors.push(
         new Error(
-          `${integration.kind} integration #${integration.id}: ${reason}`,
+          `${integration.kind} integration #${index + 1}: ${reason}`,
         ),
       );
     }

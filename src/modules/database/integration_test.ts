@@ -110,3 +110,42 @@ Deno.test("delete targets one owned account; setup state is scoped to user and c
     db.close();
   }
 });
+
+Deno.test("Trading 212 migration preserves existing credential-entry sessions", () => {
+  const db = new Database(":memory:");
+  try {
+    db.exec(`
+      CREATE TABLE users (user_id INTEGER PRIMARY KEY);
+      INSERT INTO users VALUES (1);
+      CREATE TABLE integration_setup_sessions (
+        user_id INTEGER NOT NULL REFERENCES users(user_id),
+        chat_id INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('ibkr', 'f24')),
+        prompt_message_id INTEGER NOT NULL,
+        PRIMARY KEY (user_id, chat_id)
+      );
+      INSERT INTO integration_setup_sessions VALUES (1, 10, 'f24', 20);
+    `);
+    ensureSchema(db);
+    ensureSchema(db);
+    deepStrictEqual(getIntegrationSetup(db, 1, 10), {
+      kind: "f24",
+      promptMessageId: 20,
+    });
+    setIntegrationSetup(db, 1, 11, "t212", 21);
+    deepStrictEqual(getIntegrationSetup(db, 1, 11), {
+      kind: "t212",
+      promptMessageId: 21,
+    });
+    const result = createIntegration({
+      database: db,
+      userId: 1,
+      kind: "t212",
+      credentials: { apiKey: "key", secretKey: "secret" },
+    });
+    ok(result.success);
+    equal(getUserIntegrations(db, 1)[0].kind, "t212");
+  } finally {
+    db.close();
+  }
+});

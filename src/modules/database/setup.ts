@@ -27,7 +27,7 @@ export function ensureSchema(database: Database) {
     CREATE TABLE IF NOT EXISTS integration_setup_sessions (
       user_id INTEGER NOT NULL REFERENCES users(user_id),
       chat_id INTEGER NOT NULL,
-      kind TEXT NOT NULL CHECK (kind IN ('ibkr', 'f24')),
+      kind TEXT NOT NULL CHECK (kind IN ('ibkr', 'f24', 't212')),
       prompt_message_id INTEGER NOT NULL,
       PRIMARY KEY (user_id, chat_id)
     );
@@ -72,6 +72,28 @@ export function ensureSchema(database: Database) {
       ON portfolio_bucket_transactions(user_id, bucket_name);
   `);
   migrateIntegrations(database);
+  migrateIntegrationSetup(database);
+}
+
+function migrateIntegrationSetup(database: Database) {
+  const table = database.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'integration_setup_sessions'",
+  ).get() as { sql: string };
+  if (table.sql.includes("'t212'")) return;
+  database.transaction(() => {
+    database.exec(`
+      CREATE TABLE integration_setup_sessions_new (
+        user_id INTEGER NOT NULL REFERENCES users(user_id),
+        chat_id INTEGER NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('ibkr', 'f24', 't212')),
+        prompt_message_id INTEGER NOT NULL,
+        PRIMARY KEY (user_id, chat_id)
+      );
+      INSERT INTO integration_setup_sessions_new SELECT * FROM integration_setup_sessions;
+      DROP TABLE integration_setup_sessions;
+      ALTER TABLE integration_setup_sessions_new RENAME TO integration_setup_sessions;
+    `);
+  })();
 }
 
 function migrateIntegrations(database: Database) {
