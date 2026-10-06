@@ -28,8 +28,9 @@ account under Settings → API (Beta), with
 Portfolio and History - Orders read permissions, and leave trading permissions off.
 Invest and Stocks & Shares ISA accounts are supported.
 
-Trading 212 holdings and executed trades use instrument currency consistently,
-excluding account-currency FX effects and wallet fees/taxes from performance.
+Trading 212 holdings and executed trades are stored in instrument currency;
+reports convert money to USD using the latest Frankfurter rates. Reported returns
+exclude historical FX effects and wallet fees/taxes.
 US equity IDs such as `AAPL_US_EQ` display as `AAPL`; other listing IDs are preserved.
 Order history is cached in SQLite and paginated, then refreshed incrementally at
 most once per minute. A large first import can take time because of API rate limits.
@@ -37,8 +38,8 @@ Unsupported corporate actions cause history-based calculations to report an erro
 rather than produce misleading FIFO results. Portfolio views without bucket
 allocations use live holdings and do not require a history import.
 Daily P&L is unavailable because the API provides no previous-close baseline.
-Performance and history summaries keep separate totals for each currency; GBX
-prices retain their pence unit. Long portfolio and bucket messages continue across
+All commands display money and combined totals in USD. GBX is treated as pence
+(100 GBX = 1 GBP) before USD conversion. Long portfolio and bucket messages continue across
 Telegram messages without changing transaction shortcut numbers.
 The published API terms require Trading 212's written consent for applications
 intended for other end-users; this integration is for personal account tracking.
@@ -51,12 +52,19 @@ The old `/integration_delete ibkr` or `/integration_delete f24` shortcut works
 only when the user has exactly one account of that provider.
 
 Portfolio, stocks, options, performance, daily P&L and history fetch each saved
-account independently. Matching holdings are combined by ticker and currency,
+account independently. Matching holdings are combined internally by ticker and currency,
 with summed values and weighted prices; sold gains are calculated separately
 for each account before aggregation. Provider-specific daily P&L baselines are
 preserved. If any account fails, the command identifies it instead of displaying
 an incomplete total. Existing accounts and cached broker history are preserved
 by an automatic database migration on startup.
+
+`/stocks`, `/options`, `/perf`, `/sold`, `/alltime`, `/dpnl`, `/history`,
+`/when`, bucket views and diagnostic dumps display USD amounts using the latest
+Frankfurter rates. Prices supplied to `/when` are USD. History prices and realized
+gains use the same current FX rates as holdings; FIFO matching and bucket shortcuts
+retain their original transaction identity. A required FX failure reports an error
+instead of displaying a partial total.
 
 Rich integration controls use Telegram Bot API 10.3's `sendRichMessage`, inline
 `RichTextButton` and `InputRichBlockButtons`. A small typed raw API wrapper
@@ -82,9 +90,12 @@ current holdings, or the final sale for fully sold holdings.
 Use `/portfolio` (or `/portfolio BUCKET`) to chart stock allocation, largest first.
 Bars show each holding's share of stock market value, with losing holdings below
 zero. Below each ticker are its percentage return and monetary gain or loss.
-Currencies are charted separately; large portfolios use one wider image per
-currency. Charts are sent as original PNG files to preserve sharp text when zooming.
-The header is the total stock value for that currency.
+All holdings are combined into one USD chart using the latest Frankfurter exchange
+rates for values, purchase costs, and monetary returns. GBX is converted as pence
+(100 GBX = 1 GBP) using the USD/GBP rate. Matching tickers are merged after conversion;
+allocation weights and the header total are calculated in USD. Large portfolios
+use one wider image, sent as an original PNG file to preserve sharp text when zooming.
+If a required exchange rate is unavailable, the command reports an error.
 The container includes Python and Matplotlib for rendering; local runs need
 `python3` with `matplotlib==3.11.2` installed.
 

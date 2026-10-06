@@ -1,7 +1,7 @@
-import { deepStrictEqual, equal, ok, throws } from "node:assert/strict";
+import { deepStrictEqual, equal, ok, rejects } from "node:assert/strict";
 import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import {
-	buildPortfolioCharts,
+	buildPortfolioChart,
 	renderPortfolioChart,
 } from "./portfolio_chart.ts";
 
@@ -32,78 +32,155 @@ function position(
 	};
 }
 
-Deno.test("portfolio chart sorts by share and measures gain or loss against purchase cost", () => {
-	const charts = buildPortfolioCharts([
+Deno.test("portfolio chart sorts by share and measures gain or loss against purchase cost", async () => {
+	const chart = await buildPortfolioChart([
 		position("AAPL", 17000, 15000),
 		position("MSFT", 22000, 24000),
 		position("NVDA", 28000, 20000),
 		position("+AAPL.25SEP2026.C200", 3000, 1000),
 		position("CLOSED", 0, 0, { amount: 0 }),
 	]);
-	equal(charts.length, 1);
-	equal(charts[0].total, "$67,000.00");
-	equal(charts[0].holdingsCount, 3);
-	deepStrictEqual(charts[0].holdings.map((holding) => holding.ticker), [
+	ok(chart);
+	equal(chart.total, "$67,000.00");
+	equal(chart.holdingsCount, 3);
+	deepStrictEqual(chart.holdings.map((holding) => holding.ticker), [
 		"NVDA",
 		"MSFT",
 		"AAPL",
 	]);
-	equal(charts[0].holdings[1].change, -2000);
-	equal(charts[0].holdings[1].returnLabel, "-8.3%");
-	equal(charts[0].holdings[0].changeLabel, "+$8,000.00");
-	equal(charts[0].holdings[1].changeLabel, "-$2,000.00");
+	equal(chart.holdings[1].change, -2000);
+	equal(chart.holdings[1].returnLabel, "-8.3%");
+	equal(chart.holdings[0].changeLabel, "+$8,000.00");
+	equal(chart.holdings[1].changeLabel, "-$2,000.00");
 	ok(
 		Math.abs(
-			charts[0].holdings.reduce((sum, holding) => sum + holding.weight, 0) -
+			chart.holdings.reduce((sum, holding) => sum + holding.weight, 0) -
 				100,
 		) < 1e-9,
 	);
 });
 
-Deno.test("portfolio chart merges ticker values and separates currencies", () => {
-	const charts = buildPortfolioCharts([
+Deno.test("portfolio chart converts currencies to USD before merging tickers", async () => {
+	const chart = await buildPortfolioChart([
 		position("AAPL", 10000, 5000),
 		position("aapl", 5000, 5000, { integrationId: 2 }),
 		position("SAP", 1000, 800, { currency: "EUR" }),
-	]);
-	equal(charts.length, 2);
-	equal(charts[0].total, "1,000.00 EUR");
-	equal(charts[0].holdings[0].changeLabel, "+200.00 EUR");
-	equal(charts[1].holdingsCount, 1);
-	equal(charts[1].total, "$15,000.00");
-	equal(charts[1].holdings[0].returnLabel, "+50.0%");
-	equal(charts[1].holdings[0].changeLabel, "+$5,000.00");
+		position("AAPL", 800, 400, { currency: "EUR", integrationId: 3 }),
+	], async () => Response.json({ base: "USD", quote: "EUR", rate: .8 }));
+	ok(chart);
+	equal(chart.holdingsCount, 2);
+	equal(chart.total, "$17,250.00");
+	equal(chart.holdings[0].ticker, "AAPL");
+	equal(chart.holdings[0].value, "$16,000");
+	equal(chart.holdings[0].returnLabel, "+52.4%");
+	equal(chart.holdings[0].changeLabel, "+$5,500.00");
+	equal(chart.holdings[1].value, "$1,250");
+	equal(chart.holdings[1].changeLabel, "+$250.00");
+	equal(chart.holdings[1].returnLabel, "+25.0%");
+	ok(Math.abs(chart.holdings[0].weight - 16000 / 17250 * 100) < 1e-9);
 });
 
-Deno.test("portfolio chart handles unknown cost and short positions without inventing returns", () => {
-	const charts = buildPortfolioCharts([
+Deno.test("portfolio chart handles unknown cost and short positions without inventing returns", async () => {
+	const chart = await buildPortfolioChart([
 		position("UNKNOWN", 10000, null),
 		position("SHORT", 8000, -10000, { amount: -1 }),
 	]);
-	equal(charts[0].total, "$2,000.00");
-	equal(charts[0].holdings[0].returnLabel, "?");
-	equal(charts[0].holdings[0].change, null);
-	equal(charts[0].holdings[0].changeLabel, "?");
-	equal(charts[0].holdings[1].change, 2000);
-	equal(charts[0].holdings[1].returnLabel, "+20.0%");
-	equal(charts[0].holdings[1].value, "-$8,000");
-	equal(charts[0].holdings[1].changeLabel, "+$2,000.00");
-	throws(
+	ok(chart);
+	equal(chart.total, "$2,000.00");
+	equal(chart.holdings[0].returnLabel, "?");
+	equal(chart.holdings[0].change, null);
+	equal(chart.holdings[0].changeLabel, "?");
+	equal(chart.holdings[1].change, 2000);
+	equal(chart.holdings[1].returnLabel, "+20.0%");
+	equal(chart.holdings[1].value, "-$8,000");
+	equal(chart.holdings[1].changeLabel, "+$2,000.00");
+	await rejects(
 		() =>
-			buildPortfolioCharts([
+			buildPortfolioChart([
 				position("MISSING", 0, 1, { currentPrice: null, totalNow: null }),
 			]),
 		/Current price unavailable for MISSING/,
 	);
-	deepStrictEqual(buildPortfolioCharts([]), []);
-	deepStrictEqual(buildPortfolioCharts([position("ZERO", 0, 1)]), []);
+	equal(await buildPortfolioChart([]), null);
+	equal(await buildPortfolioChart([position("ZERO", 0, 1)]), null);
 });
 
-Deno.test("monetary returns retain known broker gains without cost and zero changes", () => {
-	const chart = buildPortfolioCharts([
+Deno.test("one USD chart combines USD, EUR, GBP and pence with weights based on converted values", async () => {
+	const calls: string[] = [];
+	const chart = await buildPortfolioChart([
+		position("US", 20, 10),
+		position("EU", 8, 6, { currency: "EUR" }),
+		position("POUNDS", 4, 5, { currency: "GBP" }),
+		position("PENCE", 400, 500, { currency: "GBX" }),
+		position("BROKER", 0, null, {
+			currency: "GBX",
+			currentPrice: null,
+			totalNow: 200,
+			unrealizedPnl: 50,
+		}),
+	], async (input) => {
+		calls.push(String(input));
+		const quote = String(input).endsWith("gbp") ? "GBP" : "EUR";
+		return Response.json({
+			base: "USD",
+			quote,
+			rate: quote === "GBP" ? .5 : .8,
+		});
+	});
+	ok(chart);
+	equal(chart.total, "$50.00");
+	equal(chart.holdingsCount, 5);
+	deepStrictEqual(chart.holdings.map((holding) => holding.ticker), [
+		"US",
+		"EU",
+		"PENCE",
+		"POUNDS",
+		"BROKER",
+	]);
+	deepStrictEqual(chart.holdings.map((holding) => holding.weight), [
+		40,
+		20,
+		16,
+		16,
+		8,
+	]);
+	for (const converted of chart.holdings.slice(2, 4)) {
+		equal(converted.value, "$8");
+		equal(converted.changeLabel, "-$2.00");
+		equal(converted.returnLabel, "-20.0%");
+	}
+	equal(chart.holdings[4].value, "$4");
+	equal(chart.holdings[4].changeLabel, "+$1.00");
+	equal(chart.holdings[4].returnLabel, "?");
+	equal(calls.filter((url) => url.endsWith("gbp")).length, 1);
+});
+
+Deno.test("USD charts skip FX for excluded holdings and never return a partial chart after an FX failure", async () => {
+	const chart = await buildPortfolioChart([
+		position("US", 100, 80),
+		position("CLOSED", 10, 8, { currency: "EUR", amount: 0 }),
+		position("+AAPL.25SEP2026.C200", 10, 8, { currency: "GBP" }),
+	], () => {
+		throw new Error("Unexpected request");
+	});
+	ok(chart);
+	equal(chart.total, "$100.00");
+	equal(chart.holdingsCount, 1);
+	await rejects(
+		buildPortfolioChart([
+			position("US", 100, 80),
+			position("EU", 100, 80, { currency: "EUR" }),
+		], async () => new Response(null, { status: 503 })),
+		/Could not load USD exchange rate for EUR/,
+	);
+});
+
+Deno.test("monetary returns retain known broker gains without cost and zero changes", async () => {
+	const chart = await buildPortfolioChart([
 		position("UNKNOWN_COST", 1000, null, { unrealizedPnl: 12.5 }),
 		position("FLAT", 100, 100),
-	])[0];
+	]);
+	ok(chart);
 	equal(chart.holdings[0].returnLabel, "?");
 	equal(chart.holdings[0].changeLabel, "+$12.50");
 	equal(chart.holdings[1].returnLabel, "0.0%");
@@ -111,7 +188,7 @@ Deno.test("monetary returns retain known broker gains without cost and zero chan
 });
 
 Deno.test("portfolio renderer produces a high-resolution PNG for the approved layout", async () => {
-	const chart = buildPortfolioCharts([
+	const chart = await buildPortfolioChart([
 		position("NVDA", 28000, 20000),
 		position("MSFT", 22000, 24000),
 		position("AAPL", 17000, 15000),
@@ -119,7 +196,8 @@ Deno.test("portfolio renderer produces a high-resolution PNG for the approved la
 		position("TSLA", 9000, 11000),
 		position("AMZN", 7000, 6000),
 		position("DIS", 5000, 6000),
-	])[0];
+	]);
+	ok(chart);
 	const png = await renderPortfolioChart(chart);
 	deepStrictEqual([...png.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
 	const dimensions = new DataView(png.buffer, png.byteOffset);
@@ -129,14 +207,15 @@ Deno.test("portfolio renderer produces a high-resolution PNG for the approved la
 });
 
 Deno.test("long portfolios render all holdings in one wider PNG", async () => {
-	const charts = buildPortfolioCharts(
-		Array.from({ length: 24 }, (_, index) =>
-			position(`STOCK${index + 1}`, 24000 - index * 1000, 12000)
+	const chart = await buildPortfolioChart(
+		Array.from(
+			{ length: 24 },
+			(_, index) => position(`STOCK${index + 1}`, 24000 - index * 1000, 12000),
 		),
 	);
-	equal(charts.length, 1);
-	equal(charts[0].holdings.length, 24);
-	const png = await renderPortfolioChart(charts[0]);
+	ok(chart);
+	equal(chart.holdings.length, 24);
+	const png = await renderPortfolioChart(chart);
 	deepStrictEqual([...png.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
 	const dimensions = new DataView(png.buffer, png.byteOffset);
 	equal(dimensions.getUint32(16), 6160);

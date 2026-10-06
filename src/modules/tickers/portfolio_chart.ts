@@ -1,4 +1,5 @@
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
+import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
 import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { isStockPosition } from "./portfolio.ts";
 
@@ -15,35 +16,48 @@ export type PortfolioChart = {
 	}[];
 };
 
-export function buildPortfolioCharts(
+export async function buildPortfolioChart(
 	positions: IntegrationPortfolioPosition[],
-): PortfolioChart[] {
-	const currencies = new Map<
+	request: typeof fetch = fetch,
+): Promise<PortfolioChart | null> {
+	const stocks = positions.filter((position) =>
+		isStockPosition(position) && position.amount !== 0
+	);
+	const conversionRates = await fetchUsdConversionRates(
+		stocks.map((position) => position.currency),
+		request,
+	);
+	const entries = new Map<
 		string,
-		Map<string, {
+		{
 			value: number;
 			cost: number | null;
 			change: number | null;
-		}>
+		}
 	>();
-	for (const position of positions.filter(isStockPosition)) {
-		if (position.amount === 0) continue;
+	for (const position of stocks) {
 		const ticker = position.ticker.trim().toUpperCase();
 		const currency = position.currency.trim().toUpperCase();
-		const value = position.currentPrice === null
+		const conversion = conversionRates.get(currency)!;
+		const nativeValue = position.currentPrice === null
 			? position.totalNow
 			: position.currentPrice * position.amount;
-		if (value === null || !Number.isFinite(value)) {
+		if (nativeValue === null || !Number.isFinite(nativeValue)) {
 			throw new Error(`Current price unavailable for ${ticker}.`);
 		}
-		const cost = position.totalInput ??
+		const value = nativeValue * conversion;
+		const nativeCost = position.totalInput ??
 			(position.averageUnitPrice === null
 				? null
 				: position.averageUnitPrice * position.amount);
-		const change = cost === null ? position.unrealizedPnl : value - cost;
-		const holdings = currencies.get(currency) ?? new Map();
-		const existing = holdings.get(ticker);
-		holdings.set(
+		const cost = nativeCost === null ? null : nativeCost * conversion;
+		const change = cost === null
+			? position.unrealizedPnl === null
+				? null
+				: position.unrealizedPnl * conversion
+			: value - cost;
+		const existing = entries.get(ticker);
+		entries.set(
 			ticker,
 			existing
 				? {
@@ -57,42 +71,37 @@ export function buildPortfolioCharts(
 				}
 				: { value, cost: cost === null ? null : Math.abs(cost), change },
 		);
-		currencies.set(currency, holdings);
 	}
-	return [...currencies].sort(([first], [second]) =>
-		first.localeCompare(second)
-	).flatMap(([currency, entries]) => {
-		const holdings = [...entries].sort((
-			[firstTicker, first],
-			[secondTicker, second],
-		) =>
-			Math.abs(second.value) - Math.abs(first.value) ||
-			firstTicker.localeCompare(secondTicker)
-		);
-		const grossValue = holdings.reduce(
-			(sum, [, holding]) => sum + Math.abs(holding.value),
-			0,
-		);
-		if (grossValue === 0) return [];
-		const total = holdings.reduce((sum, [, holding]) => sum + holding.value, 0);
-		return [{
-			total: formatMoney(total, currency),
-			holdingsCount: holdings.length,
-			holdings: holdings.map(([ticker, holding]) => ({
-				ticker,
-				weight: Math.abs(holding.value) / grossValue * 100,
-				value: formatMoney(holding.value, currency, 0),
-				change: holding.change,
-				changeLabel: holding.change === null
+	const holdings = [...entries].sort((
+		[firstTicker, first],
+		[secondTicker, second],
+	) =>
+		Math.abs(second.value) - Math.abs(first.value) ||
+		firstTicker.localeCompare(secondTicker)
+	);
+	const grossValue = holdings.reduce(
+		(sum, [, holding]) => sum + Math.abs(holding.value),
+		0,
+	);
+	if (grossValue === 0) return null;
+	const total = holdings.reduce((sum, [, holding]) => sum + holding.value, 0);
+	return {
+		total: formatMoney(total),
+		holdingsCount: holdings.length,
+		holdings: holdings.map(([ticker, holding]) => ({
+			ticker,
+			weight: Math.abs(holding.value) / grossValue * 100,
+			value: formatMoney(holding.value, "USD", 0),
+			change: holding.change,
+			changeLabel: holding.change === null
+				? "?"
+				: formatMoneyChange(holding.change),
+			returnLabel:
+				holding.change === null || holding.cost === null || holding.cost === 0
 					? "?"
-					: `${holding.change > 0 ? "+" : ""}${formatMoney(holding.change, currency)}`,
-				returnLabel:
-					holding.change === null || holding.cost === null || holding.cost === 0
-						? "?"
-						: formatMoneyChange(holding.change / holding.cost * 100, "%", 1),
-			})),
-		}];
-	});
+					: formatMoneyChange(holding.change / holding.cost * 100, "%", 1),
+		})),
+	};
 }
 
 export async function renderPortfolioChart(chart: PortfolioChart) {

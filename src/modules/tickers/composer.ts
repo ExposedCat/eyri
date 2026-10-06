@@ -1,5 +1,6 @@
 import { Composer, InputFile } from "grammy";
-import { buildPortfolioCharts, renderPortfolioChart } from "./portfolio_chart.ts";
+import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts";
+import { portfolioPositionsInUsd } from "../integrations/usd.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { splitMessageLines } from "../bot/message.ts";
 import {
@@ -243,7 +244,7 @@ async function replyBucketMoveHistory(ctx: CustomContext, bucketName: string) {
     ctx.db,
     ctx.dbEntities.user.userId,
   );
-  const history = buildIntegratedHistory({
+  const history = await buildIntegratedHistory({
     orders,
     tickerDecorations,
     tickerLabelPreferences,
@@ -867,18 +868,16 @@ tickersComposer.command("portfolio", async (ctx) => {
 		return;
 	}
 	try {
-		const charts = buildPortfolioCharts(
+		const chart = await buildPortfolioChart(
 			await fetchBucketedPositions(ctx, bucketName),
 		);
-		if (!charts.length) {
+		if (!chart) {
 			await ctx.text("no_positions");
 			return;
 		}
-		for (const chart of charts) {
-			const image = await renderPortfolioChart(chart);
-			// Preserve the original PNG so text stays sharp when zooming.
-			await ctx.replyWithDocument(new InputFile(image, "portfolio.png"));
-		}
+		const image = await renderPortfolioChart(chart);
+		// Preserve the original PNG so text stays sharp when zooming.
+		await ctx.replyWithDocument(new InputFile(image, "portfolio.png"));
 	} catch (error) {
 		await replyIntegrationError(ctx, error);
 	}
@@ -1000,7 +999,7 @@ tickersComposer.command("dump_options", async (ctx) => {
     );
     await replyJsonDump(
       ctx,
-      positions.filter(isOptionPosition).map(toDumpablePosition),
+      (await portfolioPositionsInUsd(positions.filter(isOptionPosition))).map(toDumpablePosition),
     );
   } catch (error) {
     await replyIntegrationError(ctx, error);
@@ -1025,7 +1024,7 @@ tickersComposer.command("dump_tickers", async (ctx) => {
     );
     await replyJsonDump(
       ctx,
-      positions.filter(isStockPosition).map(toDumpablePosition),
+      (await portfolioPositionsInUsd(positions.filter(isStockPosition))).map(toDumpablePosition),
     );
   } catch (error) {
     await replyIntegrationError(ctx, error);
@@ -1233,7 +1232,7 @@ tickersComposer.command("history", async (ctx) => {
 
   try {
     const orders = await fetchBucketedHistoryOrders(ctx, bucketName);
-    const history = buildIntegratedHistory({
+    const history = await buildIntegratedHistory({
       orders,
       tickerDecorations,
       tickerLabelPreferences,

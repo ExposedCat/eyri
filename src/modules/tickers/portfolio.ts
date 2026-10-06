@@ -1,4 +1,10 @@
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
+import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
+import {
+  portfolioPositionInUsd,
+  portfolioPositionsInUsd,
+  usdFactor,
+} from "../integrations/usd.ts";
 import type {
   IntegrationOrder,
   IntegrationPortfolioPosition,
@@ -13,6 +19,7 @@ import {
 
 type BuildIntegratedTickerListArgs = {
   positions: IntegrationPortfolioPosition[];
+  request?: typeof fetch;
   priceOverrides?: Record<string, number>;
   separateGainersLosers?: boolean;
   tickerDecorations?: TickerDecorations;
@@ -24,6 +31,7 @@ type BuildIntegratedTickerListArgs = {
 
 type BuildIntegratedHistoryArgs = {
   orders: IntegrationOrder[];
+  request?: typeof fetch;
   tickerDecorations?: TickerDecorations;
   tickerLabelPreferences?: TickerLabelPreferences;
   tickerLabelLinks?: TickerLabelLinks;
@@ -80,17 +88,6 @@ function formatCurrencyChange(value: number, currency: string) {
   if (currency === "USD") return formatMoneyChange(value);
   const rounded = Number(value.toFixed(2));
   return `${rounded > 0 ? "+" : ""}${formatMoney(rounded, currency)}`;
-}
-
-function groupByCurrency<T extends { currency: string }>(items: T[]) {
-  const groups = new Map<string, T[]>();
-  for (const item of items) {
-    const currency = item.currency.trim().toUpperCase();
-    const group = groups.get(currency) ?? [];
-    group.push(item);
-    groups.set(currency, group);
-  }
-  return groups;
 }
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -615,6 +612,45 @@ function buildIntegratedSoldPerformances(
   );
 }
 
+function soldPerformancesInUsd(
+  performances: IntegratedSoldPerformance[],
+  rates: ReadonlyMap<string, number>,
+) {
+  const merged = new Map<string, IntegratedSoldPerformance>();
+  for (const performance of performances) {
+    const factor = usdFactor(performance.currency, rates);
+    const converted = {
+      ...performance,
+      currency: "USD",
+      cost: performance.cost * factor,
+      proceeds: performance.proceeds * factor,
+      realizedPnl: performance.realizedPnl * factor,
+    };
+    const key = normalizePositionKeyPart(performance.ticker);
+    const current = merged.get(key);
+    if (current) {
+      converted.cost += current.cost;
+      converted.proceeds += current.proceeds;
+      converted.realizedPnl += current.realizedPnl;
+      converted.openedAt = current.openedAt &&
+          (!converted.openedAt || current.openedAt < converted.openedAt)
+        ? current.openedAt
+        : converted.openedAt;
+      converted.closedAt = current.closedAt &&
+          (!converted.closedAt || current.closedAt > converted.closedAt)
+        ? current.closedAt
+        : converted.closedAt;
+    }
+    converted.realizedPercentageChange = converted.cost === 0
+      ? 0
+      : converted.realizedPnl / converted.cost * 100;
+    merged.set(key, converted);
+  }
+  return [...merged.values()].sort((a, b) =>
+    b.realizedPnl - a.realizedPnl || a.ticker.localeCompare(b.ticker)
+  );
+}
+
 function buildIntegratedSoldTotals(performances: IntegratedSoldPerformance[]) {
   const totals = performances.reduce(
     (totals, performance) => {
@@ -650,6 +686,7 @@ function buildIntegratedSoldTotals(performances: IntegratedSoldPerformance[]) {
 
 export async function buildIntegratedTickerList({
   positions,
+  request,
   priceOverrides,
   separateGainersLosers = false,
   tickerDecorations,
@@ -658,30 +695,11 @@ export async function buildIntegratedTickerList({
   tickerEmojiMappings,
   formatTicker,
 }: BuildIntegratedTickerListArgs): Promise<string> {
-  const currencyGroups = groupByCurrency(positions);
-  if (currencyGroups.size > 1) {
-    const sections = await Promise.all(
-      [...currencyGroups].map(async ([currency, group]) => {
-        const output = await buildIntegratedTickerList({
-          positions: group,
-          priceOverrides,
-          separateGainersLosers,
-          tickerDecorations,
-          tickerLabelPreferences,
-          tickerLabelLinks,
-          tickerEmojiMappings,
-          formatTicker,
-        });
-        return output ? `${currency}\n${output}` : "";
-      }),
-    );
-    return sections.filter(Boolean).join("\n\n");
-  }
-
   if (positions.length === 0) {
     return "";
   }
 
+  positions = await portfolioPositionsInUsd(positions, request);
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
     getSortedIntegratedPositions(positions).map((position) =>
@@ -787,6 +805,7 @@ export async function buildIntegratedTickerList({
 
 export async function buildIntegratedPerformanceList({
   positions,
+  request,
   priceOverrides,
   tickerDecorations,
   tickerLabelPreferences,
@@ -794,29 +813,11 @@ export async function buildIntegratedPerformanceList({
   tickerEmojiMappings,
   formatTicker,
 }: BuildIntegratedTickerListArgs): Promise<string> {
-  const currencyGroups = groupByCurrency(positions);
-  if (currencyGroups.size > 1) {
-    const sections = await Promise.all(
-      [...currencyGroups].map(async ([currency, group]) => {
-        const output = await buildIntegratedPerformanceList({
-          positions: group,
-          priceOverrides,
-          tickerDecorations,
-          tickerLabelPreferences,
-          tickerLabelLinks,
-          tickerEmojiMappings,
-          formatTicker,
-        });
-        return output ? `${currency}\n${output}` : "";
-      }),
-    );
-    return sections.filter(Boolean).join("\n\n");
-  }
-
   if (positions.length === 0) {
     return "";
   }
 
+  positions = await portfolioPositionsInUsd(positions, request);
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
     getSortedIntegratedPositions(positions).map((position) =>
@@ -874,31 +875,19 @@ export async function buildIntegratedPerformanceList({
 
 export async function buildIntegratedSoldPerformanceList({
   orders,
+  request,
   tickerDecorations,
   tickerLabelPreferences,
   tickerLabelLinks,
   tickerEmojiMappings,
   formatTicker,
 }: BuildIntegratedSoldPerformanceArgs): Promise<string> {
-  const currencyGroups = groupByCurrency(orders);
-  if (currencyGroups.size > 1) {
-    const sections = await Promise.all(
-      [...currencyGroups].map(async ([currency, group]) => {
-        const output = await buildIntegratedSoldPerformanceList({
-          orders: group,
-          tickerDecorations,
-          tickerLabelPreferences,
-          tickerLabelLinks,
-          tickerEmojiMappings,
-          formatTicker,
-        });
-        return output ? `${currency}\n${output}` : "";
-      }),
-    );
-    return sections.filter(Boolean).join("\n\n");
-  }
-
-  const performances = buildIntegratedSoldPerformances(orders);
+  const sold = buildIntegratedSoldPerformances(orders);
+  const rates = await fetchUsdConversionRates(
+    sold.map((p) => p.currency),
+    request,
+  );
+  const performances = soldPerformancesInUsd(sold, rates);
   if (performances.length === 0) {
     return "";
   }
@@ -950,6 +939,7 @@ export async function buildIntegratedSoldPerformanceList({
 
 export async function buildIntegratedAllTimePerformanceList({
   positions,
+  request,
   orders,
   priceOverrides,
   tickerDecorations,
@@ -960,31 +950,17 @@ export async function buildIntegratedAllTimePerformanceList({
   transactionBuckets,
   bucketName = null,
 }: BuildIntegratedAllTimePerformanceArgs): Promise<string> {
-  const currencies = new Set(
-    [...positions, ...orders].map((item) => item.currency.trim().toUpperCase()),
+  const nativeSold = buildIntegratedSoldPerformances(
+    orders,
+    transactionBuckets,
+    bucketName,
   );
-  if (currencies.size > 1) {
-    const sections = await Promise.all([...currencies].map(async (currency) => {
-      const output = await buildIntegratedAllTimePerformanceList({
-        positions: positions.filter((item) =>
-          item.currency.trim().toUpperCase() === currency
-        ),
-        orders: orders.filter((item) =>
-          item.currency.trim().toUpperCase() === currency
-        ),
-        priceOverrides,
-        tickerDecorations,
-        tickerLabelPreferences,
-        tickerLabelLinks,
-        tickerEmojiMappings,
-        formatTicker,
-        transactionBuckets,
-        bucketName,
-      });
-      return output ? `${currency}\n${output}` : "";
-    }));
-    return sections.filter(Boolean).join("\n\n");
-  }
+  const rates = await fetchUsdConversionRates(
+    [...positions, ...nativeSold].map((p) => p.currency),
+    request,
+  );
+  positions = positions.map((p) => portfolioPositionInUsd(p, rates));
+  const soldPerformances = soldPerformancesInUsd(nativeSold, rates);
 
   const now = new Date();
   type Performance = {
@@ -1039,11 +1015,7 @@ export async function buildIntegratedAllTimePerformanceList({
     });
   }
   for (
-    const sold of buildIntegratedSoldPerformances(
-      orders,
-      transactionBuckets,
-      bucketName,
-    )
+    const sold of soldPerformances
   ) {
     add(getPositionDisplayKey(sold.ticker, sold.currency), {
       ticker: sold.ticker,
@@ -1104,6 +1076,7 @@ export async function buildIntegratedAllTimePerformanceList({
 
 export async function buildIntegratedDailyPerformanceList({
   positions,
+  request,
   priceOverrides,
   tickerDecorations,
   tickerLabelPreferences,
@@ -1111,29 +1084,11 @@ export async function buildIntegratedDailyPerformanceList({
   tickerEmojiMappings,
   formatTicker,
 }: BuildIntegratedTickerListArgs): Promise<string> {
-  const currencyGroups = groupByCurrency(positions);
-  if (currencyGroups.size > 1) {
-    const sections = await Promise.all(
-      [...currencyGroups].map(async ([currency, group]) => {
-        const output = await buildIntegratedDailyPerformanceList({
-          positions: group,
-          priceOverrides,
-          tickerDecorations,
-          tickerLabelPreferences,
-          tickerLabelLinks,
-          tickerEmojiMappings,
-          formatTicker,
-        });
-        return output ? `${currency}\n${output}` : "";
-      }),
-    );
-    return sections.filter(Boolean).join("\n\n");
-  }
-
   if (positions.length === 0) {
     return "";
   }
 
+  positions = await portfolioPositionsInUsd(positions, request);
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
     getSortedIntegratedPositions(positions).map((position) =>
@@ -1531,49 +1486,35 @@ export function buildIntegratedHistoryGroups(orders: IntegrationOrder[]) {
   );
 }
 
-export function buildIntegratedHistory({
+export async function buildIntegratedHistory({
   orders,
+  request,
   tickerDecorations,
   tickerLabelPreferences,
   tickerLabelLinks,
   tickerEmojiMappings,
   formatLineSuffix,
-}: BuildIntegratedHistoryArgs): string {
-  const currencyGroups = groupByCurrency(orders);
-  if (currencyGroups.size > 1) {
-    const indices = new Map(
-      buildIntegratedHistoryGroups(orders).map((
-        group,
-        index,
-      ) => [group.transactionKey, index + 1]),
-    );
-    return [...currencyGroups].map(([currency, groupOrders]) => {
-      const output = buildIntegratedHistory({
-        orders: groupOrders,
-        tickerDecorations,
-        tickerLabelPreferences,
-        tickerLabelLinks,
-        tickerEmojiMappings,
-        formatLineSuffix: formatLineSuffix
-          ? (group) =>
-            formatLineSuffix(group, indices.get(group.transactionKey)!)
-          : undefined,
-      });
-      return output ? `${currency}\n${output}` : "";
-    }).filter(Boolean).join("\n\n");
-  }
-
+}: BuildIntegratedHistoryArgs): Promise<string> {
   const sorted = buildIntegratedHistoryGroups(orders);
   if (sorted.length === 0) {
     return "";
   }
 
+  const rates = await fetchUsdConversionRates(
+    sorted.map((g) => g.currency),
+    request,
+  );
   const grouped = new Map<number, string[]>();
   const yearTotals = new Map<number, { total: number; currency: string }>();
   let totalSpent = 0;
   let totalCurrency = "USD";
 
-  for (const [index, group] of sorted.entries()) {
+  for (const [index, original] of sorted.entries()) {
+    const group = {
+      ...original,
+      currency: "USD",
+      total: original.total * usdFactor(original.currency, rates),
+    };
     const year = group.date.getUTCFullYear();
     const lines = grouped.get(year) ?? [];
     const averagePrice = group.total / group.quantity;
@@ -1594,7 +1535,7 @@ export function buildIntegratedHistory({
         group.currency,
       )
     })`;
-    const lineSuffix = formatLineSuffix?.(group, index + 1);
+    const lineSuffix = formatLineSuffix?.(original, index + 1);
     lines.push(
       lineSuffix && lineSuffix.length > 0 ? `${line} ${lineSuffix}` : line,
     );
