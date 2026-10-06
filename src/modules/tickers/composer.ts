@@ -11,18 +11,15 @@ import {
   removeTransactionFromBucket,
 } from "../database/bucket.ts";
 import {
-  deleteIntegration,
   getUserIntegrations,
   hasUserIntegrations,
-  type IntegrationKind,
-  upsertIntegration,
 } from "../database/integration.ts";
 import {
   fetchIntegratedOrderHistory,
   fetchIntegratedPortfolio,
 } from "../integrations/service.ts";
 import { getIbkrHostPort } from "../integrations/ibkr/credentials.ts";
-import { fetchIbkrStockQuotes } from "../integrations/ibkr/quotes.ts";
+import { fetchIntegratedIbkrStockQuotes } from "../integrations/ibkr/quotes.ts";
 import { getRsuAwards, removeRsuAwards, saveRsuAward } from "../database/rsu.ts";
 import { buildRsuGroups, buildRsuSummary, getRsuView, parseRsuAward, parseRsuDate } from "./rsu.ts";
 import {
@@ -174,44 +171,6 @@ async function fetchBucketedHistoryOrders(
   return filterHistoryOrdersByBucket(orders, transactionBuckets, bucketName);
 }
 
-function parseIbkrCredentials(input: string) {
-  const params = input.trim().split(/\s+/);
-  if (params.length !== 3) {
-    return null;
-  }
-
-  const [instanceUrl, flexToken, flexQueryId] = params;
-
-  return {
-    instanceUrl,
-    flexToken,
-    flexQueryId,
-  };
-}
-
-function parseFreedom24Credentials(input: string) {
-  const params = input.trim().split(/\s+/);
-  if (params.length !== 2 && params.length !== 3) {
-    return null;
-  }
-
-  const [apiKey, secretKey, historyYears] = params;
-  if (historyYears !== undefined) {
-    const parsedHistoryYears = Number(historyYears);
-    if (!Number.isFinite(parsedHistoryYears) || parsedHistoryYears <= 0) {
-      return null;
-    }
-  }
-
-  return {
-    apiKey,
-    secretKey,
-    ...(historyYears === undefined
-      ? {}
-      : { historyYears: Number(historyYears) }),
-  };
-}
-
 async function readTickerDisplayPreferences(userId: number) {
   const [tickerDecorations, tickerLabelPreferences, tickerLabelLinks] =
     await Promise.all([
@@ -227,40 +186,6 @@ async function readTickerDisplayPreferences(userId: number) {
     tickerLabelLinks,
     tickerEmojiMappings,
   };
-}
-
-function formatIntegrationList(
-  integrations: ReturnType<typeof getUserIntegrations>,
-) {
-  return integrations
-    .map((integration) => {
-      if (integration.kind === "ibkr") {
-        const instanceUrl =
-          typeof integration.credentials.instanceUrl === "string"
-            ? integration.credentials.instanceUrl
-            : "unknown";
-        const accountId =
-          typeof integration.credentials.accountId === "string"
-            ? `, account ${escapeHtml(integration.credentials.accountId)}`
-            : "";
-        return `${integration.id}. IBKR ${escapeHtml(instanceUrl)}${accountId}`;
-      }
-
-      if (integration.kind === "f24") {
-        const apiKey =
-          typeof integration.credentials.apiKey === "string"
-            ? integration.credentials.apiKey
-            : "unknown";
-        const maskedApiKey =
-          apiKey.length > 8
-            ? `${apiKey.slice(0, 4)}...${apiKey.slice(-4)}`
-            : apiKey;
-        return `${integration.id}. Freedom24 ${escapeHtml(maskedApiKey)}`;
-      }
-
-      return `${integration.id}. ${escapeHtml(integration.kind)}`;
-    })
-    .join("\n");
 }
 
 function createTickerFormatter({
@@ -508,21 +433,6 @@ async function restartIbGateway(credentials: Record<string, unknown>) {
   }
 }
 
-tickersComposer.command("integrations", async (ctx) => {
-  if (!ctx.dbEntities.user) {
-    await ctx.text("start");
-    return;
-  }
-
-  const integrations = getUserIntegrations(ctx.db, ctx.dbEntities.user.userId);
-  if (integrations.length === 0) {
-    await ctx.text("no_integrations");
-    return;
-  }
-
-  await ctx.reply(formatIntegrationList(integrations), htmlReplyOptions);
-});
-
 tickersComposer.command("buckets", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
@@ -674,68 +584,6 @@ tickersComposer.hears(BUCKET_ACTION_PATTERN, async (ctx) => {
   }
 });
 
-tickersComposer.command("ibkr", async (ctx) => {
-  if (!ctx.dbEntities.user) {
-    await ctx.text("start");
-    return;
-  }
-
-  if (!ctx.match) {
-    await ctx.text("ibkr");
-    return;
-  }
-
-  const credentials = parseIbkrCredentials(ctx.match);
-  if (!credentials) {
-    await ctx.text("ibkr");
-    return;
-  }
-
-  const result = await upsertIntegration({
-    database: ctx.db,
-    userId: ctx.dbEntities.user.userId,
-    kind: "ibkr",
-    credentials,
-  });
-  if (!result.success) {
-    await ctx.text("integration_save_failed");
-    return;
-  }
-
-  await ctx.text("integration_saved");
-});
-
-tickersComposer.command("f24", async (ctx) => {
-  if (!ctx.dbEntities.user) {
-    await ctx.text("start");
-    return;
-  }
-
-  if (!ctx.match) {
-    await ctx.text("f24");
-    return;
-  }
-
-  const credentials = parseFreedom24Credentials(ctx.match);
-  if (!credentials) {
-    await ctx.text("f24");
-    return;
-  }
-
-  const result = await upsertIntegration({
-    database: ctx.db,
-    userId: ctx.dbEntities.user.userId,
-    kind: "f24",
-    credentials,
-  });
-  if (!result.success) {
-    await ctx.text("integration_save_failed");
-    return;
-  }
-
-  await ctx.text("integration_saved");
-});
-
 tickersComposer.command("restart", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
@@ -745,44 +593,25 @@ tickersComposer.command("restart", async (ctx) => {
   try {
     await ctx.reply("Restarting IB Gateway...");
 
-    const integration = getUserIntegrations(
+    const integrations = getUserIntegrations(
       ctx.db,
       ctx.dbEntities.user.userId,
-    ).find((item) => item.kind === "ibkr");
-    if (!integration) {
+    ).filter((item) => item.kind === "ibkr");
+    if (!integrations.length) {
       throw new Error("IBKR integration is not configured");
     }
 
-    await restartIbGateway(integration.credentials);
+    const restartedHosts = new Set<string>();
+    for (const integration of integrations) {
+      const host = getRestartContainerName(integration.credentials);
+      if (restartedHosts.has(host)) continue;
+      await restartIbGateway(integration.credentials);
+      restartedHosts.add(host);
+    }
     await ctx.reply("IB Gateway restart requested.");
   } catch (error) {
     await replyRestartError(ctx, error);
   }
-});
-
-tickersComposer.command("integration_delete", async (ctx) => {
-  if (!ctx.dbEntities.user) {
-    await ctx.text("start");
-    return;
-  }
-
-  const kind = ctx.match?.trim() as IntegrationKind | undefined;
-  if (kind !== "ibkr" && kind !== "f24") {
-    await ctx.text("integration_delete");
-    return;
-  }
-
-  const result = await deleteIntegration({
-    database: ctx.db,
-    userId: ctx.dbEntities.user.userId,
-    kind,
-  });
-  if (!result.success) {
-    await ctx.text("integration_not_found");
-    return;
-  }
-
-  await ctx.text("integration_deleted");
 });
 
 tickersComposer.command("decorate", async (ctx) => {
@@ -952,15 +781,15 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 				preferences.tickerLabelLinks,
 				preferences.tickerEmojiMappings,
 			);
-		const integration = getUserIntegrations(ctx.db, userId).find((item) =>
+		const integrations = getUserIntegrations(ctx.db, userId).filter((item) =>
 			item.kind === "ibkr"
 		);
 		const prices = new Map<string, number>();
 		const notes: string[] = [];
-		if (integration) {
+		if (integrations.length) {
 			try {
-				const quotes = await fetchIbkrStockQuotes(
-					integration,
+				const quotes = await fetchIntegratedIbkrStockQuotes(
+					integrations,
 					vestings.map((vesting) => vesting.ticker),
 				);
 				for (const [ticker, quote] of quotes) {

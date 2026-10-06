@@ -93,33 +93,32 @@ export function hasUserIntegrations(database: Database, userId: number) {
   return Boolean(row);
 }
 
-type UpsertIntegrationArgs = {
+type CreateIntegrationArgs = {
   database: Database;
   userId: number;
   kind: IntegrationKind;
   credentials: Record<string, unknown>;
 };
 
-export async function upsertIntegration({
+export function createIntegration({
   database,
   userId,
   kind,
   credentials,
-}: UpsertIntegrationArgs): Promise<ServiceResult<Integration>> {
+}: CreateIntegrationArgs): ServiceResult<Integration> {
   try {
     database
       .prepare(`
         INSERT INTO integrations (user_id, kind, credentials_json)
         VALUES (?, ?, ?)
-        ON CONFLICT(user_id, kind) DO UPDATE SET
-          credentials_json = excluded.credentials_json,
-          updated_at = CURRENT_TIMESTAMP
       `)
       .run(userId, kind, JSON.stringify(credentials));
 
-    const integration = getUserIntegrations(database, userId).find(
-      (item) => item.kind === kind,
-    );
+    const row = database.prepare(`
+      SELECT id, user_id, kind, credentials_json, created_at, updated_at
+      FROM integrations WHERE id = ? AND user_id = ?
+    `).get(database.lastInsertRowId, userId) as IntegrationRow | undefined;
+    const integration = row ? toIntegration(row) : null;
     if (!integration) {
       return { success: false, error: "Failed to save integration" };
     }
@@ -133,21 +132,21 @@ export async function upsertIntegration({
 type DeleteIntegrationArgs = {
   database: Database;
   userId: number;
-  kind: IntegrationKind;
+  integrationId: number;
 };
 
-export async function deleteIntegration({
+export function deleteIntegration({
   database,
   userId,
-  kind,
-}: DeleteIntegrationArgs): Promise<ServiceResult<null>> {
+  integrationId,
+}: DeleteIntegrationArgs): ServiceResult<null> {
   try {
     const result = database
       .prepare(`
         DELETE FROM integrations
-        WHERE user_id = ? AND kind = ?
+        WHERE user_id = ? AND id = ?
       `)
-      .run(userId, kind);
+      .run(userId, integrationId);
 
     if (result === 0) {
       return { success: false, error: "Integration not found" };
@@ -157,4 +156,43 @@ export async function deleteIntegration({
   } catch {
     return { success: false, error: "Failed to delete integration" };
   }
+}
+
+export function setIntegrationSetup(
+  database: Database,
+  userId: number,
+  chatId: number,
+  kind: IntegrationKind,
+  promptMessageId: number,
+) {
+  database.prepare(`
+    INSERT INTO integration_setup_sessions (user_id, chat_id, kind, prompt_message_id)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id, chat_id) DO UPDATE SET
+      kind = excluded.kind, prompt_message_id = excluded.prompt_message_id
+  `).run(userId, chatId, kind, promptMessageId);
+}
+
+export function getIntegrationSetup(
+  database: Database,
+  userId: number,
+  chatId: number,
+) {
+  return database.prepare(`
+    SELECT kind, prompt_message_id AS promptMessageId FROM integration_setup_sessions
+    WHERE user_id = ? AND chat_id = ?
+  `).get(userId, chatId) as
+    | { kind: IntegrationKind; promptMessageId: number }
+    | undefined;
+}
+
+export function clearIntegrationSetup(
+  database: Database,
+  userId: number,
+  chatId: number,
+) {
+  database.prepare(
+    "DELETE FROM integration_setup_sessions WHERE user_id = ? AND chat_id = ?",
+  )
+    .run(userId, chatId);
 }

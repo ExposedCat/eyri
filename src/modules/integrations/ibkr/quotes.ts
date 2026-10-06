@@ -15,6 +15,29 @@ const CLOSE = 9;
 const DELAYED_LAST = 68;
 const DELAYED_CLOSE = 75;
 
+export async function fetchIntegratedIbkrStockQuotes(
+  integrations: Integration[],
+  tickers: string[],
+  fetchQuotes = fetchIbkrStockQuotes,
+) {
+  const results = await Promise.allSettled(integrations.map((integration) => fetchQuotes(integration, tickers)));
+  const quotes = new Map<string, StockQuote>();
+  const quality = (quote: StockQuote) =>
+    (quote.price === undefined ? 0 : 8) + Number(!quote.delayed) * 4 +
+    Number(!quote.frozen) * 2 + Number(!quote.previousClose);
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const [ticker, quote] of result.value) {
+      const current = quotes.get(ticker);
+      if (!current || quality(quote) > quality(current)) quotes.set(ticker, quote);
+    }
+  }
+  if (integrations.length && results.every((result) => result.status === "rejected")) {
+    throw new Error("Prices unavailable from all IBKR integrations.");
+  }
+  return quotes;
+}
+
 export async function fetchIbkrStockQuotes(
 	integration: Integration,
 	tickers: string[],

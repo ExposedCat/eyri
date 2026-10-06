@@ -2,6 +2,7 @@ import { Bot as TelegramBot } from "grammy";
 
 import type { Database } from "../database/setup.ts";
 import { findOrCreateUser } from "../database/user.ts";
+import { integrationsComposer } from "../integrations/composer.ts";
 import { startComposer } from "../start/composer.ts";
 import { tickersComposer } from "../tickers/composer.ts";
 import type { Bot, CustomContext } from "./types.ts";
@@ -26,6 +27,7 @@ function extendContext(bot: Bot, database: Database) {
 
 function setupComposers(bot: Bot) {
   bot.use(startComposer);
+  bot.use(integrationsComposer);
   bot.use(tickersComposer);
 }
 
@@ -45,6 +47,7 @@ export function createBot(database: Database): Bot {
 
 const botCommands = [
   { command: "start", description: "Show help" },
+  { command: "integrations", description: "Manage integration accounts" },
   { command: "stocks", description: "Show stock performance" },
 	{ command: "portfolio", description: "Chart stock allocation" },
   { command: "rsu", description: "Show or record RSU vesting" },

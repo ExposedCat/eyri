@@ -31,25 +31,22 @@ function mergePosition(
   next: IntegrationPortfolioPosition,
 ): IntegrationPortfolioPosition {
   const amount = current.amount + next.amount;
-  const totalInput =
-    current.totalInput === null || next.totalInput === null
-      ? null
-      : current.totalInput + next.totalInput;
-  const totalNow =
-    current.totalNow === null || next.totalNow === null
-      ? null
-      : current.totalNow + next.totalNow;
-  const dailyPnl =
-    current.dailyPnl === null || next.dailyPnl === null
-      ? null
-      : current.dailyPnl + next.dailyPnl;
+  const totalInput = current.totalInput === null || next.totalInput === null
+    ? null
+    : current.totalInput + next.totalInput;
+  const totalNow = current.totalNow === null || next.totalNow === null
+    ? null
+    : current.totalNow + next.totalNow;
+  const dailyPnl = current.dailyPnl === null || next.dailyPnl === null
+    ? null
+    : current.dailyPnl + next.dailyPnl;
   const dailyPnlBaseline =
     current.dailyPnlBaseline === null || next.dailyPnlBaseline === null
       ? null
       : current.dailyPnlBaseline + next.dailyPnlBaseline;
 
-  const currentTotalBaseline =
-    current.dailyPnlTotalBaseline ?? current.dailyPnlBaseline;
+  const currentTotalBaseline = current.dailyPnlTotalBaseline ??
+    current.dailyPnlBaseline;
   const nextTotalBaseline = next.dailyPnlTotalBaseline ?? next.dailyPnlBaseline;
   const dailyPnlTotalBaseline =
     currentTotalBaseline === null || nextTotalBaseline === null
@@ -63,19 +60,18 @@ function mergePosition(
       .filter((value, index, list) => list.indexOf(value) === index)
       .join(", "),
     amount,
-    averageUnitPrice:
-      totalInput === null || amount === 0 ? null : totalInput / amount,
+    averageUnitPrice: totalInput === null || amount === 0
+      ? null
+      : totalInput / amount,
     currentPrice: totalNow === null || amount === 0 ? null : totalNow / amount,
     totalInput,
     totalNow,
-    unrealizedPnl:
-      current.unrealizedPnl === null || next.unrealizedPnl === null
-        ? null
-        : current.unrealizedPnl + next.unrealizedPnl,
-    realizedPnl:
-      current.realizedPnl === null || next.realizedPnl === null
-        ? null
-        : current.realizedPnl + next.realizedPnl,
+    unrealizedPnl: current.unrealizedPnl === null || next.unrealizedPnl === null
+      ? null
+      : current.unrealizedPnl + next.unrealizedPnl,
+    realizedPnl: current.realizedPnl === null || next.realizedPnl === null
+      ? null
+      : current.realizedPnl + next.realizedPnl,
     dailyPnl,
     dailyPnlPercentage:
       dailyPnl === null || dailyPnlBaseline === null || dailyPnlBaseline === 0
@@ -83,12 +79,9 @@ function mergePosition(
         : (dailyPnl / dailyPnlBaseline) * 100,
     dailyPnlBaseline,
     dailyPnlTotalBaseline,
-    openedAt:
-      current.openedAt && next.openedAt
-        ? current.openedAt < next.openedAt
-          ? current.openedAt
-          : next.openedAt
-        : (current.openedAt ?? next.openedAt),
+    openedAt: current.openedAt && next.openedAt
+      ? current.openedAt < next.openedAt ? current.openedAt : next.openedAt
+      : (current.openedAt ?? next.openedAt),
   };
 }
 
@@ -126,25 +119,30 @@ async function mapIntegrationData<T>(
 
   const data: T[] = [];
   const errors: Error[] = [];
-  for (const result of results) {
+  for (const [index, result] of results.entries()) {
     if (result.status === "fulfilled") {
       data.push(...result.value);
     } else {
+      const integration = integrations[index];
+      const reason = result.reason instanceof Error
+        ? result.reason.message
+        : String(result.reason);
       errors.push(
-        result.reason instanceof Error
-          ? result.reason
-          : new Error(String(result.reason)),
+        new Error(
+          `${integration.kind} integration #${integration.id}: ${reason}`,
+        ),
       );
     }
   }
 
-  if (data.length === 0 && errors.length > 0) {
-    throw errors[0];
+  if (errors.length > 0) {
+    // A partial portfolio would present incomplete balances as a full total.
+    throw new Error(
+      `Failed to fetch integration data:\n${
+        errors.map((error) => error.message).join("\n")
+      }`,
+    );
   }
-
-  errors.forEach((error) => {
-    console.error("Failed to fetch integration data:", error);
-  });
   return data;
 }
 

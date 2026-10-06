@@ -56,7 +56,7 @@ type FlexBatchCandidate = {
 };
 
 let isFlexSyncRunning = false;
-let flexSyncTimer: number | null = null;
+let flexSyncTimer: ReturnType<typeof setInterval> | null = null;
 
 function ensureFlexSchema(database: Database) {
   database.exec(`

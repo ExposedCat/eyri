@@ -10,11 +10,34 @@
 
 ## Integrations
 
+Use `/integrations` to manage accounts in a rich message. Each account has an
+inline red Delete button. Choose **Add integration**, select **Freedom24** or
+**IBKR**, and send the requested credentials. `/cancel` cancels credential entry.
+The selected provider is saved per user and chat, including across bot restarts.
+
 Use `/ibkr [instance_url] [flex_token] [flex_query_id]` in Telegram to persist
 an Interactive Brokers integration for the current user.
 
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
+
+Both commands keep their existing formats; each successful submission adds a
+new account. Users can connect multiple accounts from the same provider. Use
+`/integration_delete ID` or the account's Delete button to remove one account.
+The old `/integration_delete ibkr` or `/integration_delete f24` shortcut works
+only when the user has exactly one account of that provider.
+
+Portfolio, stocks, options, performance, daily P&L and history fetch each saved
+account independently. Matching holdings are combined by ticker and currency,
+with summed values and weighted prices; sold gains are calculated separately
+for each account before aggregation. Provider-specific daily P&L baselines are
+preserved. If any account fails, the command identifies it instead of displaying
+an incomplete total. Existing accounts and cached broker history are preserved
+by an automatic database migration on startup.
+
+Rich integration controls use Telegram Bot API 10.3's `sendRichMessage`, inline
+`RichTextButton` and `InputRichBlockButtons`. A small typed raw API wrapper
+allows these methods to work with the currently installed grammY version.
 
 Freedom24 holdings and book cost come from the live portfolio, preserving ticker
 changes and stock splits. Daily P&L uses the broker's previous-day portfolio P&L;
@@ -51,7 +74,8 @@ Record an award with a USD price and UTC dates; vesting amounts must total the a
 24.09.28 50
 ```
 
-Prices come from your IBKR integration. `/rsu` Total sums the listed vestings,
+Prices are requested from all your IBKR integrations, preferring live quotes
+when available. `/rsu` Total sums the listed vestings,
 valued at current prices, with the change from award value and the period from
 the first award to the final listed vesting date.
 Use `/rsu_rm TICKER` to remove all your awards for that ticker.
@@ -81,7 +105,7 @@ After pulling this configuration, apply it with
 `podman compose up -d --force-recreate ib_gateway` and complete the initial login.
 
 Use `/restart` in Telegram to request an IB Gateway restart for the current
-user's IBKR integration. The bot derives the container name from the saved IBKR
+user's IBKR integrations. Each distinct gateway is restarted once. The bot derives the container name from the saved IBKR
 `instance_url` host. For example, `ib_gateway:4003` restarts the
 `ib_gateway` container.
 

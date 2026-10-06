@@ -3,7 +3,7 @@ import { getDatabase } from "../storage/sqlite.ts";
 
 export type { Database };
 
-function ensureSchema(database: Database) {
+export function ensureSchema(database: Database) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS users (
       user_id INTEGER PRIMARY KEY,
@@ -18,12 +18,19 @@ function ensureSchema(database: Database) {
       credentials_json TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (user_id) REFERENCES users(user_id),
-      UNIQUE (user_id, kind)
+      FOREIGN KEY (user_id) REFERENCES users(user_id)
     );
 
     CREATE INDEX IF NOT EXISTS integrations_user_id_idx
       ON integrations(user_id);
+
+    CREATE TABLE IF NOT EXISTS integration_setup_sessions (
+      user_id INTEGER NOT NULL REFERENCES users(user_id),
+      chat_id INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('ibkr', 'f24')),
+      prompt_message_id INTEGER NOT NULL,
+      PRIMARY KEY (user_id, chat_id)
+    );
 
     CREATE TABLE IF NOT EXISTS rsu_awards (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,6 +71,50 @@ function ensureSchema(database: Database) {
     CREATE INDEX IF NOT EXISTS portfolio_bucket_transactions_bucket_idx
       ON portfolio_bucket_transactions(user_id, bucket_name);
   `);
+  migrateIntegrations(database);
+}
+
+function migrateIntegrations(database: Database) {
+  const indexes = database.prepare("PRAGMA index_list(integrations)").all() as {
+    name: string;
+    unique: number;
+  }[];
+  const hasProviderConstraint = indexes.some((index) => {
+    if (!index.unique) return false;
+    const columns = database.prepare("SELECT name FROM pragma_index_info(?)")
+      .all(index.name) as { name: string }[];
+    return columns.length === 2 && columns[0].name === "user_id" &&
+      columns[1].name === "kind";
+  });
+  if (!hasProviderConstraint) return;
+
+  database.transaction(() => {
+    const sequence = database.prepare(
+      "SELECT seq FROM sqlite_sequence WHERE name = 'integrations'",
+    ).get() as { seq: number } | undefined;
+    database.exec(`
+      CREATE TABLE integrations_multiple (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL REFERENCES users(user_id),
+        kind TEXT NOT NULL,
+        credentials_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      INSERT INTO integrations_multiple
+        SELECT id, user_id, kind, credentials_json, created_at, updated_at
+        FROM integrations;
+      DROP TABLE integrations;
+      ALTER TABLE integrations_multiple RENAME TO integrations;
+      CREATE INDEX integrations_user_id_idx ON integrations(user_id);
+    `);
+    // Never reuse a deleted ID: broker history and old buttons refer to it.
+    if (sequence) {
+      database.prepare(
+        "UPDATE sqlite_sequence SET seq = MAX(seq, ?) WHERE name = 'integrations'",
+      ).run(sequence.seq);
+    }
+  })();
 }
 
 export async function connectToDb() {

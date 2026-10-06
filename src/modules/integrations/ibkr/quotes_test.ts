@@ -2,7 +2,7 @@ import { deepStrictEqual, equal, rejects } from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { EventName, type IBApi } from "@stoqey/ib";
 import type { Integration } from "../../database/integration.ts";
-import { fetchIbkrStockQuotes } from "./quotes.ts";
+import { fetchIbkrStockQuotes, fetchIntegratedIbkrStockQuotes, type StockQuote } from "./quotes.ts";
 
 class QuoteApi extends EventEmitter {
 	requested: string[] = [];
@@ -66,6 +66,25 @@ const integration: Integration = {
 	updatedAt: new Date(),
 	credentials: { instanceUrl: "localhost:4001", timeoutMs: 10 },
 };
+
+Deno.test("RSU quotes fetch every IBKR account and prefer live prices with fallback", async () => {
+  const requests: number[] = [];
+  const quote = (price: number | undefined, delayed: boolean): StockQuote => ({ price, delayed, frozen: delayed, previousClose: delayed });
+  const integrations = [1, 2, 3].map((id) => ({ ...integration, id }));
+  const quotes = await fetchIntegratedIbkrStockQuotes(integrations, ["AAPL", "MSFT"], async (account) => {
+    requests.push(account.id);
+    if (account.id === 3) throw new Error("Gateway offline");
+    return new Map([
+      ["AAPL", quote(account.id === 1 ? 100 : 120, account.id === 1)],
+      ["MSFT", quote(account.id === 1 ? 200 : undefined, true)],
+    ]);
+  });
+  deepStrictEqual(requests, [1, 2, 3]);
+  equal(quotes.get("AAPL")?.price, 120);
+  equal(quotes.get("AAPL")?.delayed, false);
+  equal(quotes.get("MSFT")?.price, 200);
+  await rejects(fetchIntegratedIbkrStockQuotes(integrations, ["AAPL"], async () => { throw new Error("Offline"); }), /all IBKR integrations/);
+});
 
 Deno.test("IBKR quotes distinguish live, delayed, previous close and unavailable prices", async () => {
 	const api = new QuoteApi();

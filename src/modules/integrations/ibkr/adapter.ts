@@ -48,7 +48,7 @@ function withTimeout<T>(
   timeoutMs: number,
   message: string,
 ) {
-  let timeoutId: number | undefined;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<T>((_, reject) => {
     timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
   });
@@ -580,7 +580,7 @@ async function readDailyPnl(
   }
 
   await new Promise<void>((resolve) => {
-    let timeoutId: number | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const onPnlSingle = (
       reqId: number,
       _position: number,
@@ -765,7 +765,7 @@ export async function syncIbkrExecutions(database: Database) {
 }
 
 let isExecutionSyncRunning = false;
-let executionSyncTimer: number | null = null;
+let executionSyncTimer: ReturnType<typeof setInterval> | null = null;
 
 export function startIbkrExecutionSyncLoop(database: Database) {
   ensureExecutionSchema(database);
@@ -864,6 +864,11 @@ function readIbkrOrders(database: Database, integration: Integration) {
 export const ibkrAdapter: IntegrationAdapter = {
   async fetchPortfolio(database: Database, integration: Integration) {
     const { config } = getConnectionConfig(integration);
+    // Independent requests may share a gateway. Avoid competing for client 0.
+    if (integration.credentials.clientId === undefined) {
+      config.clientId = 10_000 +
+        crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000_000;
+    }
     const api = await connect(config);
 
     try {
