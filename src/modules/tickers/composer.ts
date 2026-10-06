@@ -19,6 +19,7 @@ import {
 import {
   fetchIntegratedOrderHistory,
   fetchIntegratedPortfolio,
+  fetchIntegratedHistoryOrders,
 } from "../integrations/service.ts";
 import { getIbkrHostPort } from "../integrations/ibkr/credentials.ts";
 import { fetchIntegratedIbkrStockQuotes } from "../integrations/ibkr/quotes.ts";
@@ -179,7 +180,7 @@ async function fetchBucketedHistoryOrders(
     return [];
   }
 
-  const orders = await fetchIntegratedOrderHistory(ctx.db, userId);
+  const orders = await fetchIntegratedHistoryOrders(ctx.db, userId);
   const transactionBuckets = readBucketAssignments(ctx.db, userId);
 
   return filterHistoryOrdersByBucket(orders, transactionBuckets, bucketName);
@@ -236,7 +237,7 @@ async function replyBucketMoveHistory(ctx: CustomContext, bucketName: string) {
     tickerEmojiMappings,
   } = await readTickerDisplayPreferences(ctx.from.id);
 
-  const orders = await fetchIntegratedOrderHistory(
+  const orders = await fetchIntegratedHistoryOrders(
     ctx.db,
     ctx.dbEntities.user.userId,
   );
@@ -562,7 +563,7 @@ tickersComposer.hears(BUCKET_ACTION_PATTERN, async (ctx) => {
   }
 
   try {
-    const orders = await fetchIntegratedOrderHistory(
+    const orders = await fetchIntegratedHistoryOrders(
       ctx.db,
       ctx.dbEntities.user.userId,
     );

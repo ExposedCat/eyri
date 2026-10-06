@@ -130,7 +130,7 @@ export function parseIntegrationCredentials(
 
 function credentialPrompt(kind: IntegrationKind) {
   if (kind === "t212") {
-    return "Send your Trading 212 credentials in this format:\n\n<code>[api_key] [secret_key]</code>\n\nGenerate the key and secret in your live account. Enable read-only Portfolio and History - Orders permissions; leave trading permissions disabled.\n\nUse /cancel to cancel.";
+    return "Send your Trading 212 credentials in this format:\n\n<code>[api_key] [secret_key]</code>\n\nGenerate the key and secret in your live account. Enable read-only Portfolio, History - Orders and History - Transactions permissions; leave trading permissions disabled.\n\nUse /cancel to cancel.";
   }
   return kind === "ibkr"
     ? "Send your IBKR credentials in this format:\n\n<code>[instance_url] [flex_token] [flex_query_id]</code>\n\nUse /cancel to cancel."

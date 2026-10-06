@@ -262,6 +262,7 @@ function normalizePositionKeyPart(value: string) {
 }
 
 export function getOrderTransactionKey(order: IntegrationOrder) {
+  if (order.transactionKey) return order.transactionKey;
   return JSON.stringify([
     order.date.toISOString().slice(0, 10),
     normalizePositionKeyPart(order.ticker),

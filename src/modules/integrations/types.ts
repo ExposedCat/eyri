@@ -25,6 +25,8 @@ export type IntegrationPortfolioPosition = {
 };
 
 export type IntegrationOrder = {
+  // Synthesized history entries keep their bucket identity across refreshes.
+  transactionKey?: string;
   integrationId: number;
   integrationKind: string;
   account: string;
@@ -39,6 +41,10 @@ export type IntegrationOrder = {
 };
 
 export type IntegrationAdapter = {
+  fetchCashHistory?: (
+    database: Database,
+    integration: Integration,
+  ) => Promise<IntegrationCashTransaction[]>;
   fetchPortfolio: (
     database: Database,
     integration: Integration,
@@ -48,4 +54,13 @@ export type IntegrationAdapter = {
     integration: Integration,
   ) => Promise<IntegrationOrder[]>;
   probe?: (integration: Integration) => Promise<void>;
+};
+
+export type IntegrationCashTransaction = {
+  integrationId: number;
+  reference: string;
+  date: Date;
+  amount: number;
+  currency: string;
+  type: string;
 };

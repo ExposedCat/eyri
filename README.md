@@ -25,7 +25,7 @@ integration. `history_years` is optional and defaults to 10.
 Use `/t212 [api_key] [secret_key]` to persist a read-only Trading 212
 integration. It always uses the live API. Generate a key and secret in your live
 account under Settings → API (Beta), with
-Portfolio and History - Orders read permissions, and leave trading permissions off.
+Portfolio, History - Orders and History - Transactions read permissions, and leave trading permissions off.
 Invest and Stocks & Shares ISA accounts are supported.
 
 Trading 212 holdings and executed trades are stored in instrument currency;
@@ -38,6 +38,16 @@ Unsupported corporate actions cause history-based calculations to report an erro
 rather than produce misleading FIFO results. Portfolio views without bucket
 allocations use live holdings and do not require a history import.
 Daily P&L is unavailable because the API provides no previous-close baseline.
+
+Trading 212 cash history is imported automatically with order history; enable
+read-only **History - Transactions** permission as well. Internal transfer
+returns appear as a regular CFD purchase row in `/history`, included in its
+chronological year sections, totals and bucket shortcuts. Sending $100 to CFD
+and returning $500 produces `CFD 1.0000 x $400.00 ($400)`. The amount is the net
+cash returned, converted to USD at current rates. Transfers are treated as CFD
+cash movements; the API does not identify the other account. These history rows
+do not create live holdings or stock FIFO lots.
+
 All commands display money and combined totals in USD. GBX is treated as pence
 (100 GBX = 1 GBP) before USD conversion. Long portfolio and bucket messages continue across
 Telegram messages without changing transaction shortcut numbers.

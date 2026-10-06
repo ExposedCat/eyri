@@ -13,6 +13,7 @@ import {
   type Trading212Position,
 } from "./api.ts";
 import { parseTrading212Credentials } from "./credentials.ts";
+import { fetchTrading212CashHistory } from "./transactions.ts";
 
 const HISTORY_PATH = "/api/v0/equity/history/orders";
 const HISTORY_CACHE_MS = 60_000;
@@ -209,6 +210,7 @@ const pendingHistory = new WeakMap<
 >();
 
 export const trading212Adapter: IntegrationAdapter = {
+  fetchCashHistory: fetchTrading212CashHistory,
   async fetchPortfolio(_database, integration) {
     const client = getTrading212Client(
       parseTrading212Credentials(integration.credentials),

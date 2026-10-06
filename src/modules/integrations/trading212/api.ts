@@ -33,6 +33,19 @@ export type Trading212HistoryPage = {
   nextPagePath: string | null;
 };
 
+export type Trading212Transaction = {
+  reference: string;
+  dateTime: string;
+  amount: number;
+  currency: string;
+  type: string;
+};
+
+export type Trading212TransactionPage = {
+  items: Trading212Transaction[];
+  nextPagePath: string | null;
+};
+
 type Runtime = {
   fetch: typeof fetch;
   now: () => number;
@@ -44,6 +57,7 @@ type Runtime = {
 const intervals: Record<string, number> = {
   "/api/v0/equity/positions": 1_000,
   "/api/v0/equity/history/orders": 3_100,
+  "/api/v0/equity/history/transactions": 10_100,
 };
 
 export class Trading212Client {

@@ -38,10 +38,38 @@ Deno.test("Trading 212 client uses Basic authentication and live-only read endpo
     await rejects(client.get(path), /Invalid Trading 212 API path/);
   }
   equal(calls.length, 1);
+  await client.get("/api/v0/equity/history/transactions?limit=50");
+  equal(
+    calls.at(-1),
+    "https://live.trading212.com/api/v0/equity/history/transactions?limit=50",
+  );
   deepStrictEqual(
     parseTrading212Credentials({ apiKey: " key ", secretKey: " secret " }),
     { apiKey: "key", secretKey: "secret" },
   );
+});
+
+Deno.test("Trading 212 cash history pacing respects the six-per-minute transaction limit", async () => {
+  let now = 100_000;
+  const sleeps: number[] = [];
+  const client = new Trading212Client({
+    apiKey: "cash-rate",
+    secretKey: "secret",
+  }, {
+    now: () => now,
+    sleep: (ms) => {
+      sleeps.push(ms);
+      now += ms;
+      return Promise.resolve();
+    },
+    fetch: () =>
+      Promise.resolve(Response.json({ items: [], nextPagePath: null })),
+  });
+  await Promise.all([
+    client.get("/api/v0/equity/history/transactions?limit=50"),
+    client.get("/api/v0/equity/history/transactions?cursor=1"),
+  ]);
+  deepStrictEqual(sleeps, [10_100]);
 });
 
 Deno.test("Trading 212 queues concurrent history requests and obeys rate-limit reset headers", async () => {
