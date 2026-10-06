@@ -242,7 +242,7 @@ Deno.test("credential flow ignores other users, chats, old replies and commands;
   }
 });
 
-Deno.test("Trading 212 command and provider button save live/demo accounts and mask credentials", async () => {
+Deno.test("Trading 212 command and provider button save live accounts and mask credentials", async () => {
   const db = new Database(":memory:");
   try {
     ensureSchema(db);
@@ -254,13 +254,14 @@ Deno.test("Trading 212 command and provider button save live/demo accounts and m
       /\/t212.*\[api_key\].*\[secret_key\]/s,
     );
     await app.text("/t212 KEY SECRET production");
+    await app.text("/t212 KEY SECRET live");
+    await app.text("/t212 KEY SECRET demo");
     await app.text("/t212 KEY");
     equal(getUserIntegrations(db, 1).length, 0);
     await app.text("/t212 LIVEKEYONE LIVESECRET");
     deepStrictEqual(getUserIntegrations(db, 1)[0].credentials, {
       apiKey: "LIVEKEYONE",
       secretKey: "LIVESECRET",
-      environment: "live",
     });
     await app.click("integration:1:add");
     match(JSON.stringify(richMessage(app.calls)), /Trading 212.*select:t212/);
@@ -273,16 +274,16 @@ Deno.test("Trading 212 command and provider button save live/demo accounts and m
       /read-only.*trading permissions disabled/s,
     );
     app = harness(db);
-    await app.text("DEMO DEMOSECRET demo");
+    await app.text("KEY2 SECRET2");
     deepStrictEqual(getUserIntegrations(db, 1)[1].credentials, {
-      apiKey: "DEMO",
-      secretKey: "DEMOSECRET",
-      environment: "demo",
+      apiKey: "KEY2",
+      secretKey: "SECRET2",
     });
     const menu = JSON.stringify(richMessage(app.calls));
-    match(menu, /Trading 212.*live.*Trading 212.*demo/);
+    match(menu, /Trading 212.*Trading 212/);
+    ok(!menu.includes("(live)") && !menu.includes("(demo)"));
     for (
-      const credential of ["LIVEKEYONE", "LIVESECRET", "DEMOSECRET", "DEMO"]
+      const credential of ["LIVEKEYONE", "LIVESECRET", "KEY2", "SECRET2"]
     ) {
       ok(!menu.includes(credential));
     }

@@ -20,7 +20,7 @@ export const locales: Record<string, Record<string, string>> = {
     f24:
       `To set up Freedom24, use this format:\n\n<code>/f24 [api_key] [secret_key] [history_years]</code>\n\n<code>history_years</code> is optional and defaults to 10.\n\nCreate API credentials at Freedom24/Tradernet Auth API and do not enable trading permissions.`,
     t212:
-      `To set up Trading 212, use this format:\n\n<code>/t212 [api_key] [secret_key] [live|demo]</code>\n\nThe environment is optional and defaults to live. Generate a key and secret in Settings → API (Beta) for your Invest or Stocks &amp; Shares ISA account. Enable read-only Portfolio and History - Orders permissions; leave trading permissions disabled.`,
+      `To set up Trading 212, use this format:\n\n<code>/t212 [api_key] [secret_key]</code>\n\nGenerate a key and secret in Settings → API (Beta) for your live Invest or Stocks &amp; Shares ISA account. Enable read-only Portfolio and History - Orders permissions; leave trading permissions disabled.`,
     integration_saved:
       `Integration has been saved.\n\nUse /stocks, /perf, /dpnl, or /history to fetch broker data.`,
     integration_save_failed: `Failed to save integration.`,

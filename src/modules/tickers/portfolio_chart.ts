@@ -11,6 +11,7 @@ export type PortfolioChart = {
 		value: string;
 		change: number | null;
 		returnLabel: string;
+		changeLabel: string;
 	}[];
 };
 
@@ -82,6 +83,9 @@ export function buildPortfolioCharts(
 				weight: Math.abs(holding.value) / grossValue * 100,
 				value: formatMoney(holding.value, currency, 0),
 				change: holding.change,
+				changeLabel: holding.change === null
+					? "?"
+					: `${holding.change > 0 ? "+" : ""}${formatMoney(holding.change, currency)}`,
 				returnLabel:
 					holding.change === null || holding.cost === null || holding.cost === 0
 						? "?"

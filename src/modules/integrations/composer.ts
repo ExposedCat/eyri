@@ -26,7 +26,7 @@ function describeIntegration(integration: Integration) {
     ? `${key.slice(0, 4)}…${key.slice(-4)}`
     : "••••";
   return integration.kind === "t212"
-    ? `Trading 212 ${masked} (${integration.credentials.environment ?? "live"})`
+    ? `Trading 212 ${masked}`
     : `Freedom24 ${masked}`;
 }
 
@@ -117,10 +117,9 @@ export function parseIntegrationCredentials(
     return { instanceUrl, flexToken, flexQueryId };
   }
   if (kind === "t212") {
-    if (params.length !== 2 && params.length !== 3) return null;
-    const [apiKey, secretKey, environment = "live"] = params;
-    if (environment !== "live" && environment !== "demo") return null;
-    return { apiKey, secretKey, environment };
+    if (params.length !== 2) return null;
+    const [apiKey, secretKey] = params;
+    return { apiKey, secretKey };
   }
   if (params.length !== 2 && params.length !== 3) return null;
   const [apiKey, secretKey, historyYears] = params;
@@ -131,7 +130,7 @@ export function parseIntegrationCredentials(
 
 function credentialPrompt(kind: IntegrationKind) {
   if (kind === "t212") {
-    return "Send your Trading 212 credentials in this format:\n\n<code>[api_key] [secret_key] [live|demo]</code>\n\nThe environment is optional and defaults to live. Enable read-only Portfolio and History - Orders permissions; leave trading permissions disabled.\n\nUse /cancel to cancel.";
+    return "Send your Trading 212 credentials in this format:\n\n<code>[api_key] [secret_key]</code>\n\nGenerate the key and secret in your live account. Enable read-only Portfolio and History - Orders permissions; leave trading permissions disabled.\n\nUse /cancel to cancel.";
   }
   return kind === "ibkr"
     ? "Send your IBKR credentials in this format:\n\n<code>[instance_url] [flex_token] [flex_query_id]</code>\n\nUse /cancel to cancel."

@@ -46,7 +46,7 @@ const intervals: Record<string, number> = {
 };
 
 export class Trading212Client {
-  private readonly origin: string;
+  private readonly origin = "https://live.trading212.com";
   private readonly authorization: string;
   private readonly runtime: Runtime;
   private readonly queues = new Map<string, Promise<unknown>>();
@@ -56,7 +56,6 @@ export class Trading212Client {
     credentials: Trading212Credentials,
     runtime: Partial<Runtime> = {},
   ) {
-    this.origin = `https://${credentials.environment}.trading212.com`;
     this.authorization = `Basic ${
       btoa(`${credentials.apiKey}:${credentials.secretKey}`)
     }`;
@@ -132,7 +131,7 @@ export class Trading212Client {
       if (!response.ok) {
         await response.body?.cancel();
         const hint = response.status === 401
-          ? ": check the key, secret and live/demo environment"
+          ? ": check the key and secret generated in your live account"
           : response.status === 403
           ? ": check read permissions and IP restrictions"
           : "";
@@ -153,7 +152,7 @@ export class Trading212Client {
 const clients = new Map<string, { secret: string; client: Trading212Client }>();
 
 export function getTrading212Client(credentials: Trading212Credentials) {
-  const key = `${credentials.environment}:${credentials.apiKey}`;
+  const key = credentials.apiKey;
   const existing = clients.get(key);
   if (existing?.secret === credentials.secretKey) return existing.client;
   const client = new Trading212Client(credentials);

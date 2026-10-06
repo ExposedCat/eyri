@@ -875,13 +875,9 @@ tickersComposer.command("portfolio", async (ctx) => {
 			return;
 		}
 		for (const chart of charts) {
-			for (let offset = 0; offset < chart.holdings.length; offset += 12) {
-				const image = await renderPortfolioChart({
-					...chart,
-					holdings: chart.holdings.slice(offset, offset + 12),
-				});
-				await ctx.replyWithPhoto(new InputFile(image, "portfolio.png"));
-			}
+			const image = await renderPortfolioChart(chart);
+			// Preserve the original PNG so text stays sharp when zooming.
+			await ctx.replyWithDocument(new InputFile(image, "portfolio.png"));
 		}
 	} catch (error) {
 		await replyIntegrationError(ctx, error);

@@ -22,9 +22,9 @@ an Interactive Brokers integration for the current user.
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
 
-Use `/t212 [api_key] [secret_key] [live|demo]` to persist a read-only Trading 212
-integration. The environment defaults to `live`; demo credentials must be generated
-in the demo account. Generate a key and secret under Settings → API (Beta), with
+Use `/t212 [api_key] [secret_key]` to persist a read-only Trading 212
+integration. It always uses the live API. Generate a key and secret in your live
+account under Settings → API (Beta), with
 Portfolio and History - Orders read permissions, and leave trading permissions off.
 Invest and Stocks & Shares ISA accounts are supported.
 
@@ -81,8 +81,10 @@ current holdings, or the final sale for fully sold holdings.
 
 Use `/portfolio` (or `/portfolio BUCKET`) to chart stock allocation, largest first.
 Bars show each holding's share of stock market value, with losing holdings below
-zero and returns below tickers. Currencies are charted separately; large portfolios
-continue across images. The header is the total stock value for that currency.
+zero. Below each ticker are its percentage return and monetary gain or loss.
+Currencies are charted separately; large portfolios use one wider image per
+currency. Charts are sent as original PNG files to preserve sharp text when zooming.
+The header is the total stock value for that currency.
 The container includes Python and Matplotlib for rendering; local runs need
 `python3` with `matplotlib==3.11.2` installed.
 

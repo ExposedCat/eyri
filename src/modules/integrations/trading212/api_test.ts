@@ -2,27 +2,31 @@ import { deepStrictEqual, equal, rejects } from "node:assert/strict";
 import { Trading212Client } from "./api.ts";
 import { parseTrading212Credentials } from "./credentials.ts";
 
-Deno.test("Trading 212 client uses Basic authentication, environment and read-only endpoints", async () => {
+Deno.test("Trading 212 client uses Basic authentication and live-only read endpoints", async () => {
   const calls: string[] = [];
-  const client = new Trading212Client({
-    apiKey: "key",
-    secretKey: "secret",
-    environment: "demo",
-  }, {
-    fetch: (input, init) => {
-      calls.push(String(input));
-      equal(init?.method, "GET");
-      equal(init?.redirect, "error");
-      equal(
-        new Headers(init?.headers).get("Authorization"),
-        `Basic ${btoa("key:secret")}`,
-      );
-      return Promise.resolve(Response.json([]));
+  const client = new Trading212Client(
+    parseTrading212Credentials({
+      apiKey: "key",
+      secretKey: "secret",
+      // Legacy stored environment values must not switch the API to demo.
+      environment: "demo",
+    }),
+    {
+      fetch: (input, init) => {
+        calls.push(String(input));
+        equal(init?.method, "GET");
+        equal(init?.redirect, "error");
+        equal(
+          new Headers(init?.headers).get("Authorization"),
+          `Basic ${btoa("key:secret")}`,
+        );
+        return Promise.resolve(Response.json([]));
+      },
     },
-  });
+  );
   await client.get("/api/v0/equity/positions");
   deepStrictEqual(calls, [
-    "https://demo.trading212.com/api/v0/equity/positions",
+    "https://live.trading212.com/api/v0/equity/positions",
   ]);
   for (
     const path of [
@@ -36,7 +40,7 @@ Deno.test("Trading 212 client uses Basic authentication, environment and read-on
   equal(calls.length, 1);
   deepStrictEqual(
     parseTrading212Credentials({ apiKey: " key ", secretKey: " secret " }),
-    { apiKey: "key", secretKey: "secret", environment: "live" },
+    { apiKey: "key", secretKey: "secret" },
   );
 });
 
@@ -47,7 +51,6 @@ Deno.test("Trading 212 queues concurrent history requests and obeys rate-limit r
   const client = new Trading212Client({
     apiKey: "rate",
     secretKey: "secret",
-    environment: "live",
   }, {
     now: () => now,
     sleep: (ms) => {
@@ -80,7 +83,6 @@ Deno.test("Trading 212 errors never expose broker response bodies or credentials
   const client = new Trading212Client({
     apiKey: "PRIVATEKEY",
     secretKey: "PRIVATESECRET",
-    environment: "live",
   }, {
     fetch: () =>
       Promise.resolve(new Response("PRIVATESECRET", { status: 403 })),

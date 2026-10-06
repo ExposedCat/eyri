@@ -70,6 +70,7 @@ Deno.test("Trading 212 integration maps live positions and fills, caches history
           credentials: {
             apiKey: `account${userId}`,
             secretKey: "secret",
+            // Existing environment values are ignored; calls always use live.
             environment: "demo",
           },
         }).success,
@@ -77,7 +78,7 @@ Deno.test("Trading 212 integration maps live positions and fills, caches history
     }
     globalThis.fetch = (input, init) => {
       const url = new URL(String(input));
-      equal(url.origin, "https://demo.trading212.com");
+      equal(url.origin, "https://live.trading212.com");
       const auth = new Headers(init?.headers).get("Authorization");
       if (url.pathname.endsWith("positions")) {
         return Promise.resolve(Response.json([{
