@@ -5,6 +5,7 @@ import { findOrCreateUser } from "../database/user.ts";
 import { integrationsComposer } from "../integrations/composer.ts";
 import { startComposer } from "../start/composer.ts";
 import { tickersComposer } from "../tickers/composer.ts";
+import { chartComposer } from "../tickers/chart_composer.ts";
 import type { Bot, CustomContext } from "./types.ts";
 import { createReplyWithTextFunc } from "./utils.ts";
 
@@ -29,6 +30,7 @@ function setupComposers(bot: Bot) {
   bot.use(startComposer);
   bot.use(integrationsComposer);
   bot.use(tickersComposer);
+  bot.use(chartComposer);
 }
 
 export function createBot(database: Database): Bot {
@@ -51,6 +53,7 @@ const botCommands = [
   { command: "t212", description: "Connect a Trading 212 account" },
   { command: "stocks", description: "Show stock performance" },
   { command: "portfolio", description: "Chart stock allocation" },
+  { command: "chart", description: "Chart and compare all-time performance" },
   { command: "rsu", description: "Show or record RSU vesting" },
   { command: "rsu_rm", description: "Remove RSU awards for a ticker" },
   { command: "rsu_at", description: "Show RSUs with a vesting cutoff date" },

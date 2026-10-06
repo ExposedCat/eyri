@@ -99,6 +99,79 @@ If a required exchange rate is unavailable, the command reports an error.
 The container includes Python and Matplotlib for rendering; local runs need
 `python3` with `matplotlib==3.11.2` installed.
 
+## All-time chart
+
+Use `/chart` (or `/chart BUCKET`) for a daily time series of current plus realized
+performance. The percentage is gain divided by the cost of open holdings plus
+FIFO-matched sold lots, as in `/alltime`. The graph starts at the first purchase;
+sales retain their realized gains, weekends carry the last close, and stock splits
+adjust historical quantities and unit costs. Today's endpoint uses broker prices
+and book cost. All amounts use the latest USD exchange rates consistently across
+the series, excluding historical FX effects, dividends and fees.
+
+The original PNG uses the portfolio's dark background, mint gains and pink losses.
+**Compare** adds the person clicking the button to that same graph, up to six
+participants. Published curves remain snapshots of what their owners shared;
+the button fetches only the clicker's own accounts. Buttons are bound to their
+chat and message, survive restarts, and reject duplicate participants.
+
+Historical data is stored in the existing SQLite database. Finalized daily closes,
+split events, symbol resolutions and fetched date ranges persist without expiry.
+Only missing historical ranges are downloaded; weekends and holidays count as
+covered. Today and the preceding two UTC days remain provisional and are cached
+for five minutes.
+Yahoo's split-adjusted closes are converted to stable raw closes using split
+events, so later splits do not require downloading the old prices again. Computed
+series and PNGs also persist, with the most recent 128 of each retained.
+
+Built-in patterns resolve Trading 212 symbols even when exchange metadata or an
+ISIN is absent. Patterns are scoped to the instrument currency:
+
+| Broker ticker pattern | Currency | Yahoo candidates, in order |
+| --- | --- | --- |
+| Freedom24 `*.US` | USD | Remove `.US` (e.g. `CRDO.US` → `CRDO`) |
+| `*_US_EQ` | USD | US symbol (e.g. `AAPL_US_EQ` → `AAPL`) |
+| `*d_EQ` | EUR | `.DE`, then `.F` |
+| `*p_EQ` | EUR | `.PA` |
+| `*l_EQ` | GBP / GBX | `.L` |
+| `*l_EQ` | USD | `.IL`, then `.L` |
+| IBKR bare symbol | USD | Same symbol (`BRK B` / `BRK.B` → `BRK-B`) |
+| Bare symbol | GBP / GBX | `.L`, then the original symbol |
+
+Existing Yahoo exchange suffixes remain intact. Other bare IBKR symbols may need
+an explicit mapping, particularly when the currency is shared across exchanges;
+the resolver does not guess which European listing a bare EUR symbol belongs to.
+Patterns also accept the normalized uppercase broker tickers. Exchange hints and
+ISIN search provide additional candidates. Resolution checks that
+the selected listing covers the first purchase (for example, Samsung's full London
+history is `SMSN.IL`, while `SMSN.L` only begins in July 2026). For an otherwise
+unresolvable listing, configure an explicit mapping, for example:
+`EYRI_YAHOO_SYMBOLS='{"2DGD_EQ:EUR":"2DG.F"}'`. Explicit mappings take priority over
+cached resolutions and defaults; a failed override produces an error.
+
+If any symbol cannot resolve or fetch prices, `/chart` reports the affected
+instruments and sends no image. Successful fetches remain cached for a retry.
+A failed Compare leaves the existing chart and participants unchanged.
+Unsupported or missing historical prices, unmatched sales and quantities that
+disagree with the live broker also cause an error rather than a partial graph.
+Complete purchase history is required;
+historical short positions are not supported.
+
+Live Yahoo chart-endpoint probes on 2026-10-06 established these usable windows:
+
+| Interval | Successful request | Rejected request |
+| --- | --- | --- |
+| `1m` | 7 days | 30 days (8-day maximum per request) |
+| `5m` | 59 days | 60 and 90 days (recent 60-day boundary) |
+| `1h` | 365 and 729 days | 800 days (730-day lookback) |
+| `1d` | 1, 10 and 30 years | — |
+| `1wk`, `1mo` | 10 years | — |
+
+`/chart` uses `interval=1d` with explicit `period1` / `period2` boundaries at
+`https://query1.finance.yahoo.com/v8/finance/chart/{symbol}`. Daily closes cover
+long account histories and allow exact missing-range caching; weekly and monthly
+bars would obscure purchase and sale dates.
+
 ## RSUs
 
 Use `/rsu` to list upcoming vesting dates, current values, and changes since award.

@@ -20,6 +20,8 @@ export type IntegrationPortfolioPosition = {
   // Some brokers use current value for the portfolio-level daily percentage.
   dailyPnlTotalBaseline?: number | null;
   openedAt: Date | null;
+  yahooSymbol?: string;
+  isin?: string;
 };
 
 export type IntegrationOrder = {
@@ -32,6 +34,8 @@ export type IntegrationOrder = {
   price: number | null;
   currency: string;
   assetCategory: string | null;
+  yahooSymbol?: string;
+  isin?: string;
 };
 
 export type IntegrationAdapter = {

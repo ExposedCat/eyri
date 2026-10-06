@@ -511,7 +511,7 @@ function getOrderPositionKey(order: IntegrationOrder) {
   ].join(":");
 }
 
-function buildIntegratedSoldPerformances(
+export function buildIntegratedSoldPerformances(
   orders: IntegrationOrder[],
   transactionBuckets?: Map<string, string>,
   bucketName: string | null = null,

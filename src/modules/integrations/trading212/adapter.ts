@@ -29,7 +29,14 @@ function instrumentFields(instrument: Trading212Instrument) {
   // US stocks use IBKR's symbol convention. Preserve other instrument IDs to
   // avoid merging different listings that happen to share a short symbol.
   const ticker = rawTicker.match(/^(.+)_US_EQ$/)?.[1] ?? rawTicker;
-  return { ticker, currency: instrument.currency.trim().toUpperCase() };
+  const venue = instrument.ticker.trim().match(/^(.+)([dlp])_EQ$/);
+  const suffix: Record<string, string> = { d: ".DE", l: ".L", p: ".PA" };
+  return {
+    ticker,
+    currency: instrument.currency.trim().toUpperCase(),
+    ...(venue ? { yahooSymbol: `${venue[1].toUpperCase()}${suffix[venue[2]]}` } : {}),
+    ...(instrument.isin ? { isin: instrument.isin } : {}),
+  };
 }
 
 function baseFields(integration: Integration) {

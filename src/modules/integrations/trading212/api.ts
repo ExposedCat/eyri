@@ -3,6 +3,7 @@ import type { Trading212Credentials } from "./credentials.ts";
 export type Trading212Instrument = {
   ticker: string;
   currency: string;
+  isin?: string;
 };
 
 export type Trading212Position = {
