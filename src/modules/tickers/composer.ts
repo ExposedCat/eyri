@@ -43,6 +43,7 @@ import {
 import { removeTickerEmojiPack, syncTickerEmojiPack } from "./emoji_pack.ts";
 import {
   buildBucketedPortfolioPositions,
+  buildIntegratedAllTimePerformanceList,
   buildIntegratedDailyPerformanceList,
   buildIntegratedHistoryGroups,
   buildIntegratedHistory,
@@ -1193,7 +1194,7 @@ tickersComposer.command("dump_tickers", async (ctx) => {
   }
 });
 
-tickersComposer.command("perf", async (ctx) => {
+tickersComposer.command(["perf", "alltime"], async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
@@ -1224,15 +1225,37 @@ tickersComposer.command("perf", async (ctx) => {
   }
 
   try {
-    const positions = await fetchBucketedPositions(ctx, bucketName);
-    const performanceList = await buildIntegratedPerformanceList({
-      positions,
-      tickerDecorations,
-      tickerLabelPreferences,
-      tickerLabelLinks,
-      tickerEmojiMappings,
-      formatTicker,
-    });
+    const isAllTime = ctx.hasCommand("alltime");
+    let performanceList: string;
+    if (isAllTime) {
+      const userId = ctx.dbEntities.user.userId;
+      const [livePositions, orders] = await Promise.all([
+        fetchIntegratedPortfolio(ctx.db, userId),
+        fetchIntegratedOrderHistory(ctx.db, userId),
+      ]);
+      const transactionBuckets = readBucketAssignments(ctx.db, userId);
+      const positions = buildBucketedPortfolioPositions({
+        orders,
+        livePositions,
+        transactionBuckets,
+        bucketName,
+      });
+      performanceList = await buildIntegratedAllTimePerformanceList({
+        positions,
+        orders,
+        transactionBuckets,
+        bucketName,
+        ...preferences,
+        formatTicker,
+      });
+    } else {
+      const positions = await fetchBucketedPositions(ctx, bucketName);
+      performanceList = await buildIntegratedPerformanceList({
+        positions,
+        ...preferences,
+        formatTicker,
+      });
+    }
 
     if (performanceList.length === 0) {
       await ctx.text("no_positions");

@@ -52,6 +52,7 @@ const botCommands = [
 	{ command: "rsu_at", description: "Show RSUs with a vesting cutoff date" },
   { command: "options", description: "Show option performance" },
   { command: "perf", description: "Show concise performance" },
+  { command: "alltime", description: "Show combined current and sold performance" },
   { command: "buckets", description: "Show portfolio buckets" },
   { command: "bucket", description: "Manage portfolio buckets" },
   { command: "sold", description: "Show sold position performance" },

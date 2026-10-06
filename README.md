@@ -22,6 +22,15 @@ instruments with no trade today show zero, as in Freedom24. The total daily
 percentage uses current portfolio value, matching the app's summary. Historical
 orders supply holding dates when their tickers still match.
 
+## All-time performance
+
+Use `/alltime` (or `/alltime BUCKET`) to combine `/perf` and `/sold` into one
+line per ticker and a single Total. Gains include current holdings and realized
+FIFO gains from available order history. Percentages use their combined cost
+basis. Sold lots follow the bucket of their purchase transaction; unbucketed
+views exclude bucketed lots. Periods run from the earliest purchase to today for
+current holdings, or the final sale for fully sold holdings.
+
 ## Portfolio chart
 
 Use `/portfolio` (or `/portfolio BUCKET`) to chart stock allocation, largest first.
@@ -58,9 +67,9 @@ numbers, and underscores, and must start with a letter.
 
 Use `/bucket move NAME` to render order history with `/move_NAME_IDX` and
 `/remove_NAME_IDX` shortcuts. Moving a transaction puts it in that bucket and
-removes it from any other bucket. Unbucketed `/perf`, `/stocks`, `/options`,
+removes it from any other bucket. Unbucketed `/perf`, `/alltime`, `/stocks`, `/options`,
 `/dpnl`, and `/history` views exclude bucketed transactions; pass `NAME` to
-`/perf NAME`, `/stocks NAME`, `/options NAME`, `/dpnl NAME`, or `/history NAME`
+`/perf NAME`, `/alltime NAME`, `/stocks NAME`, `/options NAME`, `/dpnl NAME`, or `/history NAME`
 to view a bucket.
 
 ## Restarting IB Gateway

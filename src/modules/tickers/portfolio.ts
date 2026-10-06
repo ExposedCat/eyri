@@ -38,6 +38,12 @@ type BuildIntegratedSoldPerformanceArgs = BuildIntegratedHistoryArgs & {
   formatTicker?: (ticker: string) => string;
 };
 
+type BuildIntegratedAllTimePerformanceArgs = BuildIntegratedTickerListArgs & {
+  orders: IntegrationOrder[];
+  transactionBuckets?: Map<string, string>;
+  bucketName?: string | null;
+};
+
 type BuildBucketedPortfolioPositionsArgs = {
   orders: IntegrationOrder[];
   livePositions: IntegrationPortfolioPosition[];
@@ -487,7 +493,11 @@ function getOrderPositionKey(order: IntegrationOrder) {
   ].join(":");
 }
 
-function buildIntegratedSoldPerformances(orders: IntegrationOrder[]) {
+function buildIntegratedSoldPerformances(
+  orders: IntegrationOrder[],
+  transactionBuckets?: Map<string, string>,
+  bucketName: string | null = null,
+) {
   const lotsByKey = new Map<
     string,
     {
@@ -496,6 +506,7 @@ function buildIntegratedSoldPerformances(orders: IntegrationOrder[]) {
       quantity: number;
       price: number;
       date: Date;
+      bucketName: string | null;
     }[]
   >();
   const soldByDisplayKey = new Map<string, IntegratedSoldPerformance>();
@@ -515,6 +526,7 @@ function buildIntegratedSoldPerformances(orders: IntegrationOrder[]) {
         quantity: order.quantity,
         price: order.price ?? 0,
         date: order.date,
+        bucketName: transactionBuckets?.get(getOrderTransactionKey(order)) ?? null,
       });
       lotsByKey.set(orderKey, lots);
       continue;
@@ -524,6 +536,14 @@ function buildIntegratedSoldPerformances(orders: IntegrationOrder[]) {
     while (remainingSellQuantity > 0 && lots.length > 0) {
       const lot = lots[0];
       const quantity = Math.min(lot.quantity, remainingSellQuantity);
+      if (transactionBuckets && lot.bucketName !== bucketName) {
+        lot.quantity -= quantity;
+        remainingSellQuantity -= quantity;
+        if (lot.quantity <= 0) {
+          lots.shift();
+        }
+        continue;
+      }
       const cost = quantity * lot.price;
       const proceeds = quantity * (order.price ?? 0);
       const realizedPnl = proceeds - cost;
@@ -813,6 +833,130 @@ export async function buildIntegratedSoldPerformanceList({
   )} ${formatMoneyChange(totals.realizedPnl)} (${elapsedPeriod.label})`;
 
   return [...lines, totalLine].join("\n\n");
+}
+
+export async function buildIntegratedAllTimePerformanceList({
+  positions,
+  orders,
+  priceOverrides,
+  tickerDecorations,
+  tickerLabelPreferences,
+  tickerLabelLinks,
+  tickerEmojiMappings,
+  formatTicker,
+  transactionBuckets,
+  bucketName = null,
+}: BuildIntegratedAllTimePerformanceArgs) {
+  const now = new Date();
+  type Performance = {
+    ticker: string;
+    cost: number | null;
+    change: number | null;
+    openedAt: Date | null;
+    endedAt: Date;
+  };
+  const merged = new Map<string, Performance>();
+  const merge = (
+    current: Performance | undefined,
+    next: Performance,
+  ): Performance => {
+    if (!current) {
+      return { ...next };
+    }
+    current.cost = current.cost === null || next.cost === null
+      ? null
+      : current.cost + next.cost;
+    current.change = current.change === null || next.change === null
+      ? null
+      : current.change + next.change;
+    if (
+      next.openedAt && (!current.openedAt || next.openedAt < current.openedAt)
+    ) {
+      current.openedAt = next.openedAt;
+    }
+    if (next.endedAt > current.endedAt) {
+      current.endedAt = next.endedAt;
+    }
+    return current;
+  };
+  const add = (key: string, next: Performance) => {
+    merged.set(key, merge(merged.get(key), next));
+  };
+
+  for (const position of positions) {
+    const performance = buildIntegratedPositionPerformance(
+      position,
+      now,
+      priceOverrides,
+    );
+    add(getPositionDisplayKey(position.ticker, position.currency), {
+      ticker: position.ticker,
+      cost: performance.totalInput,
+      change: performance.totalChange,
+      openedAt: position.openedAt,
+      endedAt: now,
+    });
+  }
+  for (
+    const sold of buildIntegratedSoldPerformances(
+      orders,
+      transactionBuckets,
+      bucketName,
+    )
+  ) {
+    add(getPositionDisplayKey(sold.ticker, sold.currency), {
+      ticker: sold.ticker,
+      cost: sold.cost,
+      change: sold.realizedPnl,
+      openedAt: sold.openedAt,
+      endedAt: sold.closedAt ?? now,
+    });
+  }
+  if (merged.size === 0) {
+    return "";
+  }
+
+  const performances = [...merged.values()].sort((a, b) =>
+    (b.change ?? Number.NEGATIVE_INFINITY) -
+      (a.change ?? Number.NEGATIVE_INFINITY) ||
+    a.ticker.localeCompare(b.ticker)
+  );
+  const render = (name: string, performance: Performance) => {
+    const elapsed = getElapsedPeriod(performance.openedAt, performance.endedAt);
+    if (performance.cost === null || performance.change === null) {
+      return `${name} ? ? (${elapsed.label})`;
+    }
+    const percentage = performance.cost === 0
+      ? 0
+      : performance.change / performance.cost * 100;
+    return `${name} ${formatMoneyChange(percentage, "%")} ${
+      formatMoneyChange(performance.change)
+    } (${elapsed.label})`;
+  };
+  const lines = buildSeparatedChangeLines(
+    performances,
+    (p) => p.change,
+    (p) =>
+      render(
+        formatTickerName(
+          p.ticker,
+          tickerDecorations,
+          tickerLabelPreferences,
+          tickerLabelLinks,
+          tickerEmojiMappings,
+          formatTicker,
+        ),
+        p,
+      ),
+  );
+  const total = performances.reduce((total, next) => merge(total, next), {
+    ticker: "",
+    cost: 0,
+    change: 0,
+    openedAt: null,
+    endedAt: new Date(0),
+  } as Performance);
+  return [...lines, render("Total:", total)].join("\n\n");
 }
 
 export async function buildIntegratedDailyPerformanceList({
