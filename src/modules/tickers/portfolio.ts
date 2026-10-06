@@ -424,15 +424,14 @@ function buildIntegratedPortfolioTotals(
       }
 
       totals.dailyPnl += position.dailyPnl;
-      if (
-        position.dailyPnlBaseline === null ||
-        position.dailyPnlBaseline === 0
-      ) {
+      const baseline =
+        position.dailyPnlTotalBaseline ?? position.dailyPnlBaseline;
+      if (baseline === null || baseline === 0) {
         totals.hasMissingDailyPnlPercentage = true;
         return totals;
       }
 
-      totals.dailyPnlBaseline += position.dailyPnlBaseline;
+      totals.dailyPnlBaseline += baseline;
       return totals;
     },
     {
@@ -693,19 +692,15 @@ export async function buildIntegratedTickerList({
     : performances.map(renderTickerLine);
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
-  const totalSummary =
-    totals.totalChange === null ||
-    totals.totalPercentageChange === null ||
-    totals.monthlyChange === null ||
-    totals.monthlyPercentageChange === null
-      ? `? ? / ? ? (${totals.elapsedPeriod.label})`
-      : `${formatMoneyChange(totals.totalChange)} ${formatMoneyChange(
-          totals.totalPercentageChange,
-          "%",
-        )} / ${formatMoneyChange(totals.monthlyChange)} ${formatMoneyChange(
-          totals.monthlyPercentageChange,
-          "%",
-        )} (${totals.elapsedPeriod.label})`;
+  const totalReturn =
+    totals.totalChange === null || totals.totalPercentageChange === null
+      ? "? ?"
+      : `${formatMoneyChange(totals.totalChange)} ${formatMoneyChange(totals.totalPercentageChange, "%")}`;
+  const monthlyReturn =
+    totals.monthlyChange === null || totals.monthlyPercentageChange === null
+      ? ""
+      : ` / ${formatMoneyChange(totals.monthlyChange)} ${formatMoneyChange(totals.monthlyPercentageChange, "%")}`;
+  const totalSummary = `${totalReturn}${monthlyReturn} (${totals.elapsedPeriod.label})`;
 
   return [...tickerLines, totalSummary].join("\n\n");
 }
@@ -951,6 +946,89 @@ export function buildBucketedPortfolioPositions({
   transactionBuckets,
   bucketName,
 }: BuildBucketedPortfolioPositionsArgs) {
+  if (bucketName === null) {
+    const bucketed = [...new Set(transactionBuckets.values())].flatMap((name) =>
+      buildBucketedPortfolioPositions({
+        orders,
+        livePositions,
+        transactionBuckets,
+        bucketName: name,
+      }),
+    );
+    const allocations = new Map<
+      string,
+      { amount: number; cost: number | null }
+    >();
+    const liveKeys = new Set(
+      livePositions.map((position) =>
+        getPositionDisplayKey(position.ticker, position.currency),
+      ),
+    );
+    for (const position of bucketed) {
+      const key = getPositionDisplayKey(position.ticker, position.currency);
+      if (!liveKeys.has(key)) {
+        throw new Error(
+          `Bucket holding ${position.ticker} is absent from the live portfolio. Reassign its transactions after the corporate action.`,
+        );
+      }
+      const allocation = allocations.get(key) ?? { amount: 0, cost: 0 };
+      allocation.amount += position.amount;
+      allocation.cost =
+        allocation.cost === null || position.totalInput === null
+          ? null
+          : allocation.cost + position.totalInput;
+      allocations.set(key, allocation);
+    }
+
+    // Holdings, quantities and book cost come from the broker. Purchase history
+    // cannot reconstruct splits, ticker changes, transfers or truncated history.
+    return getSortedIntegratedPositions(
+      livePositions.flatMap((position) => {
+        const allocation = allocations.get(
+          getPositionDisplayKey(position.ticker, position.currency),
+        );
+        if (!allocation) return [position];
+        const amount = position.amount - allocation.amount;
+        if (amount < -FLOAT_EPSILON) {
+          throw new Error(
+            `Bucket quantity for ${position.ticker} exceeds the live holding. Reassign its transactions after the corporate action.`,
+          );
+        }
+        if (amount <= FLOAT_EPSILON) return [];
+        const share = amount / position.amount;
+        const totalInput =
+          position.totalInput === null || allocation.cost === null
+            ? null
+            : position.totalInput - allocation.cost;
+        const totalNow =
+          position.totalNow === null ? null : position.totalNow * share;
+        return [
+          {
+            ...position,
+            amount,
+            averageUnitPrice: totalInput === null ? null : totalInput / amount,
+            totalInput,
+            totalNow,
+            unrealizedPnl:
+              totalNow === null || totalInput === null
+                ? null
+                : totalNow - totalInput,
+            dailyPnl:
+              position.dailyPnl === null ? null : position.dailyPnl * share,
+            dailyPnlBaseline:
+              position.dailyPnlBaseline === null
+                ? null
+                : position.dailyPnlBaseline * share,
+            dailyPnlTotalBaseline:
+              position.dailyPnlTotalBaseline == null
+                ? position.dailyPnlTotalBaseline
+                : position.dailyPnlTotalBaseline * share,
+          },
+        ];
+      }),
+    );
+  }
+
   type OpenLot = {
     integrationId: number;
     integrationKind: string;
@@ -1060,6 +1138,17 @@ export function buildBucketedPortfolioPositions({
     }
 
     const livePosition = livePositionsByKey.get(key);
+    if (!livePosition) {
+      throw new Error(
+        `Bucket holding ${draft.ticker} is absent from the live portfolio. Reassign its transactions after the corporate action.`,
+      );
+    }
+    if (draft.amount > livePosition.amount + FLOAT_EPSILON) {
+      throw new Error(
+        `Bucket quantity for ${draft.ticker} exceeds the live holding. Reassign its transactions after the corporate action.`,
+      );
+    }
+
     const currentPrice = livePosition?.currentPrice ?? null;
     const totalNow = currentPrice === null ? null : draft.amount * currentPrice;
     const liveAmount = Math.abs(livePosition?.amount ?? 0);
@@ -1100,6 +1189,10 @@ export function buildBucketedPortfolioPositions({
             ? null
             : (dailyPnl / dailyPnlBaseline) * 100,
         dailyPnlBaseline,
+        dailyPnlTotalBaseline:
+          liveShare === null || livePosition?.dailyPnlTotalBaseline == null
+            ? livePosition?.dailyPnlTotalBaseline
+            : livePosition.dailyPnlTotalBaseline * liveShare,
         openedAt: draft.openedAt,
       },
     ];

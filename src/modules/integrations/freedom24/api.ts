@@ -24,6 +24,8 @@ export type Freedom24AccountCurrency = {
 };
 
 export type Freedom24PortfolioPosition = {
+  s?: number;
+  fv?: string | number;
   mkt_price?: number;
   price_a?: number;
   face_val_a?: number;
@@ -62,6 +64,8 @@ export type Freedom24Quote = {
   close_price?: string | number;
   ClosePrice?: string | number;
   marketStatus?: string;
+  ltt?: string;
+  UTCOffset?: string | number;
 };
 
 export type Freedom24Order = {

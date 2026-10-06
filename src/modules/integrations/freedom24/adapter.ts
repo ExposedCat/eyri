@@ -23,6 +23,7 @@ const SELL_OPERATION = 3;
 type QuotePrices = {
   currentPrice: number | null;
   previousClose: number | null;
+  tradedToday: boolean | null;
 };
 
 function getHistoryDateRange(years: number) {
@@ -41,17 +42,13 @@ function normalizeNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function normalizePositiveNumber(value: unknown) {
-  const number = normalizeNumber(value);
-  return number !== null && number > 0 ? number : null;
-}
-
 function normalizeTradernetNumber(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
   }
 
   if (typeof value === "string") {
+    if (!value.trim()) return null;
     const parsed = Number(value.replace(",", "."));
     return Number.isFinite(parsed) ? parsed : null;
   }
@@ -68,48 +65,55 @@ function getPositionTicker(position: Freedom24PortfolioPosition) {
   return position.i?.trim() || position.base_contract_code?.trim() || "UNKNOWN";
 }
 
-function shouldLogRawStockResponse(ticker: string) {
-  const normalizedTicker = ticker.trim().toUpperCase();
-  return normalizedTicker === "CRDO" || normalizedTicker === "CRDO.US";
-}
-
-function getPositionCurrentPrice(quotePrices: QuotePrices | undefined) {
-  return quotePrices?.currentPrice ?? null;
-}
-
 function toPortfolioPosition(
   integration: Integration,
   position: Freedom24PortfolioPosition,
   quotePrices: Map<string, QuotePrices>,
-  dailyRealizedPnlByTicker: Map<string, number>,
 ): IntegrationPortfolioPosition | null {
-  const amount = normalizeNumber(position.q);
-  if (amount === null || amount === 0) {
-    return null;
-  }
+  const amount = normalizeTradernetNumber(position.q);
+  if (amount === null || amount === 0) return null;
 
   const ticker = getPositionTicker(position);
-  const faceValue = normalizePositiveNumber(position.face_val_a) ?? 1;
-  const averageUnitPrice = normalizeNumber(position.price_a);
-  const currentPrice = getPositionCurrentPrice(quotePrices.get(ticker));
+  const faceValue = normalizePositiveTradernetNumber(position.fv);
+  const multiplier =
+    faceValue !== null
+      ? faceValue / 100
+      : (normalizePositiveTradernetNumber(position.face_val_a) ?? 1);
+  const quote = quotePrices.get(ticker);
+  const averagePrice = normalizeTradernetNumber(position.price_a);
+  // s is the broker's book cost, including its rounding and corporate actions.
   const totalInput =
-    averageUnitPrice === null ? null : averageUnitPrice * faceValue * amount;
+    normalizeTradernetNumber(position.s) ??
+    (averagePrice === null ? null : averagePrice * multiplier * amount);
+  const currentPrice =
+    quote?.currentPrice ?? normalizePositiveTradernetNumber(position.mkt_price);
   const totalNow =
-    currentPrice === null ? null : currentPrice * faceValue * amount;
-  const resolvedCurrentPrice = currentPrice;
-  const previousClose = quotePrices.get(ticker)?.previousClose ?? null;
-  const openDailyPnl =
-    resolvedCurrentPrice === null || previousClose === null
+    currentPrice === null ? null : currentPrice * multiplier * amount;
+  const unrealizedPnl =
+    totalNow === null || totalInput === null ? null : totalNow - totalInput;
+
+  // profit_close is unrealized P&L at the previous day's close, not current P&L.
+  // Quote pp/p5 are historical prices and are not a daily portfolio baseline.
+  const profitAtClose = normalizeTradernetNumber(position.profit_close);
+  const valueAtClose =
+    totalInput === null || profitAtClose === null
       ? null
-      : (resolvedCurrentPrice - previousClose) * faceValue * amount;
-  const dailyRealizedPnl =
-    dailyRealizedPnlByTicker.get(ticker.trim().toUpperCase()) ?? 0;
+      : totalInput + profitAtClose;
+  const previousClose =
+    valueAtClose ??
+    (quote?.previousClose == null
+      ? null
+      : quote.previousClose * multiplier * amount);
+  // Freedom24 reports no daily movement for an instrument without a trade today.
   const dailyPnl =
-    openDailyPnl === null && dailyRealizedPnl === 0
+    totalNow === null
       ? null
-      : (openDailyPnl ?? 0) + dailyRealizedPnl;
-  const dailyPnlBaseline =
-    previousClose === null ? null : previousClose * faceValue * amount;
+      : quote?.tradedToday === false
+        ? 0
+        : previousClose === null
+          ? null
+          : totalNow - previousClose;
+  const dailyPnlBaseline = dailyPnl === 0 ? totalNow : previousClose;
 
   return {
     integrationId: integration.id,
@@ -117,23 +121,20 @@ function toPortfolioPosition(
     account: "Freedom24",
     ticker,
     amount,
-    averageUnitPrice:
-      averageUnitPrice === null ? null : averageUnitPrice * faceValue,
-    currentPrice:
-      resolvedCurrentPrice === null ? null : resolvedCurrentPrice * faceValue,
+    averageUnitPrice: totalInput === null ? null : totalInput / amount,
+    currentPrice: currentPrice === null ? null : currentPrice * multiplier,
     currency: position.curr?.trim() || position.base_currency?.trim() || "USD",
     totalInput,
     totalNow,
-    unrealizedPnl:
-      normalizeNumber(position.profit_close) ??
-      (totalNow !== null && totalInput !== null ? totalNow - totalInput : null),
-    realizedPnl: normalizeNumber(position.profit_price),
+    unrealizedPnl,
+    realizedPnl: null,
     dailyPnl,
     dailyPnlPercentage:
       dailyPnl === null || dailyPnlBaseline === null || dailyPnlBaseline === 0
         ? null
         : (dailyPnl / dailyPnlBaseline) * 100,
     dailyPnlBaseline,
+    dailyPnlTotalBaseline: totalNow,
     openedAt: null,
   };
 }
@@ -200,53 +201,6 @@ function getOrderPrice(order: Freedom24Order, quantity: number) {
   }
 
   return normalizeNumber(order.p);
-}
-
-function isToday(date: Date) {
-  const now = new Date();
-  return (
-    date.getUTCFullYear() === now.getUTCFullYear() &&
-    date.getUTCMonth() === now.getUTCMonth() &&
-    date.getUTCDate() === now.getUTCDate()
-  );
-}
-
-function getTodayRealizedPnlByTicker(orders: Freedom24Order[]) {
-  const realizedPnlByTicker = new Map<string, number>();
-
-  for (const order of orders) {
-    if (
-      order.stat !== COMPLETED_ORDER_STATUS ||
-      order.oper !== SELL_OPERATION ||
-      !order.trade ||
-      order.trade.length === 0
-    ) {
-      continue;
-    }
-
-    const ticker = getOrderTicker(order).trim().toUpperCase();
-    const realizedPnl = order.trade.reduce((sum, trade) => {
-      if (!trade.date) {
-        return sum;
-      }
-
-      const date = new Date(trade.date);
-      if (Number.isNaN(+date) || !isToday(date)) {
-        return sum;
-      }
-
-      return sum + (normalizeNumber(trade.profit) ?? 0);
-    }, 0);
-
-    if (realizedPnl !== 0) {
-      realizedPnlByTicker.set(
-        ticker,
-        (realizedPnlByTicker.get(ticker) ?? 0) + realizedPnl,
-      );
-    }
-  }
-
-  return realizedPnlByTicker;
 }
 
 function toIntegrationOrder(
@@ -372,63 +326,71 @@ function isQuoteMarketOpen(quote: Freedom24Quote) {
   return quote.marketStatus?.trim().toUpperCase() === "OPEN";
 }
 
-function getQuoteCurrentPrice(quote: Freedom24Quote) {
+function getQuoteCurrentPrice(quote: Freedom24Quote, amount: number) {
   if (isQuoteMarketOpen(quote)) {
     return (
-      normalizePositiveTradernetNumber(quote.bbp) ??
-      normalizePositiveTradernetNumber(quote.ltp)
+      normalizePositiveTradernetNumber(amount < 0 ? quote.bap : quote.bbp) ??
+      normalizePositiveTradernetNumber(quote.ltp) ??
+      normalizePositiveTradernetNumber(amount < 0 ? quote.bbp : quote.bap)
     );
   }
-
   return normalizePositiveTradernetNumber(quote.ltp);
 }
 
 function getQuotePreviousClose(quote: Freedom24Quote) {
   return (
     normalizePositiveTradernetNumber(quote.close_price) ??
-    normalizePositiveTradernetNumber(quote.ClosePrice) ??
-    normalizePositiveTradernetNumber(quote.pp) ??
-    normalizePositiveTradernetNumber(quote.p5)
+    normalizePositiveTradernetNumber(quote.ClosePrice)
+  );
+}
+
+function hasTradedToday(quote: Freedom24Quote) {
+  if (!quote.ltt) return null;
+  const offset = normalizeTradernetNumber(quote.UTCOffset);
+  if (offset === null) return null;
+  // ltt is exchange-local time; UTCOffset is minutes east of UTC.
+  const tradeDate = new Date(
+    /(?:Z|[+-]\d{2}:?\d{2})$/.test(quote.ltt) ? quote.ltt : `${quote.ltt}Z`,
+  );
+  if (Number.isNaN(+tradeDate)) return null;
+  const nowAtExchange = new Date(Date.now() + offset * 60_000);
+  return (
+    tradeDate.toISOString().slice(0, 10) ===
+    nowAtExchange.toISOString().slice(0, 10)
   );
 }
 
 async function fetchQuotePrices(
   integration: Integration,
-  tickers: string[],
+  positions: Freedom24PortfolioPosition[],
 ): Promise<Map<string, QuotePrices>> {
   const credentials = parseFreedom24Credentials(integration.credentials);
   const prices = new Map<string, QuotePrices>();
 
   await Promise.all(
-    tickers.map(async (ticker) => {
+    positions.map(async (position) => {
+      const ticker = getPositionTicker(position);
       try {
-        const logRawResponse = shouldLogRawStockResponse(ticker);
         const response = await makeTradernetApiRequest<Freedom24QuotesResponse>(
           credentials.apiKey,
           credentials.secretKey,
           "getStockQuotesJson",
           { tickers: ticker },
-          logRawResponse
-            ? {
-                onRawResponse: (rawResponse) => {
-                  console.log(
-                    `Raw Freedom24 stock response for ${ticker}:`,
-                    rawResponse,
-                  );
-                },
-              }
-            : undefined,
         );
         const quotes = response.result?.q
           ? Array.isArray(response.result.q)
             ? response.result.q
             : Object.values(response.result.q)
           : [];
-        const quote = quotes.find((item) => item.c === ticker) ?? quotes.at(0);
+        const quote = quotes.find((item) => item.c === ticker);
         if (quote) {
           prices.set(ticker, {
-            currentPrice: getQuoteCurrentPrice(quote),
+            currentPrice: getQuoteCurrentPrice(
+              quote,
+              normalizeTradernetNumber(position.q) ?? 0,
+            ),
             previousClose: getQuotePreviousClose(quote),
+            tradedToday: hasTradedToday(quote),
           });
         }
       } catch (error) {
@@ -462,10 +424,8 @@ export const freedom24Adapter: IntegrationAdapter = {
       fetchOrderHistoryResponse(integration),
     ]);
     const orders = mapIntegrationOrderHistory(integration, rawOrders);
-    const dailyRealizedPnlByTicker = getTodayRealizedPnlByTicker(rawOrders);
     const rawPositions = portfolioResponse.result?.ps?.pos ?? [];
-    const tickers = [...new Set(rawPositions.map(getPositionTicker))];
-    const quotePrices = await fetchQuotePrices(integration, tickers);
+    const quotePrices = await fetchQuotePrices(integration, rawPositions);
 
     return (
       rawPositions
@@ -474,7 +434,6 @@ export const freedom24Adapter: IntegrationAdapter = {
             integration,
             position,
             quotePrices,
-            dailyRealizedPnlByTicker,
           );
           if (!mapped) {
             return [];

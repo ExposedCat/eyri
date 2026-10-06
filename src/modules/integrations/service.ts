@@ -48,6 +48,14 @@ function mergePosition(
       ? null
       : current.dailyPnlBaseline + next.dailyPnlBaseline;
 
+  const currentTotalBaseline =
+    current.dailyPnlTotalBaseline ?? current.dailyPnlBaseline;
+  const nextTotalBaseline = next.dailyPnlTotalBaseline ?? next.dailyPnlBaseline;
+  const dailyPnlTotalBaseline =
+    currentTotalBaseline === null || nextTotalBaseline === null
+      ? null
+      : currentTotalBaseline + nextTotalBaseline;
+
   return {
     ...current,
     account: [current.account, next.account]
@@ -74,6 +82,7 @@ function mergePosition(
         ? null
         : (dailyPnl / dailyPnlBaseline) * 100,
     dailyPnlBaseline,
+    dailyPnlTotalBaseline,
     openedAt:
       current.openedAt && next.openedAt
         ? current.openedAt < next.openedAt

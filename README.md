@@ -16,6 +16,12 @@ an Interactive Brokers integration for the current user.
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
 
+Freedom24 holdings and book cost come from the live portfolio, preserving ticker
+changes and stock splits. Daily P&L uses the broker's previous-day portfolio P&L;
+instruments with no trade today show zero, as in Freedom24. The total daily
+percentage uses current portfolio value, matching the app's summary. Historical
+orders supply holding dates when their tickers still match.
+
 ## Portfolio chart
 
 Use `/portfolio` (or `/portfolio BUCKET`) to chart stock allocation, largest first.

@@ -17,6 +17,8 @@ export type IntegrationPortfolioPosition = {
   dailyPnl: number | null;
   dailyPnlPercentage: number | null;
   dailyPnlBaseline: number | null;
+  // Some brokers use current value for the portfolio-level daily percentage.
+  dailyPnlTotalBaseline?: number | null;
   openedAt: Date | null;
 };
 
