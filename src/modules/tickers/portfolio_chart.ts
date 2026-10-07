@@ -51,11 +51,12 @@ export async function buildPortfolioChart(
 				? null
 				: position.averageUnitPrice * position.amount);
 		const cost = nativeCost === null ? null : nativeCost * conversion;
-		const change = cost === null
+		const nativeChange = nativeCost === null
 			? position.unrealizedPnl === null
 				? null
-				: position.unrealizedPnl * conversion
-			: value - cost;
+				: position.unrealizedPnl
+			: nativeValue - nativeCost;
+		const change = nativeChange === null ? null : nativeChange * conversion;
 		const existing = entries.get(ticker);
 		entries.set(
 			ticker,

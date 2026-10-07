@@ -199,6 +199,30 @@ Deno.test("chart prices in pounds and broker prices in GBX use their own USD fac
   equal(points.at(-1)!.percentage, 20);
 });
 
+Deno.test("EUR warrant history and live endpoints compare native bids to native FIFO cost", () => {
+  const orders = [
+    trade(1142, .49, "2025-01-02", "EUR"),
+    trade(-100, .52, "2025-01-03", "EUR"),
+  ].map((o) => ({ ...o, ticker: "WARRANT", assetCategory: "WAR" }));
+  const positions = [{ ...holding(1042, 1042 * .49, .50, "EUR"), ticker: "WARRANT" }];
+  const original = structuredClone({ orders, positions });
+  const histories = new Map([[instrumentKey(orders[0]), history("EUR", [
+    { date: "2025-01-02", close: .49 },
+    { date: "2025-01-03", close: .50 },
+  ])]]);
+  const args = { positions, orders, transactionBuckets: new Map<string, string>(), bucketName: null, now };
+  for (const factor of [1, 1.12, 2]) {
+    const points = buildAllTimeSeries(args, histories, new Map([["EUR", factor]]));
+    equal(points[1].gain, 0);
+    const nativeGain = 1042 * .50 - 1042 * .49 + 100 * (.52 - .49);
+    for (const point of points.slice(2)) {
+      ok(Math.abs(point.gain - nativeGain * factor) < 1e-9);
+      ok(Math.abs(point.percentage - nativeGain / (1142 * .49) * 100) < 1e-9);
+    }
+  }
+  deepStrictEqual({ orders, positions }, original);
+});
+
 Deno.test("historical splits preserve lot cost and adjust shares without inventing return", () => {
   const orders = [trade(2, 100, "2025-01-02"), trade(-2, 60, "2025-01-06")];
   const prices = history("USD", [{ date: "2025-01-02", close: 100 }, {
@@ -257,7 +281,7 @@ Deno.test("incomplete trades, unmatched sales, missing closes and unreconciled h
         histories,
         rates,
       ),
-    /does not reconcile/,
+    /trade history shows 2 held, but the broker reports 3/,
   );
 });
 

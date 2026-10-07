@@ -3,7 +3,6 @@ import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
 import { isCfdAllocation } from "./cfd_history.ts";
 import {
   portfolioPositionInUsd,
-  portfolioPositionsInUsd,
   usdFactor,
 } from "../integrations/usd.ts";
 import type {
@@ -26,6 +25,7 @@ import {
 type BuildIntegratedTickerListArgs = {
   positions: IntegrationPortfolioPosition[];
   request?: typeof fetch;
+  // /when accepts USD targets; normalize these inputs to instrument currency.
   priceOverrides?: Record<string, number>;
   separateGainersLosers?: boolean;
   tickerDecorations?: TickerDecorations;
@@ -79,6 +79,7 @@ export type IntegratedHistoryGroup = {
 
 type IntegratedPositionPerformance = {
   position: IntegrationPortfolioPosition;
+  currentValue: number | null;
   currentPrice: number | null;
   averageUnitPrice: number | null;
   totalInput: number | null;
@@ -385,10 +386,11 @@ function buildSeparatedChangeLines<T>(
 function buildIntegratedPositionPerformance(
   position: IntegrationPortfolioPosition,
   now: Date,
-  priceOverrides?: Record<string, number>,
 ): IntegratedPositionPerformance {
-  const currentPrice = getPriceOverride(priceOverrides, position.ticker) ??
-    position.currentPrice;
+  const currentPrice = position.currentPrice;
+  const currentValue = currentPrice === null
+    ? position.totalNow
+    : position.amount * currentPrice;
   const totalInput = position.totalInput;
   const averageUnitPrice = position.averageUnitPrice;
   const elapsedPeriod = getElapsedPeriod(position.openedAt, now);
@@ -401,6 +403,7 @@ function buildIntegratedPositionPerformance(
   ) {
     return {
       position,
+      currentValue,
       currentPrice: null,
       averageUnitPrice,
       totalInput,
@@ -420,6 +423,7 @@ function buildIntegratedPositionPerformance(
 
   return {
     position,
+    currentValue,
     currentPrice,
     averageUnitPrice,
     totalInput,
@@ -429,6 +433,51 @@ function buildIntegratedPositionPerformance(
     currentVsAverageChange: currentPrice - averageUnitPrice,
     elapsedPeriod,
   };
+}
+
+function positionPerformanceInUsd(
+  position: IntegrationPortfolioPosition,
+  now: Date,
+  rates: ReadonlyMap<string, number>,
+  priceOverrides?: Record<string, number>,
+): IntegratedPositionPerformance {
+  const factor = usdFactor(position.currency, rates);
+  const target = getPriceOverride(priceOverrides, position.ticker);
+  const performance = buildIntegratedPositionPerformance(
+    target === undefined
+      ? position
+      : { ...position, currentPrice: target / factor },
+    now,
+  );
+  const convert = (value: number | null) => value === null ? null : value * factor;
+  // All price/cost comparisons happen in native currency. Convert only the
+  // completed performance used for USD sorting, aggregation and rendering.
+  return {
+    ...performance,
+    position: portfolioPositionInUsd(performance.position, rates),
+    currentValue: convert(performance.currentValue),
+    currentPrice: convert(performance.currentPrice),
+    averageUnitPrice: convert(performance.averageUnitPrice),
+    totalInput: convert(performance.totalInput),
+    totalNow: convert(performance.totalNow),
+    totalChange: convert(performance.totalChange),
+    currentVsAverageChange: convert(performance.currentVsAverageChange),
+  };
+}
+
+async function positionPerformancesInUsd(
+  positions: IntegrationPortfolioPosition[],
+  now: Date,
+  request?: typeof fetch,
+  priceOverrides?: Record<string, number>,
+) {
+  const rates = await fetchUsdConversionRates(
+    positions.map((p) => p.currency),
+    request,
+  );
+  return positions.map((p) =>
+    positionPerformanceInUsd(p, now, rates, priceOverrides)
+  );
 }
 
 function buildIntegratedPortfolioTotals(
@@ -457,9 +506,10 @@ function buildIntegratedPortfolioTotals(
       }
 
       totals.totalNow += performance.totalNow;
+      totals.totalChange += performance.totalChange;
       return totals;
     },
-    { totalInput: 0, totalNow: 0, hasMissingPrice: false },
+    { totalInput: 0, totalNow: 0, totalChange: 0, hasMissingPrice: false },
   );
 
   if (totals.hasMissingPrice) {
@@ -475,7 +525,7 @@ function buildIntegratedPortfolioTotals(
     };
   }
 
-  const totalChange = totals.totalNow - totals.totalInput;
+  const totalChange = totals.totalChange;
   const totalPercentageChange = totals.totalInput === 0
     ? 0
     : (totalChange / totals.totalInput) * 100;
@@ -737,12 +787,9 @@ export async function buildIntegratedTickerList({
     return "";
   }
 
-  positions = await portfolioPositionsInUsd(positions, request);
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
-    getSortedIntegratedPositions(positions).map((position) =>
-      buildIntegratedPositionPerformance(position, now, priceOverrides)
-    ),
+    await positionPerformancesInUsd(positions, now, request, priceOverrides),
   );
 
   const renderTickerLine = (performance: IntegratedPositionPerformance) => {
@@ -826,14 +873,14 @@ export async function buildIntegratedTickerList({
   const totalReturn =
     totals.totalChange === null || totals.totalPercentageChange === null
       ? "? ?"
-      : `${formatCurrencyChange(totals.totalChange, positions[0].currency)} ${
+      : `${formatCurrencyChange(totals.totalChange, "USD")} ${
         formatMoneyChange(totals.totalPercentageChange, "%")
       }`;
   const monthlyReturn =
     totals.monthlyChange === null || totals.monthlyPercentageChange === null
       ? ""
       : ` / ${
-        formatCurrencyChange(totals.monthlyChange, positions[0].currency)
+        formatCurrencyChange(totals.monthlyChange, "USD")
       } ${formatMoneyChange(totals.monthlyPercentageChange, "%")}`;
   const totalSummary =
     `${totalReturn}${monthlyReturn} (${totals.elapsedPeriod.label})`;
@@ -857,22 +904,14 @@ export async function buildIntegratedPerformanceList({
     return "";
   }
 
-  positions = await portfolioPositionsInUsd(positions, request);
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
-    getSortedIntegratedPositions(positions).map((position) =>
-      buildIntegratedPositionPerformance(position, now, priceOverrides)
-    ),
+    await positionPerformancesInUsd(positions, now, request, priceOverrides),
   );
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
   const getValue = (performance: IntegratedPositionPerformance) => {
-    if (!showCurrentValue) return performance.totalChange;
-    const price = getPriceOverride(priceOverrides, performance.position.ticker) ??
-      performance.position.currentPrice;
-    return price === null
-      ? performance.position.totalNow
-      : performance.position.amount * price;
+    return showCurrentValue ? performance.currentValue : performance.totalChange;
   };
   const totalValue = showCurrentValue
     ? performances.reduce<number | null>((total, performance) => {
@@ -1021,8 +1060,6 @@ export async function buildIntegratedAllTimePerformanceList({
     [...positions, ...nativeSold].map((p) => p.currency),
     request,
   );
-  positions = positions.map((p) => portfolioPositionInUsd(p, rates));
-  const soldPerformances = soldPerformancesInUsd(nativeSold, rates);
 
   type Performance = {
     ticker: string;
@@ -1061,10 +1098,15 @@ export async function buildIntegratedAllTimePerformanceList({
   };
 
   for (const position of positions) {
+    const target = getPriceOverride(priceOverrides, position.ticker);
     const performance = buildIntegratedPositionPerformance(
-      position,
+      target === undefined
+        ? position
+        : {
+          ...position,
+          currentPrice: target / usdFactor(position.currency, rates),
+        },
       now,
-      priceOverrides,
     );
     add(getPositionDisplayKey(position.ticker, position.currency), {
       ticker: position.ticker,
@@ -1075,9 +1117,7 @@ export async function buildIntegratedAllTimePerformanceList({
       endedAt: now,
     });
   }
-  for (
-    const sold of soldPerformances
-  ) {
+  for (const sold of nativeSold) {
     add(getPositionDisplayKey(sold.ticker, sold.currency), {
       ticker: sold.ticker,
       currency: sold.currency,
@@ -1091,7 +1131,18 @@ export async function buildIntegratedAllTimePerformanceList({
     return "";
   }
 
-  const performances = [...merged.values()].sort((a, b) =>
+  const display = new Map<string, Performance>();
+  for (const native of merged.values()) {
+    const factor = usdFactor(native.currency, rates);
+    const key = normalizePositionKeyPart(native.ticker);
+    display.set(key, merge(display.get(key), {
+      ...native,
+      currency: "USD",
+      cost: native.cost === null ? null : native.cost * factor,
+      change: native.change === null ? null : native.change * factor,
+    }));
+  }
+  const performances = [...display.values()].sort((a, b) =>
     (b.change ?? Number.NEGATIVE_INFINITY) -
       (a.change ?? Number.NEGATIVE_INFINITY) ||
     a.ticker.localeCompare(b.ticker)
@@ -1157,12 +1208,9 @@ export async function buildIntegratedDailyPerformanceList({
     return "";
   }
 
-  positions = await portfolioPositionsInUsd(positions, request);
   const now = new Date();
   const performances = getSortedIntegratedPerformances(
-    getSortedIntegratedPositions(positions).map((position) =>
-      buildIntegratedPositionPerformance(position, now, priceOverrides)
-    ),
+    await positionPerformancesInUsd(positions, now, request, priceOverrides),
     (performance) => performance.position.dailyPnl,
   );
 
@@ -1199,7 +1247,7 @@ export async function buildIntegratedDailyPerformanceList({
       totals.dailyPercentageChange === null
         ? "?"
         : formatMoneyChange(totals.dailyPercentageChange, "%")
-    } ${formatCurrencyChange(totals.dailyChange, positions[0].currency)} today`;
+    } ${formatCurrencyChange(totals.dailyChange, "USD")} today`;
 
   return [...lines, totalLine].join("\n\n");
 }

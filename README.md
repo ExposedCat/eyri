@@ -128,7 +128,11 @@ by an automatic database migration on startup.
 dumps display USD amounts using the latest
 Frankfurter rates. Prices supplied to `/when` are USD. History prices and realized
 gains use the same current FX rates as holdings; FIFO matching and bucket shortcuts
-retain their original transaction identity. A required FX failure reports an error
+retain their original transaction identity. Price, cost and P&L calculations stay
+in instrument currency (including EUR warrant quotes); completed results are
+converted to USD before reporting totals, sorting and rendering. `/when` USD
+targets are normalized to instrument currency before those calculations.
+A required FX failure reports an error
 instead of displaying a partial total.
 
 Rich integration controls use Telegram Bot API 10.3's `sendRichMessage`, inline

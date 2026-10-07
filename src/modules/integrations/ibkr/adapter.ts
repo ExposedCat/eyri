@@ -828,19 +828,7 @@ export function readExecutionOrders(
   }));
 }
 
-function getOrderMergeKey(order: IntegrationOrder) {
-  return [
-    formatDateKey(order.date),
-    order.ticker,
-    order.quantity,
-    order.price ?? "",
-    order.currency,
-    order.assetCategory ?? "",
-  ].join(":");
-}
-
 function readIbkrOrders(database: Database, integration: Integration) {
-  const merged = new Map<string, IntegrationOrder>();
   const flexOrders = readFlexOrders(database, integration);
   const latestFlexDate = flexOrders.reduce(
     (latest, order) =>
@@ -848,18 +836,18 @@ function readIbkrOrders(database: Database, integration: Integration) {
     null as Date | null,
   );
 
-  for (const order of flexOrders) {
-    merged.set(getOrderMergeKey(order), order);
-  }
+  // Stored rows already have unique Flex trade keys or execution IDs. Equal
+  // dates, quantities and prices do not mean two fills are the same trade.
+  const merged = [...flexOrders];
   for (const order of readExecutionOrders(database, integration)) {
     if (latestFlexDate && order.date <= latestFlexDate) {
       continue;
     }
 
-    merged.set(getOrderMergeKey(order), order);
+    merged.push(order);
   }
 
-  return [...merged.values()].sort(
+  return merged.sort(
     (a, b) => a.date.getTime() - b.date.getTime(),
   );
 }

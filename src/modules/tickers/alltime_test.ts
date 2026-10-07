@@ -573,6 +573,62 @@ Deno.test("hypothetical prices are USD and monetary inputs remain unchanged", as
   deepStrictEqual(positions, original);
 });
 
+Deno.test("EUR warrant returns use native bid and cost, then USD results for sorting and every report", async () => {
+  const positions = [
+    position({
+      ticker: "ARTEM",
+      assetCategory: "WAR",
+      currency: "EUR",
+      amount: 1042,
+      averageUnitPrice: .49,
+      currentPrice: .50,
+      totalInput: 1042 * .49,
+      totalNow: 1042 * .50,
+      dailyPnl: 1042 * .01,
+      dailyPnlBaseline: 1042 * .49,
+      dailyPnlPercentage: .01 / .49 * 100,
+    }),
+    position({
+      ticker: "MICRON",
+      assetCategory: "WAR",
+      currency: "EUR",
+      amount: 3299,
+      averageUnitPrice: 905 / 3299,
+      currentPrice: .33,
+      totalInput: 905,
+      totalNow: 3299 * .33,
+    }),
+    position({ ticker: "USD_GAIN", amount: 1, totalInput: 100, currentPrice: 300 }),
+  ];
+  const original = structuredClone(positions);
+  const request: typeof fetch = async () =>
+    Response.json({ base: "USD", quote: "EUR", rate: 1 / 1.12 });
+  const args = { positions, request, formatTicker };
+  const detailed = await buildIntegratedTickerList(args);
+  match(detailed, /ARTEM \+\$11\.67 \+2\.04%/);
+  match(detailed, /\$0\.55 x 1042\.00 \(\$0\.56 \+\$0\.01\)/);
+  match(detailed, /MICRON \+\$205\.71 \+20\.30%/);
+  // EUR 183.67 < USD 200, but its USD result is 205.71 > 200.
+  ok(detailed.indexOf("MICRON") < detailed.indexOf("USD_GAIN"));
+  for (const showCurrentValue of [false, true]) {
+    const output = await buildIntegratedPerformanceList({ ...args, showCurrentValue });
+    match(output, showCurrentValue
+      ? /ARTEM \+2\.04% \$583\.52/
+      : /ARTEM \+2\.04% \+\$11\.67/);
+    match(output, showCurrentValue
+      ? /MICRON \+20\.30% \$1,219\.31/
+      : /MICRON \+20\.30% \+\$205\.71/);
+    ok(output.indexOf("MICRON") < output.indexOf("USD_GAIN"));
+  }
+  const daily = await buildIntegratedDailyPerformanceList({ ...args, positions: [positions[0]] });
+  match(daily, /Total: \+2\.04% \+\$11\.67 today/);
+  const alltime = await buildIntegratedAllTimePerformanceList({ ...args, orders: [] });
+  match(alltime, /ARTEM \+2\.04% \+\$11\.67/);
+  match(alltime, /MICRON \+20\.30% \+\$205\.71/);
+  ok(alltime.indexOf("MICRON") < alltime.indexOf("USD_GAIN"));
+  deepStrictEqual(positions, original);
+});
+
 Deno.test("USD alltime and history preserve native FIFO and bucket transaction identity", async () => {
   const orders = [
     { ...order("SAME", 2, 10, "2025-01-01"), currency: "EUR" },

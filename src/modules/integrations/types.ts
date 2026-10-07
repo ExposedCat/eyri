@@ -1,6 +1,8 @@
 import type { Database } from "../database/setup.ts";
 import type { Integration } from "../database/integration.ts";
 
+// Every monetary field uses the instrument's currency. Preserve native prices
+// and costs through calculations; USD conversion belongs to reporting.
 export type IntegrationPortfolioPosition = {
   integrationId: number;
   integrationKind: string;

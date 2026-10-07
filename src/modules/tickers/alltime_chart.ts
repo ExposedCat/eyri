@@ -108,7 +108,28 @@ export function buildAllTimeSeries(
   const prices = new Map<string, number>();
   const barIndices = new Map<string, number>();
   const splitIndices = new Map<string, number>();
-  let orderIndex = 0, realized = 0, realizedCost = 0;
+  type Totals = { cost: number; gain: number };
+  const addTotals = (
+    totals: Map<string, Totals>,
+    currency: string,
+    cost: number,
+    gain: number,
+  ) => {
+    const key = currency.trim().toUpperCase();
+    const current = totals.get(key) ?? { cost: 0, gain: 0 };
+    totals.set(key, { cost: current.cost + cost, gain: current.gain + gain });
+  };
+  const pointInUsd = (date: string, totals: Map<string, Totals>): AllTimePoint => {
+    let cost = 0, gain = 0;
+    for (const [currency, native] of totals) {
+      const factor = usdFactor(currency, rates);
+      cost += native.cost * factor;
+      gain += native.gain * factor;
+    }
+    return { date, percentage: cost === 0 ? 0 : gain / cost * 100, gain };
+  };
+  const realized = new Map<string, Totals>();
+  let orderIndex = 0;
   const points: AllTimePoint[] = [{
     date: dayAfter(first, -1),
     percentage: 0,
@@ -176,9 +197,12 @@ export function buildAllTimeSeries(
           const lot = accountLots[0];
           const quantity = Math.min(remaining, lot.quantity);
           if (lot.selected) {
-            const factor = usdFactor(lot.currency, rates);
-            realized += quantity * (order.price - lot.price) * factor;
-            realizedCost += quantity * lot.price * factor;
+            addTotals(
+              realized,
+              lot.currency,
+              quantity * lot.price,
+              quantity * (order.price - lot.price),
+            );
           }
           remaining -= quantity;
           lot.quantity -= quantity;
@@ -193,13 +217,13 @@ export function buildAllTimeSeries(
       lots.set(accountKey, accountLots);
     }
     if (date < first) continue;
-    let cost = realizedCost, gain = realized;
+    const totals = new Map(realized);
     for (const accountLots of lots.values()) {
       for (const lot of accountLots) {
         if (!lot.selected || lot.quantity < EPSILON) continue;
-        const basis = lot.quantity * lot.price * usdFactor(lot.currency, rates);
+        const basis = lot.quantity * lot.price;
         if (lot.atCost) {
-          cost += basis;
+          addTotals(totals, lot.currency, basis, 0);
           continue;
         }
         const close = prices.get(lot.key), history = histories.get(lot.key);
@@ -210,13 +234,21 @@ export function buildAllTimeSeries(
             }.`,
           );
         }
-        cost += basis;
-        gain += lot.quantity * close * lot.quoteMultiplier *
-            usdFactor(history.currency, rates) -
-          basis;
+        const value = lot.quantity * close * lot.quoteMultiplier;
+        if (
+          history.currency.trim().toUpperCase() ===
+            lot.currency.trim().toUpperCase()
+        ) {
+          addTotals(totals, lot.currency, basis, value - basis);
+        } else {
+          // Alternate listings can use another currency (e.g. GBP vs GBX).
+          // Keep each monetary contribution in its own currency until reporting.
+          addTotals(totals, lot.currency, basis, -basis);
+          addTotals(totals, history.currency, 0, value);
+        }
       }
     }
-    points.push({ date, percentage: cost === 0 ? 0 : gain / cost * 100, gain });
+    points.push(pointInUsd(date, totals));
   }
   // Reconcile the reconstructed quantities before anchoring to broker book cost.
   // This catches transfers, truncated history, and unsupported ticker changes.
@@ -239,14 +271,12 @@ export function buildAllTimeSeries(
     const expected = live.get(key) ?? 0, actual = quantities.get(key) ?? 0;
     if (Math.abs(expected - actual) > EPSILON * Math.max(1, expected, actual)) {
       throw new Error(
-        `History does not reconcile with live ${
-          JSON.parse(key)[0]
-        } holdings. Check transfers, ticker changes and missing trades.`,
+        `Cannot build ${JSON.parse(key)[0]} chart: trade history shows ${actual} held, but the broker reports ${expected}.`,
       );
     }
   }
   // Use exactly /alltime's current + FIFO-sold cost/P&L for the live endpoint.
-  let cost = 0, gain = 0;
+  const totals = new Map<string, Totals>();
   for (const p of args.positions) {
     if (
       p.currentPrice === null || p.totalInput === null ||
@@ -256,16 +286,20 @@ export function buildAllTimeSeries(
         `Current price or book cost unavailable for ${p.ticker}.`,
       );
     }
-    const factor = usdFactor(p.currency, rates);
-    cost += p.totalInput * factor;
-    gain += (p.currentPrice * p.amount - p.totalInput) * factor;
+    addTotals(
+      totals,
+      p.currency,
+      p.totalInput,
+      p.currentPrice * p.amount - p.totalInput,
+    );
   }
   const hasSplits = [...histories.values()].some((h) => h.splits.length);
   // Native FIFO already has /alltime's semantics. Split-aware reconstruction is
   // needed when historical fills use pre-split units; its realized values are canonical then.
   if (hasSplits) {
-    cost += realizedCost;
-    gain += realized;
+    for (const [currency, native] of realized) {
+      addTotals(totals, currency, native.cost, native.gain);
+    }
   } else {
     for (
       const p of buildIntegratedSoldPerformances(
@@ -274,16 +308,10 @@ export function buildAllTimeSeries(
         args.bucketName,
       )
     ) {
-      const factor = usdFactor(p.currency, rates);
-      cost += p.cost * factor;
-      gain += p.realizedPnl * factor;
+      addTotals(totals, p.currency, p.cost, p.realizedPnl);
     }
   }
-  points[points.length - 1] = {
-    date: last,
-    percentage: cost === 0 ? 0 : gain / cost * 100,
-    gain,
-  };
+  points[points.length - 1] = pointInUsd(last, totals);
   return points;
 }
 
@@ -467,7 +495,7 @@ export async function loadAllTimeDataset(
     request,
   );
   const fingerprint = await hash({
-    version: 2,
+    version: 3,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],
