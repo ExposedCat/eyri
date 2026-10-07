@@ -14,6 +14,10 @@ import {
 } from "./api.ts";
 import { parseTrading212Credentials } from "./credentials.ts";
 import { fetchTrading212CashHistory } from "./transactions.ts";
+import {
+  buildCfdHistoryOrders,
+  buildCfdPositions,
+} from "../../tickers/cfd_history.ts";
 
 const HISTORY_PATH = "/api/v0/equity/history/orders";
 const HISTORY_CACHE_MS = 60_000;
@@ -35,7 +39,9 @@ function instrumentFields(instrument: Trading212Instrument) {
   return {
     ticker,
     currency: instrument.currency.trim().toUpperCase(),
-    ...(venue ? { yahooSymbol: `${venue[1].toUpperCase()}${suffix[venue[2]]}` } : {}),
+    ...(venue
+      ? { yahooSymbol: `${venue[1].toUpperCase()}${suffix[venue[2]]}` }
+      : {}),
     ...(instrument.isin ? { isin: instrument.isin } : {}),
   };
 }
@@ -209,22 +215,74 @@ const pendingHistory = new WeakMap<
   Map<number, Promise<IntegrationOrder[]>>
 >();
 
+const pendingCfd = new WeakMap<
+  Database,
+  Map<number, Promise<IntegrationOrder[]>>
+>();
+
+function fetchCfdOrders(database: Database, integration: Integration) {
+  let pending = pendingCfd.get(database);
+  if (!pending) {
+    pending = new Map();
+    pendingCfd.set(database, pending);
+  }
+  const existing = pending.get(integration.id);
+  if (existing) return existing;
+  const request = (async () => {
+    const orders = await buildCfdHistoryOrders(
+      await fetchTrading212CashHistory(database, integration),
+    );
+    // Preserve bucket assignments from the former single net-transfer row.
+    // Replace it with purchase keys so normal move/remove controls still work.
+    const legacyKey = `t212:CFD:${integration.id}`;
+    const legacy = database.prepare(
+      "SELECT bucket_name FROM portfolio_bucket_transactions WHERE user_id = ? AND transaction_key = ?",
+    ).get(integration.userId, legacyKey) as { bucket_name: string } | undefined;
+    if (legacy && orders.length) {
+      database.transaction(() => {
+        const insert = database.prepare(
+          "INSERT OR IGNORE INTO portfolio_bucket_transactions (user_id, transaction_key, bucket_name) VALUES (?, ?, ?)",
+        );
+        for (const order of orders) {
+          if (order.quantity > 0) {
+            insert.run(
+              integration.userId,
+              order.transactionKey!,
+              legacy.bucket_name,
+            );
+          }
+        }
+        database.prepare(
+          "DELETE FROM portfolio_bucket_transactions WHERE user_id = ? AND transaction_key = ?",
+        ).run(integration.userId, legacyKey);
+      })();
+    }
+    return orders;
+  })().finally(() => pending!.delete(integration.id));
+  pending.set(integration.id, request);
+  return request;
+}
+
 export const trading212Adapter: IntegrationAdapter = {
   fetchCashHistory: fetchTrading212CashHistory,
-  async fetchPortfolio(_database, integration) {
+  async fetchPortfolio(database, integration) {
     const client = getTrading212Client(
       parseTrading212Credentials(integration.credentials),
     );
-    const positions = await client.get<Trading212Position[]>(
-      "/api/v0/equity/positions",
-    );
+    const [positions, cfdOrders] = await Promise.all([
+      client.get<Trading212Position[]>("/api/v0/equity/positions"),
+      fetchCfdOrders(database, integration),
+    ]);
     if (!Array.isArray(positions)) {
       throw new Error("Invalid Trading 212 portfolio response");
     }
-    return positions.flatMap((position) => {
-      const mapped = toTrading212Position(integration, position);
-      return mapped ? [mapped] : [];
-    });
+    return [
+      ...positions.flatMap((position) => {
+        const mapped = toTrading212Position(integration, position);
+        return mapped ? [mapped] : [];
+      }),
+      ...buildCfdPositions(cfdOrders),
+    ];
   },
   fetchOrderHistory(database, integration) {
     let pending = pendingHistory.get(database);
@@ -234,9 +292,12 @@ export const trading212Adapter: IntegrationAdapter = {
     }
     const existing = pending.get(integration.id);
     if (existing) return existing;
-    const request = syncHistory(database, integration).finally(() =>
-      pending!.delete(integration.id)
-    );
+    const request = Promise.all([
+      syncHistory(database, integration),
+      fetchCfdOrders(database, integration),
+    ]).then(([orders, cfd]) =>
+      [...orders, ...cfd].sort((a, b) => +a.date - +b.date)
+    ).finally(() => pending!.delete(integration.id));
     pending.set(integration.id, request);
     return request;
   },

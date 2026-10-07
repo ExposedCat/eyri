@@ -120,8 +120,8 @@ export function createChartComposer(
       return;
     }
     if (symbol === "-") {
-      removeYahooMapping(ctx.db, ctx.from.id, ticker);
-      await ctx.reply(`Yahoo mapping removed for ${ticker}.`);
+      removeYahooMapping(ctx.db, ticker);
+      await ctx.reply(`Global Yahoo mapping removed for ${ticker}.`);
       return;
     }
     try {
@@ -130,9 +130,9 @@ export function createChartComposer(
       await replyChartError(ctx, new HistoricalDataError([{ ticker, symbol }]));
       return;
     }
-    saveYahooMapping(ctx.db, ctx.from.id, ticker, symbol);
+    saveYahooMapping(ctx.db, ticker, symbol);
     await ctx.reply(
-      `Yahoo mapping saved: <code>${escapeHtml(ticker)} → ${
+      `Global Yahoo mapping saved: <code>${escapeHtml(ticker)} → ${
         escapeHtml(symbol)
       }</code>. Run /chart to rebuild.`,
       { parse_mode: "HTML" },

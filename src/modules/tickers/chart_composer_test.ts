@@ -307,31 +307,30 @@ Deno.test("failed Compare sends an error and preserves the complete existing ima
   }
 });
 
-Deno.test("/yahoo validates, saves per-user mappings, survives restarts, and resets to defaults", async () => {
+Deno.test("/yahoo validates global mappings, shares updates and resets across users, and survives restarts", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
     const h = harness(db);
     await h.command("/yahoo vuaa vuaa.l", 1);
-    equal(readYahooMapping(db, 1, "VUAA"), "VUAA.L");
-    equal(readYahooMapping(db, 2, "VUAA"), undefined);
+    equal(readYahooMapping(db, "VUAA"), "VUAA.L");
+    match(String(h.calls.at(-1)!.payload.text), /Global Yahoo mapping saved/);
     deepStrictEqual(h.validatedSymbols, ["VUAA.L"]);
     const restart = harness(db);
     await restart.command("/yahoo VUAA VUAA.DE", 2);
-    equal(readYahooMapping(db, 2, "VUAA"), "VUAA.DE");
-    equal(readYahooMapping(db, 1, "VUAA"), "VUAA.L");
+    equal(readYahooMapping(db, "VUAA"), "VUAA.DE");
     restart.invalidSymbols.add("BROKEN");
     await restart.command("/yahoo VUAA BROKEN", 1);
-    equal(readYahooMapping(db, 1, "VUAA"), "VUAA.L");
+    equal(readYahooMapping(db, "VUAA"), "VUAA.DE");
     equal(
       restart.calls.at(-1)!.payload.text,
       "Failed to fetch historical data:\n- <code>/yahoo VUAA BROKEN</code>",
     );
     await restart.command("/yahoo +AMD.15JAN2027.C280 AMD270115C00280000", 1);
-    equal(readYahooMapping(db, 1, "+AMD.15JAN2027.C280"), "AMD270115C00280000");
+    equal(readYahooMapping(db, "+AMD.15JAN2027.C280"), "AMD270115C00280000");
     await restart.command("/yahoo VUAA -", 1);
-    equal(readYahooMapping(db, 1, "VUAA"), undefined);
-    equal(readYahooMapping(db, 2, "VUAA"), "VUAA.DE");
+    equal(readYahooMapping(db, "VUAA"), undefined);
+    match(String(restart.calls.at(-1)!.payload.text), /Global Yahoo mapping removed/);
     for (
       const text of [
         "/yahoo",

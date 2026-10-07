@@ -1,6 +1,7 @@
 import type { Database } from "../database/setup.ts";
 import { historicalQuoteMultiplier } from "../market_data/options.ts";
 import { DATABENTO_PREFIX } from "../market_data/databento.ts";
+import { VONTOBEL_PREFIX, VontobelHistoryError } from "../market_data/vontobel.ts";
 import {
   type FailedHistory,
   HistoricalDataError,
@@ -18,6 +19,7 @@ import type {
 } from "../integrations/types.ts";
 import { usdFactor } from "../integrations/usd.ts";
 import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
+import { isCfdAllocation } from "./cfd_history.ts";
 import {
   dayAfter,
   type PriceHistory,
@@ -100,6 +102,7 @@ export function buildAllTimeSeries(
     selected: boolean;
     currency: string;
     quoteMultiplier: number;
+    atCost: boolean;
   };
   const lots = new Map<string, Lot[]>();
   const prices = new Map<string, number>();
@@ -159,6 +162,7 @@ export function buildAllTimeSeries(
             (args.transactionBuckets.get(getOrderTransactionKey(order)) ??
               null) === args.bucketName,
           currency: order.currency,
+          atCost: isCfdAllocation(order),
           quoteMultiplier: historicalQuoteMultiplier(
             args.positions.find((p) =>
               p.integrationId === order.integrationId &&
@@ -193,6 +197,11 @@ export function buildAllTimeSeries(
     for (const accountLots of lots.values()) {
       for (const lot of accountLots) {
         if (!lot.selected || lot.quantity < EPSILON) continue;
+        const basis = lot.quantity * lot.price * usdFactor(lot.currency, rates);
+        if (lot.atCost) {
+          cost += basis;
+          continue;
+        }
         const close = prices.get(lot.key), history = histories.get(lot.key);
         if (close === undefined || !history) {
           throw new Error(
@@ -201,7 +210,6 @@ export function buildAllTimeSeries(
             }.`,
           );
         }
-        const basis = lot.quantity * lot.price * usdFactor(lot.currency, rates);
         cost += basis;
         gain += lot.quantity * close * lot.quoteMultiplier *
             usdFactor(history.currency, rates) -
@@ -366,6 +374,16 @@ export async function loadAllTimeDataset(
         const firstPurchase = relevant.filter((o) =>
           instrumentKey(o) === key && o.quantity > 0
         ).map((o) => dateOf(o.date)).sort()[0];
+        if (isCfdAllocation(source)) {
+          // CFD allocation marks come from funding cost, not a market ticker.
+          histories.set(key, {
+            symbol: "CFD",
+            currency: source.currency,
+            bars: [],
+            splits: [],
+          });
+          return;
+        }
         const instrumentOrders = relevant.filter((o) =>
           instrumentKey(o) === key
         );
@@ -394,7 +412,6 @@ export async function loadAllTimeDataset(
           const symbol = await cache.resolve(
             segmentSource,
             segment.start <= firstPurchase ? firstPurchase : undefined,
-            userId,
             segment.end,
           );
           symbols.set(key, symbol);
@@ -426,8 +443,10 @@ export async function loadAllTimeDataset(
           `Chart history failed for ${source.ticker} (${source.currency}):`,
           result.reason,
         );
-        const symbol = symbols.get(batch[index][0]) ??
-          readYahooMapping(db, userId, source.ticker) ??
+        const symbol = (result.reason instanceof VontobelHistoryError
+          ? VONTOBEL_PREFIX + result.reason.isin
+          : undefined) ?? symbols.get(batch[index][0]) ??
+          readYahooMapping(db, source.ticker) ??
           defaultYahooSymbols(source)[0] ?? source.ticker;
         failures.push({
           ticker: source.ticker,

@@ -278,7 +278,6 @@ Deno.test("Yahoo falls back for missing options and reuses the archive after res
     const symbol = await cache.resolve(
       instrument,
       "2024-02-08",
-      1,
       "2024-02-20",
     );
     const data = await cache.get(symbol, "2024-02-01", "2024-02-20");
@@ -288,7 +287,7 @@ Deno.test("Yahoo falls back for missing options and reuses the archive after res
     fallback = new DatabentoHistoryCache(db, request, now, () => undefined);
     cache = new YahooHistoryCache(db, request, now, fallback);
     equal(
-      await cache.resolve(instrument, "2024-02-08", 1, "2024-02-20"),
+      await cache.resolve(instrument, "2024-02-08", "2024-02-20"),
       symbol,
     );
     deepStrictEqual(await cache.get(symbol, "2024-02-01", "2024-02-20"), data);
@@ -301,9 +300,9 @@ Deno.test("Yahoo falls back for missing options and reuses the archive after res
     );
     equal(calls.length, count);
     const { saveYahooMapping } = await import("./mappings.ts");
-    saveYahooMapping(db, 1, "VSCO.US", SYMBOL);
+    saveYahooMapping(db, "VSCO.US", SYMBOL);
     await rejects(
-      cache.resolve({ ticker: "VSCO.US", currency: "USD" }, "2024-02-08", 1),
+      cache.resolve({ ticker: "VSCO.US", currency: "USD" }, "2024-02-08"),
     );
     equal(calls.length, count);
   } finally {
@@ -352,12 +351,11 @@ Deno.test("successful Yahoo option history never calls Databento; an explicit st
       SYMBOL,
     );
     equal(paidCalls, 0);
-    saveYahooMapping(db, 1, "+AMD.15JAN2027.C280", "AMD");
+    saveYahooMapping(db, "+AMD.15JAN2027.C280", "AMD");
     await rejects(
       cache.resolve(
         { ticker: "+AMD.15JAN2027.C280", currency: "USD" },
         "2024-02-08",
-        1,
       ),
     );
     equal(paidCalls, 0);

@@ -1,3 +1,5 @@
+import { VONTOBEL_PREFIX } from "./vontobel.ts";
+
 export type FailedHistory = { ticker: string; symbol: string };
 
 export class HistoricalDataError extends Error {
@@ -7,7 +9,11 @@ export class HistoricalDataError extends Error {
       failures.map((f) => [f.ticker.trim().toUpperCase(), f]),
     );
     const commands = [...unique].map(([ticker, f]) =>
-      `/yahoo ${ticker} ${f.symbol}`
+      f.symbol.startsWith(VONTOBEL_PREFIX)
+        ? `${ticker}: Vontobel warrant history unavailable (${
+          f.symbol.slice(VONTOBEL_PREFIX.length)
+        }).`
+        : `/yahoo ${ticker} ${f.symbol}`
     );
     super(
       `Failed to fetch historical data:\n${

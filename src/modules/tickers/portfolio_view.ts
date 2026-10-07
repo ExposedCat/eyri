@@ -84,7 +84,7 @@ export async function fetchPortfolioView(
           throw new Error("The bucket owner's integration is not configured.");
         }
         const transactionBuckets = new Map<string, string>();
-        const assignments = readBucketAssignments(db, ownerId);
+        let assignments = readBucketAssignments(db, ownerId);
         const needsOrders = options.history || options.displayHistory ||
           assignments.size > 0 || !names.has(null);
         const [livePositions, sourceOrders] = await Promise.all([
@@ -96,6 +96,8 @@ export async function fetchPortfolioView(
             )
             : [],
         ]);
+        // Broker imports can migrate legacy CFD assignments to purchase keys.
+        assignments = readBucketAssignments(db, ownerId);
         const positions = options.positions === false
           ? []
           : assignments.size === 0 && names.has(null)

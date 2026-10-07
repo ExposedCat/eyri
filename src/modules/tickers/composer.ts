@@ -178,7 +178,7 @@ async function fetchBucketedHistoryOrders(
 async function readTickerDisplayPreferences(userId: number) {
   const [tickerDecorations, tickerLabelPreferences, tickerLabelLinks] =
     await Promise.all([
-      readTickerDecorations(userId),
+      readTickerDecorations(),
       readTickerLabelPreferences(userId),
       readTickerLabelLinks(userId),
     ]);
@@ -663,11 +663,11 @@ tickersComposer.command("decorate", async (ctx) => {
     return;
   }
 
-  await setTickerDecoration(ctx.from.id, parsed.ticker, parsed.decorations);
+  await setTickerDecoration(parsed.ticker, parsed.decorations);
   await ctx.reply(
     `${formatTickerDecorations(parsed.decorations)} ${escapeHtml(
       parsed.ticker,
-    )} decorated (${parsed.decorations.length}).`,
+    )} decorated for everyone (${parsed.decorations.length}).`,
     htmlReplyOptions,
   );
 });

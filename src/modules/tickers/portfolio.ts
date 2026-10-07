@@ -1,5 +1,6 @@
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
+import { isCfdAllocation } from "./cfd_history.ts";
 import {
   portfolioPositionInUsd,
   portfolioPositionsInUsd,
@@ -1328,7 +1329,9 @@ export function buildBucketedPortfolioPositions({
           position.totalInput === null || allocation.cost === null
             ? null
             : position.totalInput - allocation.cost;
-        const totalNow = position.totalNow === null
+        const totalNow = isCfdAllocation(position)
+          ? totalInput
+          : position.totalNow === null
           ? null
           : position.totalNow * share;
         return [
@@ -1336,6 +1339,9 @@ export function buildBucketedPortfolioPositions({
             ...position,
             amount,
             averageUnitPrice: totalInput === null ? null : totalInput / amount,
+            ...(isCfdAllocation(position)
+              ? { currentPrice: totalInput === null ? null : totalInput / amount }
+              : {}),
             totalInput,
             totalNow,
             unrealizedPnl: totalNow === null || totalInput === null
@@ -1475,7 +1481,9 @@ export function buildBucketedPortfolioPositions({
       );
     }
 
-    const currentPrice = livePosition?.currentPrice ?? null;
+    const currentPrice = isCfdAllocation(livePosition)
+      ? draft.totalInput / draft.amount
+      : livePosition.currentPrice;
     const totalNow = currentPrice === null ? null : draft.amount * currentPrice;
     const liveAmount = Math.abs(livePosition?.amount ?? 0);
     const liveShare = liveAmount <= FLOAT_EPSILON

@@ -84,20 +84,19 @@ function hasExpectedSchema(db: Database) {
     .map((column) => column.name);
 
   return (
-    hasColumn(columns, "user_id") &&
+    !hasColumn(columns, "user_id") &&
     hasColumn(columns, "ticker") &&
     hasColumn(columns, "emoji_index") &&
     hasColumn(columns, "tg_emoji") &&
     hasColumn(columns, "emoji_text") &&
     hasColumn(columns, "is_custom_emoji") &&
-    primaryKeyColumns.join(",") === "user_id,ticker,emoji_index"
+    primaryKeyColumns.join(",") === "ticker,emoji_index"
   );
 }
 
 function createTickerDecorationsTable(db: Database) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ticker_decorations (
-      user_id TEXT NOT NULL,
       ticker TEXT NOT NULL,
       emoji_index INTEGER NOT NULL,
       tg_emoji TEXT NOT NULL,
@@ -105,7 +104,7 @@ function createTickerDecorationsTable(db: Database) {
       is_custom_emoji INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (user_id, ticker, emoji_index)
+      PRIMARY KEY (ticker, emoji_index)
     )
   `);
 }
@@ -293,38 +292,35 @@ function migrateTickerLabelLinksTable(db: Database) {
 function migrateTickerDecorationsTable(db: Database) {
   const columns = getTableColumns(db, "ticker_decorations");
   const hasEmojiIndex = hasColumn(columns, "emoji_index");
+  const hasUserId = hasColumn(columns, "user_id");
 
-  db.exec(`
-    ALTER TABLE ticker_decorations RENAME TO ticker_decorations_old;
-  `);
-  createTickerDecorationsTable(db);
-  db.exec(`
-    INSERT INTO ticker_decorations (
-      user_id,
-      ticker,
-      emoji_index,
-      tg_emoji,
-      emoji_text,
-      is_custom_emoji,
-      created_at,
-      updated_at
-    )
-    SELECT
-      user_id,
-      ticker,
-      ${hasEmojiIndex ? "emoji_index" : "0"},
-      tg_emoji,
-      emoji_text,
-      is_custom_emoji,
-      created_at,
-      updated_at
-    FROM ticker_decorations_old;
-
-    DROP TABLE ticker_decorations_old;
-  `);
+  db.transaction(() => {
+    db.exec("ALTER TABLE ticker_decorations RENAME TO ticker_decorations_old;");
+    createTickerDecorationsTable(db);
+    // Keep the newest complete set for each ticker, never mix different users' sets.
+    db.exec(`
+      ${hasUserId ? `WITH sets AS (
+        SELECT ticker, user_id, ROW_NUMBER() OVER (
+          PARTITION BY ticker ORDER BY MAX(updated_at) DESC, user_id DESC
+        ) AS rank
+        FROM ticker_decorations_old GROUP BY ticker, user_id
+      )` : ""}
+      INSERT INTO ticker_decorations (
+        ticker, emoji_index, tg_emoji, emoji_text, is_custom_emoji,
+        created_at, updated_at
+      )
+      SELECT old.ticker, ${hasEmojiIndex ? "old.emoji_index" : "0"},
+        old.tg_emoji, old.emoji_text, old.is_custom_emoji,
+        old.created_at, old.updated_at
+      FROM ticker_decorations_old old
+      ${hasUserId ? `JOIN sets ON sets.ticker = old.ticker
+        AND sets.user_id = old.user_id AND sets.rank = 1` : ""};
+      DROP TABLE ticker_decorations_old;
+    `);
+  })();
 }
 
-function ensureSchema(db: Database) {
+export function ensureTickerDisplaySchema(db: Database) {
   if (!tableExists(db, "ticker_decorations")) {
     createTickerDecorationsTable(db);
   } else if (!hasExpectedSchema(db)) {
@@ -352,19 +348,16 @@ function ensureSchema(db: Database) {
   }
 }
 
-export async function readTickerDecorations(
-  userId: string | number,
-): Promise<TickerDecorations> {
+export async function readTickerDecorations(): Promise<TickerDecorations> {
   const db = await getDatabase();
-  ensureSchema(db);
+  ensureTickerDisplaySchema(db);
   const rows = db
     .prepare(`
       SELECT ticker, emoji_index, tg_emoji, emoji_text, is_custom_emoji
       FROM ticker_decorations
-      WHERE user_id = ?
       ORDER BY ticker, emoji_index
     `)
-    .all(String(userId)) as TickerDecorationRow[];
+    .all() as TickerDecorationRow[];
 
   const decorations: TickerDecorations = {};
   for (const row of rows) {
@@ -380,35 +373,31 @@ export async function readTickerDecorations(
 }
 
 export async function setTickerDecoration(
-  userId: string | number,
   ticker: string,
   decorations: TickerDecoration[],
 ) {
   const db = await getDatabase();
-  ensureSchema(db);
-  const normalizedUserId = String(userId);
+  ensureTickerDisplaySchema(db);
   const normalizedTicker = normalizeTicker(ticker);
 
   db.exec("BEGIN");
   try {
     db.prepare(`
       DELETE FROM ticker_decorations
-      WHERE user_id = ? AND ticker = ?
-    `).run(normalizedUserId, normalizedTicker);
+      WHERE ticker = ?
+    `).run(normalizedTicker);
 
     const insertDecoration = db.prepare(`
       INSERT INTO ticker_decorations (
-        user_id,
         ticker,
         emoji_index,
         tg_emoji,
         emoji_text,
         is_custom_emoji
-      ) VALUES (?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?)
     `);
     decorations.forEach((decoration, index) => {
       insertDecoration.run(
-        normalizedUserId,
         normalizedTicker,
         index,
         decoration.tgEmoji,
@@ -428,7 +417,7 @@ export async function readTickerLabelPreferences(
   userId: string | number,
 ): Promise<TickerLabelPreferences> {
   const db = await getDatabase();
-  ensureSchema(db);
+  ensureTickerDisplaySchema(db);
   const rows = db
     .prepare(`
       SELECT ticker, label
@@ -451,7 +440,7 @@ export async function setTickerLabelPreference(
   label: string | false,
 ) {
   const db = await getDatabase();
-  ensureSchema(db);
+  ensureTickerDisplaySchema(db);
   db.prepare(`
     INSERT INTO ticker_label_preferences (
       user_id,
@@ -472,7 +461,7 @@ export async function readTickerLabelLinks(
   userId: string | number,
 ): Promise<TickerLabelLinks> {
   const db = await getDatabase();
-  ensureSchema(db);
+  ensureTickerDisplaySchema(db);
   const rows = db
     .prepare(`
       SELECT ticker, tag
@@ -488,7 +477,7 @@ export async function readTickerLabelLinks(
 
 export async function readTickerEmojiMappings(): Promise<TickerEmojiMappings> {
   const db = await getDatabase();
-  ensureSchema(db);
+  ensureTickerDisplaySchema(db);
   const rows = db
     .prepare(`
       SELECT ticker, custom_emoji_id, emoji_text
@@ -514,7 +503,7 @@ export async function setTickerLabelLink(
   tag: string | false,
 ) {
   const db = await getDatabase();
-  ensureSchema(db);
+  ensureTickerDisplaySchema(db);
   const normalizedUserId = String(userId);
   const normalizedTicker = normalizeTicker(ticker);
 

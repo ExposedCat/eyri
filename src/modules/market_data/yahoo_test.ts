@@ -349,7 +349,7 @@ Deno.test("Freedom24 and IBKR symbol defaults resolve through Yahoo and reuse pe
   }
 });
 
-Deno.test("user Yahoo mappings beat defaults and isolate resolutions across users and mapping changes", async () => {
+Deno.test("global Yahoo mappings beat defaults and refresh shared resolutions after changes and resets", async () => {
   const { saveYahooMapping, removeYahooMapping } = await import(
     "./mappings.ts"
   );
@@ -364,23 +364,32 @@ Deno.test("user Yahoo mappings beat defaults and isolate resolutions across user
       () => new Date("2025-01-10T20:00:00Z"),
     );
     const instrument = { ticker: "AAPL", currency: "USD" };
-    equal(await cache.resolve(instrument, "2025-01-02", 1), "AAPL");
-    saveYahooMapping(db, 1, "AAPL", "FIRST");
-    equal(await cache.resolve(instrument, "2025-01-02", 1), "FIRST");
-    equal(await cache.resolve(instrument, "2025-01-02", 2), "AAPL");
-    saveYahooMapping(db, 1, "AAPL", "SECOND");
-    equal(await cache.resolve(instrument, "2025-01-02", 1), "SECOND");
+    equal(await cache.resolve(instrument, "2025-01-02"), "AAPL");
+    saveYahooMapping(db, "AAPL", "FIRST");
+    equal(await cache.resolve(instrument, "2025-01-02"), "FIRST");
+    const other = new YahooHistoryCache(
+      db,
+      market([], calls),
+      () => new Date("2025-01-10T20:00:00Z"),
+    );
+    const count = calls.length;
+    equal(await other.resolve(instrument, "2025-01-02"), "FIRST");
+    equal(calls.length, count);
+    saveYahooMapping(db, "AAPL", "SECOND");
+    equal(await cache.resolve(instrument, "2025-01-02"), "SECOND");
     Deno.env.set("EYRI_YAHOO_SYMBOLS", JSON.stringify({ "AAPL:USD": "ADMIN" }));
-    equal(await cache.resolve(instrument, "2025-01-02", 1), "SECOND");
-    equal(await cache.resolve(instrument, "2025-01-02", 2), "ADMIN");
-    removeYahooMapping(db, 1, "AAPL");
+    equal(await cache.resolve(instrument, "2025-01-02"), "SECOND");
+    equal(await other.resolve(instrument, "2025-01-02"), "SECOND");
+    removeYahooMapping(db, "AAPL");
+    equal(await other.resolve(instrument, "2025-01-02"), "ADMIN");
     Deno.env.delete("EYRI_YAHOO_SYMBOLS");
     const restart = new YahooHistoryCache(
       db,
       market([], calls),
       () => new Date("2025-01-10T20:00:00Z"),
     );
-    equal(await restart.resolve(instrument, "2025-01-02", 1), "AAPL");
+    equal(await restart.resolve(instrument, "2025-01-02"), "AAPL");
+    equal(await cache.resolve(instrument, "2025-01-02"), "AAPL");
   } finally {
     if (original === undefined) Deno.env.delete("EYRI_YAHOO_SYMBOLS");
     else Deno.env.set("EYRI_YAHOO_SYMBOLS", original);
@@ -594,14 +603,14 @@ Deno.test("an option cannot resolve to stock prices even via an explicit overrid
   const db = new Database(":memory:");
   try {
     const ticker = "+AMD.15JAN2027.C280";
-    saveYahooMapping(db, 1, ticker, "AMD");
+    saveYahooMapping(db, ticker, "AMD");
     const cache = new YahooHistoryCache(
       db,
       market(),
       () => new Date("2025-01-10T20:00:00Z"),
     );
     await rejects(
-      cache.resolve({ ticker, currency: "USD" }, "2025-01-02", 1),
+      cache.resolve({ ticker, currency: "USD" }, "2025-01-02"),
       /Cannot resolve/,
     );
   } finally {

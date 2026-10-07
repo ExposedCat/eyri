@@ -6,6 +6,7 @@ export type PriceHistory = {
   bars: PriceBar[];
   splits: StockSplit[];
   instrumentType?: string;
+  priceBasis?: "BID";
 };
 export type Range = { start: string; end: string };
 const DAY = 86_400_000;

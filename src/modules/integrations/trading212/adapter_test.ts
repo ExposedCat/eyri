@@ -95,6 +95,11 @@ Deno.test("Trading 212 integration maps live positions and fills, caches history
           },
         }]));
       }
+      if (url.pathname.endsWith("transactions")) {
+        return Promise.resolve(
+          Response.json({ items: [], nextPagePath: null }),
+        );
+      }
       historyCalls.push(`${auth}:${url.search}`);
       now += 10_000; // Advance the test clock without waiting for API pacing.
       if (auth === `Basic ${btoa("account2:secret")}`) {
@@ -177,6 +182,11 @@ Deno.test("Trading 212 interrupted history sync cannot return a partial total", 
     const integration = result.data;
     globalThis.fetch = (input) => {
       now += 10_000;
+      if (String(input).includes("transactions")) {
+        return Promise.resolve(
+          Response.json({ items: [], nextPagePath: null }),
+        );
+      }
       calls++;
       if (String(input).includes("cursor")) {
         if (broken) return Promise.resolve(new Response(null, { status: 500 }));
@@ -237,7 +247,7 @@ Deno.test("Trading 212 rejects unsupported corporate actions and malformed fills
   equal(position?.totalNow, null);
 });
 
-Deno.test("portfolio commands fetch only live holdings until bucket allocations require history", async () => {
+Deno.test("portfolio commands fetch live equity and CFD cash but not equity orders until needed", async () => {
   const db = new Database(":memory:");
   const fetch = globalThis.fetch;
   const originalFetchPortfolio = trading212Adapter.fetchPortfolio;
@@ -256,8 +266,13 @@ Deno.test("portfolio commands fetch only live holdings until bucket allocations 
     const ctx = { db, dbEntities: { user: { userId: 1 } } } as CustomContext;
     globalThis.fetch = (input) => {
       requests++;
-      if (String(input).includes("history")) {
+      if (String(input).includes("history/orders")) {
         return Promise.resolve(new Response(null, { status: 403 }));
+      }
+      if (String(input).includes("transactions")) {
+        return Promise.resolve(
+          Response.json({ items: [], nextPagePath: null }),
+        );
       }
       return Promise.resolve(
         Response.json([{
@@ -269,11 +284,13 @@ Deno.test("portfolio commands fetch only live holdings until bucket allocations 
       );
     };
     equal((await fetchBucketedPositions(ctx, null)).length, 1);
-    equal(requests, 1);
+    equal(requests, 2);
     // Bucket views must still load history; failure must not masquerade as a
     // complete, unbucketed total. Live holdings can be empty for this check.
     trading212Adapter.fetchPortfolio = () => Promise.resolve([]);
-    db.exec("INSERT INTO portfolio_buckets (user_id, name) VALUES (1, 'Savings')");
+    db.exec(
+      "INSERT INTO portfolio_buckets (user_id, name) VALUES (1, 'Savings')",
+    );
     await rejects(fetchBucketedPositions(ctx, "Savings"), /HTTP 403/);
   } finally {
     trading212Adapter.fetchPortfolio = originalFetchPortfolio;

@@ -4,6 +4,13 @@ import { defaultYahooSymbols, likelyYahooSymbols } from "./symbols.ts";
 import { readYahooMapping } from "./mappings.ts";
 import { yahooOptionContract } from "./options.ts";
 import { DATABENTO_PREFIX, DatabentoHistoryCache } from "./databento.ts";
+import {
+  NotVontobelWarrantError,
+  VONTOBEL_PREFIX,
+  vontobelIsin,
+  VontobelHistoryCache,
+  VontobelHistoryError,
+} from "./vontobel.ts";
 
 import {
   dayAfter,
@@ -25,6 +32,7 @@ export type HistoricalInstrument = {
   currency: string;
   yahooSymbol?: string;
   isin?: string;
+  assetCategory?: string | null;
 };
 const headers = {
   "User-Agent": "Mozilla/5.0 Eyri/1.0",
@@ -143,6 +151,7 @@ export class YahooHistoryCache {
     private request: typeof fetch = fetch,
     private now: () => Date = () => new Date(),
     private optionHistory = new DatabentoHistoryCache(db, request, now),
+    private warrantHistory = new VontobelHistoryCache(db, request, now),
   ) {
     ensureMarketDataSchema(db);
   }
@@ -150,26 +159,23 @@ export class YahooHistoryCache {
   async resolve(
     instrument: HistoricalInstrument,
     requiredDate?: string,
-    userId?: number,
     requiredEnd?: string,
   ): Promise<string> {
     const sourceOption = yahooOptionContract(instrument.ticker);
-    const userMapping = userId === undefined
-      ? undefined
-      : readYahooMapping(this.db, userId, instrument.ticker);
+    const globalMapping = readYahooMapping(this.db, instrument.ticker);
     const configured = JSON.parse(Deno.env.get("EYRI_YAHOO_SYMBOLS") ?? "{}");
     const overrideKey =
       `${instrument.ticker.trim().toUpperCase()}:${instrument.currency.trim().toUpperCase()}`;
     const override = configured[overrideKey];
     if (
-      !userMapping && override !== undefined &&
+      !globalMapping && override !== undefined &&
       (typeof override !== "string" || !override.trim())
     ) {
       throw new Error(
         `Invalid EYRI_YAHOO_SYMBOLS override for ${overrideKey}.`,
       );
     }
-    const explicit = userMapping ??
+    const explicit = globalMapping ??
       (typeof override === "string"
         ? override.trim().toUpperCase()
         : undefined);
@@ -178,9 +184,9 @@ export class YahooHistoryCache {
       instrument.currency.toUpperCase(),
       instrument.isin ?? "",
       instrument.yahooSymbol ?? "",
-      // A user's mapping must not change another user's cached resolution.
-      ...(userMapping
-        ? ["user", String(userId), userMapping]
+      // Changing a global override must select its own cached resolution.
+      ...(globalMapping
+        ? ["global", globalMapping]
         : explicit
         ? ["configured", explicit]
         : []),
@@ -197,6 +203,36 @@ export class YahooHistoryCache {
       );
       return history.bars.some((bar) => bar.date <= requiredDate!);
     };
+    const isin = !explicit && !sourceOption ? vontobelIsin(instrument) : undefined;
+    if (isin) {
+      try {
+        const history = await this.warrantHistory.get(
+          isin,
+          requiredDate ? dayAfter(requiredDate, -7) : "1970-01-01",
+          requiredEnd,
+        );
+        if (
+          history.currency !== instrument.currency.trim().toUpperCase() ||
+          !history.bars.length ||
+          (requiredDate && !history.bars.some((bar) => bar.date <= requiredDate))
+        ) {
+          throw new Error("Vontobel currency or purchase-date history does not match.");
+        }
+        this.db.prepare(
+          "INSERT OR REPLACE INTO yahoo_symbols(source_key,symbol) VALUES (?,?)",
+        ).run(sourceKey, history.symbol);
+        return history.symbol;
+      } catch (cause) {
+        // A stock can coincidentally have six letters starting with V. Only a
+        // definite product mismatch may fall back; unavailable warrant data cannot.
+        if (
+          !(cause instanceof NotVontobelWarrantError) ||
+          ["WAR", "WARRANT"].includes(instrument.assetCategory?.toUpperCase() ?? "")
+        ) {
+          throw new VontobelHistoryError(isin, cause);
+        }
+      }
+    }
     if (
       cached &&
       (sourceOption ||
@@ -339,6 +375,11 @@ export class YahooHistoryCache {
     start: string,
     end?: string,
   ): Promise<PriceHistory> {
+    if (symbol.startsWith(VONTOBEL_PREFIX)) {
+      return this.warrantHistory.get(
+        symbol.slice(VONTOBEL_PREFIX.length), start, end,
+      );
+    }
     if (symbol.startsWith(DATABENTO_PREFIX)) {
       return this.optionHistory.get(
         symbol.slice(DATABENTO_PREFIX.length),

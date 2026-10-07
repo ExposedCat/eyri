@@ -547,7 +547,6 @@ Deno.test("chart stitches APH option predecessors across the split without using
         resolve: (
           source: { ticker: string },
           date: string | undefined,
-          _user: number,
           end: string,
         ) => {
           calls.push([source.ticker, date, end]);

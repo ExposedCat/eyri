@@ -79,17 +79,28 @@ Order history is cached in SQLite and paginated, then refreshed incrementally at
 most once per minute. A large first import can take time because of API rate limits.
 Unsupported corporate actions cause history-based calculations to report an error
 rather than produce misleading FIFO results. Portfolio views without bucket
-allocations use live holdings and do not require a history import.
+allocations use live equity holdings and cached CFD cash history; equity order
+history is imported only when a report needs it.
 Daily P&L is unavailable because the API provides no previous-close baseline.
 
-Trading 212 cash history is imported automatically with order history; enable
-read-only **History - Transactions** permission as well. Internal transfer
-returns appear as a regular CFD purchase row in `/history`, included in its
-chronological year sections, totals and bucket shortcuts. Sending $100 to CFD
-and returning $500 produces `CFD 1.0000 x $400.00 ($400)`. The amount is the net
-cash returned, converted to USD at current rates. Transfers are treated as CFD
-cash movements; the API does not identify the other account. These history rows
-do not create live holdings or stock FIFO lots.
+Trading 212 cash history is imported automatically for portfolio and historical
+reports; enable read-only **History - Transactions** permission as well.
+Each internal transfer out buys one synthetic CFD allocation at its USD funding
+cost. Each return sells all allocations funded since the previous return, with
+the returned cash as total sale proceeds. Sending $500 and returning $1,000
+therefore gives $500 cost and $500 realized profit (+100%), using the same FIFO,
+bucket, performance and chart paths as ordinary purchases and sales. `/history`
+shows the $500 purchase, as it does for other purchased instruments.
+Outstanding allocations appear in `/stocks`, `/portfolio`, `/perf`, `/worth`
+and their bucket views at funding cost until a return closes them. `/sold`,
+`/alltime`, `/allnumber` and `/chart` include realized CFD results. Chart values
+stay at funding cost between transfers and never request market prices for CFD.
+A return without outstanding funding is additional zero-basis proceeds; it
+does not create a short position. Existing CFD bucket assignments migrate to
+the individual purchase keys.
+This is an explicit transfer accounting convention, not live CFD valuation:
+the public API supplies no CFD positions and does not identify the destination
+of an internal transfer. All amounts use current USD conversion rates.
 
 All commands display money and combined totals in USD. GBX is treated as pence
 (100 GBX = 1 GBP) before USD conversion. Long portfolio and bucket messages continue across
@@ -129,6 +140,14 @@ changes and stock splits. Daily P&L uses the broker's previous-day portfolio P&L
 instruments with no trade today show zero, as in Freedom24. The total daily
 percentage uses current portfolio value, matching the app's summary. Historical
 orders supply holding dates when their tickers still match.
+
+## Ticker icons and labels
+
+`/decorate TICKER EMOJI` sets ticker icons globally for every user, including
+shared bucket views. Generated emoji-pack icons are also global. Existing personal
+icon assignments migrate to one shared set per ticker; if they differ, the most
+recently updated complete set wins. `/label` preferences and `/link` label links
+remain personal. `/yahoo` historical-price mappings are global.
 
 ## Shared buckets
 
@@ -253,10 +272,25 @@ history is `SMSN.IL`, while `SMSN.L` only begins in July 2026).
 
 Use `/yahoo TICKER MAPPING` to save your Yahoo symbol, for example
 `/yahoo VUAA VUAA.L` or `/yahoo 2DGD_EQ 2DG.F`. The command validates the Yahoo
-symbol before saving. Mappings are personal, persist across restarts, and take
+symbol before saving. Mappings apply to every user, persist across restarts, and take
 priority over defaults and administrator environment overrides. Updating a
 mapping selects its corresponding cached history on the next `/chart`.
-Use `/yahoo TICKER -` to remove your override.
+Use `/yahoo TICKER -` to remove the global override for everyone. Existing personal
+overrides are migrated into the global table on startup; when they conflict, the
+most recently written saved override wins. Existing global overrides take precedence
+over migrated ones. Automatically resolved symbols remain in the history cache.
+
+Vontobel warrants resolve automatically from their German WKN (for example
+`VY8GR5` or `VY8GTE`), a German exchange suffix (`.DE`, `.F`, `.SG`), or a
+broker-provided ISIN. Eyri derives and validates the ISIN check digit, then checks
+Vontobel's product metadata for the issuer, warrant type and quote currency.
+Global `/yahoo` mappings and administrator Yahoo overrides remain authoritative.
+The issuer's lifetime chart supplies daily bid quotes in EUR per warrant; the
+underlying stock series and warrant exercise ratio are not used as prices.
+Finalized bids persist in SQLite, and recent history refreshes after five minutes.
+Sold positions can reuse cached finalized ranges without contacting Vontobel.
+No API key or manual symbol mapping is needed. The website endpoint is
+undocumented; provider failures report unavailable Vontobel warrant history.
 
 Freedom24 option names convert automatically to Yahoo/OCC contract symbols:
 `+AMD.15JAN2027.C280` becomes `AMD270115C00280000`. IBKR compact or padded OCC

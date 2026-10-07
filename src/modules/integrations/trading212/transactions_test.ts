@@ -16,20 +16,42 @@ import {
   fetchIntegratedCfdTransfers,
   fetchIntegratedHistoryOrders,
   fetchIntegratedOrderHistory,
+  fetchIntegratedPortfolio,
+  mergePositions,
 } from "../service.ts";
-import { buildCfdHistoryOrders } from "../../tickers/cfd_history.ts";
 import {
+  buildCfdHistoryOrders,
+  buildCfdPositions,
+} from "../../tickers/cfd_history.ts";
+import {
+  buildBucketedPortfolioPositions,
+  buildIntegratedAllTimePerformanceList,
   buildIntegratedHistory,
-  buildIntegratedHistoryGroups,
-  filterHistoryOrdersByBucket,
+  buildIntegratedPerformanceList,
+  buildIntegratedSoldPerformanceList,
+  buildIntegratedSoldPerformances,
+  buildIntegratedTickerList,
 } from "../../tickers/portfolio.ts";
+import { buildPortfolioChart } from "../../tickers/portfolio_chart.ts";
+import { fetchPortfolioView } from "../../tickers/portfolio_view.ts";
+import {
+  buildAllTimeSeries,
+  loadAllTimeDataset,
+} from "../../tickers/alltime_chart.ts";
+import {
+  createBucket,
+  moveTransactionToBucket,
+  readBucketAssignments,
+  setBucketIncluded,
+  transferBucketAccess,
+} from "../../database/bucket.ts";
 import type { IntegrationCashTransaction } from "../types.ts";
 
-async function buildCfdTransferHistory(
+async function buildCfdTransferPerformance(
   transactions: IntegrationCashTransaction[],
   request?: typeof fetch,
 ) {
-  return buildIntegratedHistory({
+  return buildIntegratedSoldPerformanceList({
     orders: await buildCfdHistoryOrders(transactions, request),
   });
 }
@@ -53,95 +75,184 @@ function cash(
   };
 }
 
-Deno.test("CFD automatically uses ordinary purchase history rows, totals, and persistent bucket shortcuts", async () => {
+Deno.test("CFD purchases, full sales and open funding flow through every portfolio view and shared bucket", async () => {
   const db = new Database(":memory:");
   const originalFetch = globalThis.fetch;
   const clock = Date.now;
   let now = Date.parse("2026-10-07T00:00:00Z");
   Date.now = () => now;
+  const transactions = [
+    { ...cash("out", -500), dateTime: "2026-01-01T12:00:00Z" },
+    { ...cash("back", 1000), dateTime: "2026-01-03T12:00:00Z" },
+    { ...cash("open", -200), dateTime: "2026-01-04T12:00:00Z" },
+    cash("deposit", 5000, "DEPOSIT"),
+  ];
+  let cashCalls = 0;
   try {
     ensureSchema(db);
-    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    db.exec("INSERT INTO users (user_id) VALUES (1), (2)");
     const result = createIntegration({
       database: db,
       userId: 1,
       kind: "t212",
       credentials: { apiKey: "normal-cfd-history", secretKey: "secret" },
     });
-    ok(result.success && result.data);
+    ok(result.data);
+    await createBucket({ database: db, userId: 1, name: "Test" });
+    // The old net-return row must migrate without losing its bucket.
+    await moveTransactionToBucket({
+      database: db,
+      userId: 1,
+      bucketName: "Test",
+      transactionKey: `t212:CFD:${result.data.id}`,
+    });
     globalThis.fetch = (input) => {
       now += 20_000;
-      return Promise.resolve(
-        Response.json(
-          String(input).includes("transactions")
-            ? {
-              items: [
-                cash("back", 500),
-                cash("out", -100),
-                cash("deposit", 1000, "DEPOSIT"),
-              ],
-              nextPagePath: null,
-            }
-            : {
-              items: [{
-                order: {
-                  instrument: { ticker: "AAPL_US_EQ", currency: "USD" },
-                  side: "BUY",
-                },
-                fill: {
-                  id: 1,
-                  filledAt: "2026-01-01T12:00:00Z",
-                  quantity: 1,
-                  price: 100,
-                  type: "TRADE",
-                },
-              }],
-              nextPagePath: null,
-            },
-        ),
-      );
+      const url = new URL(String(input));
+      equal(url.origin, "https://live.trading212.com");
+      if (url.pathname.endsWith("positions")) {
+        return Promise.resolve(Response.json([]));
+      }
+      if (url.pathname.endsWith("transactions")) {
+        cashCalls++;
+        return Promise.resolve(
+          Response.json({ items: transactions, nextPagePath: null }),
+        );
+      }
+      equal(url.pathname, "/api/v0/equity/history/orders");
+      return Promise.resolve(Response.json({ items: [], nextPagePath: null }));
     };
-    const historyOrders = await fetchIntegratedHistoryOrders(db, 1);
+    const [orders, positions] = await Promise.all([
+      fetchIntegratedOrderHistory(db, 1),
+      fetchIntegratedPortfolio(db, 1),
+    ]);
+    equal(cashCalls, 1);
+    deepStrictEqual(orders.map((o) => [o.quantity, o.price]), [[1, 500], [
+      -1,
+      1000,
+    ], [1, 200]]);
+    deepStrictEqual(await fetchIntegratedHistoryOrders(db, 1), orders);
+    equal(positions.length, 1);
+    equal(positions[0].ticker, "CFD");
+    equal(positions[0].totalInput, 200);
+    equal(positions[0].totalNow, 200);
+    const assignments = readBucketAssignments(db, 1);
+    equal(assignments.size, 2);
+    for (const o of orders.filter((o) => o.quantity > 0)) {
+      equal(assignments.get(o.transactionKey!), "Test");
+    }
     const history = await buildIntegratedHistory({
-      orders: historyOrders,
+      orders,
       formatLineSuffix: (_group, index) => `/move_Test_${index}`,
     });
+    match(history, /01\.01 CFD 1\.0000 x \$500\.00 \(\$500\) \/move_Test_1/);
+    match(history, /04\.01 CFD 1\.0000 x \$200\.00 \(\$200\) \/move_Test_2/);
+    match(history, /Total \$700$/);
     match(
-      history,
-      /^2026 - \$500\n01\.01 AAPL .*\n06\.10 CFD 1\.0000 x \$400\.00 \(\$400\) \/move_Test_2\n\nTotal \$500$/,
+      await buildIntegratedSoldPerformanceList({ orders }),
+      /CFD \+100\.00% \+\$500\.00/,
     );
-    equal((await fetchIntegratedOrderHistory(db, 1)).length, 1);
-    const cfdGroup = buildIntegratedHistoryGroups(historyOrders)[1];
-    const buckets = new Map([[cfdGroup.transactionKey, "Test"]]);
     match(
-      await buildIntegratedHistory({
-        orders: filterHistoryOrdersByBucket(historyOrders, buckets, "Test"),
+      await buildIntegratedAllTimePerformanceList({ orders, positions }),
+      /CFD \+71\.43% \+\$500\.00/,
+    );
+    match(
+      await buildIntegratedAllTimePerformanceList({
+        orders,
+        positions,
+        numberOnly: true,
       }),
-      /CFD.*\n\nTotal \$400$/,
+      /\+\$500\.00$/,
     );
-    const unbucketed = await buildIntegratedHistory({
-      orders: filterHistoryOrdersByBucket(historyOrders, buckets, null),
+    match(
+      await buildIntegratedTickerList({ positions }),
+      /\$200\.00 -> \$200\.00/,
+    );
+    match(
+      await buildIntegratedPerformanceList({
+        positions,
+        showCurrentValue: true,
+      }),
+      /CFD 0\.00% \$200\.00/,
+    );
+    equal((await buildPortfolioChart(positions))?.holdings[0].ticker, "CFD");
+    const bucketView = await fetchPortfolioView(db, 1, "Test", {
+      history: true,
     });
-    ok(!unbucketed.includes("CFD"));
-    match(unbucketed, /Total \$100$/);
-    const refreshed = await buildCfdHistoryOrders([
-      toCashTransaction(result.data, cash("out", -100)),
-      toCashTransaction(result.data, cash("back", 500)),
-      toCashTransaction(result.data, {
-        ...cash("later", 50),
-        dateTime: "2026-10-07T22:06:00Z",
-      }),
-    ]);
+    equal(bucketView.positions[0].totalNow, 200);
     equal(
-      buildIntegratedHistoryGroups(refreshed)[0].transactionKey,
-      cfdGroup.transactionKey,
+      buildIntegratedSoldPerformances(
+        bucketView.orders,
+        bucketView.transactionBuckets,
+        "Test",
+      )[0].realizedPnl,
+      500,
     );
-    match(
-      await buildIntegratedHistory({
-        orders: filterHistoryOrdersByBucket(refreshed, buckets, "Test"),
-      }),
-      /CFD 1\.0000 x \$450\.00/,
+    const unbucketed = await fetchPortfolioView(db, 1, null, { history: true });
+    equal(unbucketed.positions.length, 0);
+    equal(
+      buildIntegratedSoldPerformances(
+        unbucketed.orders,
+        unbucketed.transactionBuckets,
+      ).length,
+      0,
     );
+    ok(
+      transferBucketAccess({
+        database: db,
+        userId: 1,
+        name: "Test",
+        recipientId: 2,
+      }).success,
+    );
+    ok(
+      setBucketIncluded({
+        database: db,
+        userId: 2,
+        name: "Test",
+        included: true,
+      }).success,
+    );
+    const shared = await fetchPortfolioView(db, 2, null, { history: true });
+    equal(shared.positions[0].totalInput, 200);
+    equal(
+      buildIntegratedSoldPerformances(
+        shared.orders,
+        shared.transactionBuckets,
+      )[0].realizedPnl,
+      500,
+    );
+    const noMarket = {
+      resolve: () => {
+        throw new Error("CFD must never resolve a market symbol");
+      },
+      get: () => {
+        throw new Error("CFD must never fetch market prices");
+      },
+    };
+    const dataset = await loadAllTimeDataset(
+      db,
+      { ...shared, now: new Date("2026-01-05") },
+      2,
+      "CFD",
+      noMarket as never,
+    );
+    equal(dataset.points.find((p) => p.date === "2026-01-02")!.gain, 0);
+    equal(dataset.points.find((p) => p.date === "2026-01-03")!.gain, 500);
+    equal(dataset.points.at(-1)!.gain, 500);
+    equal(dataset.points.at(-1)!.percentage, 500 / 700 * 100);
+    const refresh = await buildCfdHistoryOrders(
+      transactions.map((t) => toCashTransaction(result.data!, t)).concat(
+        toCashTransaction(result.data, {
+          ...cash("later", 250),
+          dateTime: "2026-01-06T12:00:00Z",
+        }),
+      ),
+    );
+    equal(refresh[0].transactionKey, orders[0].transactionKey);
+    equal(refresh[2].transactionKey, orders[2].transactionKey);
+    equal(buildCfdPositions(refresh).length, 0);
+    equal(buildIntegratedSoldPerformances(refresh)[0].realizedPnl, 550);
   } finally {
     globalThis.fetch = originalFetch;
     Date.now = clock;
@@ -217,14 +328,16 @@ Deno.test("CFD transfer history imports full pages, nets principal, excludes dep
     equal(calls, 2);
     equal(first.length, 2);
     match(
-      await buildCfdTransferHistory(first),
-      /CFD 1\.0000 x \$400\.00 \(\$400\)/,
+      await buildCfdTransferPerformance(first),
+      /CFD \+400\.00% \+\$400\.00/,
     );
     await fetchIntegratedCfdTransfers(db, 1);
     equal(calls, 2);
     match(
-      await buildCfdTransferHistory(await fetchIntegratedCfdTransfers(db, 2)),
-      /CFD 1\.0000 x \$30\.00/,
+      await buildCfdTransferPerformance(
+        await fetchIntegratedCfdTransfers(db, 2),
+      ),
+      /CFD 0\.00% \+\$30\.00/,
     );
     now += 61_000;
     await fetchIntegratedCfdTransfers(db, 1);
@@ -299,10 +412,10 @@ Deno.test("CFD incomplete initial imports and refreshes never commit partial cas
     );
     broken = false;
     match(
-      await buildCfdTransferHistory(
+      await buildCfdTransferPerformance(
         await fetchTrading212CashHistory(db, integration),
       ),
-      /CFD 1\.0000 x \$425\.00/,
+      /CFD .*\+\$425\.00/,
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -311,7 +424,7 @@ Deno.test("CFD incomplete initial imports and refreshes never commit partial cas
   }
 });
 
-Deno.test("CFD cash history validates amounts and keeps outstanding funds as net transfers", async () => {
+Deno.test("CFD cash history validates amounts and outstanding funding is an ordinary purchase", async () => {
   const integration = { id: 1 } as Integration;
   throws(
     () => toCashTransaction(integration, cash("bad", NaN)),
@@ -326,16 +439,18 @@ Deno.test("CFD cash history validates amounts and keeps outstanding funds as net
     /Invalid Trading 212/,
   );
   equal(
-    await buildCfdTransferHistory([
+    await buildCfdTransferPerformance([
       toCashTransaction(integration, cash("deposit", 100, "DEPOSIT")),
     ]),
     "",
   );
   match(
-    await buildCfdTransferHistory([
-      toCashTransaction(integration, cash("out", -100)),
-    ]),
-    /CFD 1\.0000 x -\$100\.00/,
+    await buildIntegratedHistory({
+      orders: await buildCfdHistoryOrders([
+        toCashTransaction(integration, cash("out", -100)),
+      ]),
+    }),
+    /CFD 1\.0000 x \$100\.00/,
   );
 });
 
@@ -346,22 +461,144 @@ Deno.test("CFD cash totals convert transaction currencies to USD and fail on mis
     toCashTransaction(integration, cash("back", 500)),
   ];
   match(
-    await buildCfdTransferHistory(
+    await buildCfdTransferPerformance(
       rows,
       () =>
         Promise.resolve(
           Response.json({ base: "USD", quote: "EUR", rate: 0.8 }),
         ),
     ),
-    /CFD 1\.0000 x \$375\.00/,
+    /CFD \+300\.00% \+\$375\.00/,
   );
   await rejects(
-    buildCfdTransferHistory(
+    buildCfdTransferPerformance(
       rows,
       () => Promise.resolve(new Response(null, { status: 500 })),
     ),
     /USD exchange rate for EUR/,
   );
+});
+
+Deno.test("each CFD return sells all funding in its own account, including losses and additional proceeds", async () => {
+  const rows = [
+    { ...cash("one", -500), dateTime: "2026-01-01T12:00:00Z" },
+    { ...cash("two", -100), dateTime: "2026-01-02T12:00:00Z" },
+    { ...cash("partial", 200), dateTime: "2026-01-03T12:00:00Z" },
+    { ...cash("extra", 50), dateTime: "2026-01-04T12:00:00Z" },
+  ];
+  const first = { id: 1 } as Integration;
+  const second = { id: 2 } as Integration;
+  const orders = await buildCfdHistoryOrders([
+    ...rows.map((row) => toCashTransaction(first, row)),
+    toCashTransaction(second, rows[0]),
+  ].reverse());
+  equal(
+    orders.find((o) => o.transactionKey === "t212:CFD:1:partial:sale")!
+      .quantity,
+    -2,
+  );
+  const sold = buildIntegratedSoldPerformances(orders)[0];
+  equal(sold.cost, 600);
+  equal(sold.proceeds, 250);
+  equal(sold.realizedPnl, -350);
+  const positions = buildCfdPositions(orders);
+  equal(positions.length, 1);
+  equal(positions[0].integrationId, 2);
+  equal(positions[0].totalInput, 500);
+  equal(positions[0].totalNow, 500);
+});
+
+Deno.test("CFD buckets value each outstanding purchase at its own cost across accounts and funding amounts", async () => {
+  const first = { id: 1 } as Integration;
+  const second = { id: 2 } as Integration;
+  const orders = await buildCfdHistoryOrders([
+    toCashTransaction(first, {
+      ...cash("one", -500),
+      dateTime: "2026-01-01T12:00:00Z",
+    }),
+    toCashTransaction(first, {
+      ...cash("two", -100),
+      dateTime: "2026-01-02T12:00:00Z",
+    }),
+    toCashTransaction(second, {
+      ...cash("other", -200),
+      dateTime: "2026-01-02T12:00:00Z",
+    }),
+  ]);
+  const transactionBuckets = new Map([[orders[0].transactionKey!, "Test"]]);
+  const livePositions = mergePositions(buildCfdPositions(orders));
+  const selected = buildBucketedPortfolioPositions({
+    orders,
+    livePositions,
+    transactionBuckets,
+    bucketName: "Test",
+  });
+  equal(selected[0].amount, 1);
+  equal(selected[0].totalInput, 500);
+  equal(selected[0].totalNow, 500);
+  equal(selected[0].unrealizedPnl, 0);
+  const rest = buildBucketedPortfolioPositions({
+    orders,
+    livePositions,
+    transactionBuckets,
+    bucketName: null,
+  });
+  equal(rest[0].amount, 2);
+  equal(rest[0].totalInput, 300);
+  equal(rest[0].totalNow, 300);
+  equal(rest[0].currentPrice, 150);
+  const points = buildAllTimeSeries(
+    {
+      orders,
+      positions: selected,
+      transactionBuckets,
+      bucketName: "Test",
+      now: new Date("2026-01-03"),
+    },
+    new Map(),
+    new Map([["USD", 1]]),
+  );
+  ok(points.every((p) => p.gain === 0 && p.percentage === 0));
+});
+
+Deno.test("CFD cash permission failures reject both portfolio and performance instead of returning partial equity data", async () => {
+  const db = new Database(":memory:");
+  const original = globalThis.fetch;
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    createIntegration({
+      database: db,
+      userId: 1,
+      kind: "t212",
+      credentials: { apiKey: "cfd-permission-failure", secretKey: "secret" },
+    });
+    globalThis.fetch = (input) =>
+      Promise.resolve(
+        String(input).includes("transactions")
+          ? new Response(null, { status: 403 })
+          : Response.json(
+            String(input).includes("positions")
+              ? []
+              : { items: [], nextPagePath: null },
+          ),
+      );
+    const [portfolio, history] = await Promise.allSettled([
+      fetchIntegratedPortfolio(db, 1),
+      fetchIntegratedOrderHistory(db, 1),
+    ]);
+    equal(portfolio.status, "rejected");
+    equal(history.status, "rejected");
+    if (portfolio.status === "rejected") {
+      match(portfolio.reason.message, /HTTP 403/);
+    }
+    if (history.status === "rejected") {
+      match(history.reason.message, /HTTP 403/);
+    }
+  } finally {
+    globalThis.fetch = original;
+    db.close();
+  }
 });
 
 Deno.test("CFD transaction pagination rejects incomplete and unrelated paths without publishing a cache", async () => {

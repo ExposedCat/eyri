@@ -5,6 +5,8 @@ import type { Database } from "../database/setup.ts";
 import { connectToDb } from "../database/setup.ts";
 import { startIbkrExecutionSyncLoop } from "../integrations/ibkr/adapter.ts";
 import { startFlexSyncLoop } from "../integrations/ibkr/flex.ts";
+import { ensureTickerDisplaySchema } from "../tickers/decorations.ts";
+import { ensureYahooMappings } from "../market_data/mappings.ts";
 
 export async function startApp() {
   try {
@@ -18,6 +20,8 @@ export async function startApp() {
   try {
     console.log("Opening database...");
     database = await connectToDb();
+    ensureTickerDisplaySchema(database);
+    ensureYahooMappings(database);
     console.log(`Database opened`);
   } catch (error) {
     console.error("Error occurred while connecting to the database:", error);

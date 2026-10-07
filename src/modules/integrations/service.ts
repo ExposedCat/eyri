@@ -7,7 +7,6 @@ import { logFetch } from "../../utils/fetch_logging.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
 import { trading212Adapter } from "./trading212/adapter.ts";
-import { buildCfdHistoryOrders } from "../tickers/cfd_history.ts";
 import type {
   IntegrationAdapter,
   IntegrationPortfolioPosition,
@@ -241,16 +240,10 @@ export async function fetchIntegratedCfdTransfers(
   return transactions.filter((transaction) => transaction.type === "TRANSFER");
 }
 
-// CFD cash returns use the purchase presentation in history, without becoming
-// actual holdings or FIFO lots in performance and chart calculations.
+// Display history and performance use the same purchases and sales.
 export async function fetchIntegratedHistoryOrders(
   database: Database,
   userId: number,
 ) {
-  const [orders, transfers] = await Promise.all([
-    fetchIntegratedOrderHistory(database, userId),
-    fetchIntegratedCfdTransfers(database, userId),
-  ]);
-  const cfdOrders = await buildCfdHistoryOrders(transfers);
-  return [...orders, ...cfdOrders].sort((a, b) => +a.date - +b.date);
+  return fetchIntegratedOrderHistory(database, userId);
 }
