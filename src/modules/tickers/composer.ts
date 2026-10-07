@@ -11,16 +11,15 @@ import {
   moveTransactionToBucket,
   readBucketAssignments,
   removeTransactionFromBucket,
+  setBucketIncluded,
+  transferBucketAccess,
 } from "../database/bucket.ts";
+import { fetchPortfolioView, hasPortfolioViewIntegrations } from "./portfolio_view.ts";
 import {
   getUserIntegrations,
   hasUserIntegrations,
 } from "../database/integration.ts";
-import {
-  fetchIntegratedOrderHistory,
-  fetchIntegratedPortfolio,
-  fetchIntegratedHistoryOrders,
-} from "../integrations/service.ts";
+import { fetchIntegratedHistoryOrders } from "../integrations/service.ts";
 import { getIbkrHostPort } from "../integrations/ibkr/credentials.ts";
 import { fetchIntegratedIbkrStockQuotes } from "../integrations/ibkr/quotes.ts";
 import { getRsuAwards, removeRsuAwards, saveRsuAward } from "../database/rsu.ts";
@@ -42,7 +41,6 @@ import {
 } from "./decorations.ts";
 import { removeTickerEmojiPack, syncTickerEmojiPack } from "./emoji_pack.ts";
 import {
-  buildBucketedPortfolioPositions,
   buildIntegratedAllTimePerformanceList,
   buildIntegratedDailyPerformanceList,
   buildIntegratedHistoryGroups,
@@ -50,7 +48,6 @@ import {
   buildIntegratedPerformanceList,
   buildIntegratedSoldPerformanceList,
   buildIntegratedTickerList,
-  filterHistoryOrdersByBucket,
   formatOptionTicker,
   isOptionPosition,
   isStockPosition,
@@ -92,16 +89,19 @@ function formatBucketNameHelp() {
 function parseBucketCommand(input: unknown) {
   const parts =
     typeof input === "string" ? input.trim().split(/\s+/).filter(Boolean) : [];
-  if (parts.length !== 2) {
+  if (parts.length !== 2 && parts.length !== 3) {
     return null;
   }
 
-  const [action, name] = parts;
-  if (action !== "new" && action !== "remove" && action !== "move") {
+  const [action, name, id] = parts;
+  if (!["new", "remove", "move", "transfer", "include", "exclude"].includes(action)) {
     return null;
   }
-
-  return { action, name };
+  if (id !== undefined &&
+    (action !== "transfer" || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) {
+    return null;
+  }
+  return { action, name, recipientId: id === undefined ? undefined : Number(id) };
 }
 
 function formatBucketList(buckets: ReturnType<typeof getUserBuckets>) {
@@ -110,7 +110,13 @@ function formatBucketList(buckets: ReturnType<typeof getUserBuckets>) {
   }
 
   return buckets
-    .map((bucket, index) => `${index + 1}. ${escapeHtml(bucket.name)}`)
+    .map((bucket, index) => {
+      const details = [
+        bucket.ownerUserId !== bucket.userId ? `shared by ${bucket.ownerUserId}` : "",
+        bucket.included ? "included" : "",
+      ].filter(Boolean);
+      return `${index + 1}. ${escapeHtml(bucket.name)}${details.length ? ` (${details.join(", ")})` : ""}`;
+    })
     .join("\n");
 }
 
@@ -151,24 +157,7 @@ export async function fetchBucketedPositions(
     return [];
   }
 
-  const transactionBuckets = readBucketAssignments(ctx.db, userId);
-  // With no bucket allocations, live holdings already contain the full view.
-  // Trading 212 history may be slow to import or contain corporate actions
-  // that cannot be represented by the FIFO model.
-  if (bucketName === null && transactionBuckets.size === 0) {
-    return fetchIntegratedPortfolio(ctx.db, userId);
-  }
-
-  const [livePositions, orders] = await Promise.all([
-    fetchIntegratedPortfolio(ctx.db, userId),
-    fetchIntegratedOrderHistory(ctx.db, userId),
-  ]);
-  return buildBucketedPortfolioPositions({
-    orders,
-    livePositions,
-    transactionBuckets,
-    bucketName,
-  });
+  return (await fetchPortfolioView(ctx.db, userId, bucketName)).positions;
 }
 
 async function fetchBucketedHistoryOrders(
@@ -180,10 +169,10 @@ async function fetchBucketedHistoryOrders(
     return [];
   }
 
-  const orders = await fetchIntegratedHistoryOrders(ctx.db, userId);
-  const transactionBuckets = readBucketAssignments(ctx.db, userId);
-
-  return filterHistoryOrdersByBucket(orders, transactionBuckets, bucketName);
+  return (await fetchPortfolioView(ctx.db, userId, bucketName, {
+    positions: false,
+    displayHistory: true,
+  })).historyOrders;
 }
 
 async function readTickerDisplayPreferences(userId: number) {
@@ -468,7 +457,7 @@ tickersComposer.command("bucket", async (ctx) => {
   if (!parsed || !isValidBucketName(parsed.name)) {
     await ctx.reply(
       [
-        "Use /bucket new NAME, /bucket remove NAME, or /bucket move NAME.",
+        "Use /bucket new NAME, /bucket remove NAME, /bucket move NAME, /bucket transfer NAME [TELEGRAM_ID], /bucket include NAME, or /bucket exclude NAME.",
         formatBucketNameHelp(),
       ].join("\n\n"),
     );
@@ -491,6 +480,8 @@ tickersComposer.command("bucket", async (ctx) => {
   }
 
   if (parsed.action === "remove") {
+    const shared = getUserBucket(ctx.db, ctx.dbEntities.user.userId, parsed.name)
+      ?.ownerUserId !== ctx.dbEntities.user.userId;
     const result = await deleteBucket({
       database: ctx.db,
       userId: ctx.dbEntities.user.userId,
@@ -498,7 +489,7 @@ tickersComposer.command("bucket", async (ctx) => {
     });
     await ctx.reply(
       result.success
-        ? `Bucket removed: ${escapeHtml(parsed.name)}`
+        ? `${shared ? "Bucket access removed" : "Bucket removed"}: ${escapeHtml(parsed.name)}`
         : (result.error ?? "Failed to remove bucket"),
       htmlReplyOptions,
     );
@@ -515,6 +506,38 @@ tickersComposer.command("bucket", async (ctx) => {
   }
 
   try {
+    if (parsed.action === "transfer") {
+      const replyUser = ctx.message?.reply_to_message?.from;
+      const recipientId = parsed.recipientId ??
+        (replyUser && !replyUser.is_bot ? replyUser.id : undefined);
+      if (!recipientId) {
+        await ctx.reply("Reply to the recipient's message with /bucket transfer NAME, or use /bucket transfer NAME TELEGRAM_ID.");
+        return;
+      }
+      const result = transferBucketAccess({
+        database: ctx.db, userId: ctx.dbEntities.user.userId,
+        name: bucket.name, recipientId,
+      });
+      await ctx.reply(result.success
+        ? `Bucket access granted: ${escapeHtml(bucket.name)} to ${recipientId}. They can use /bucket include ${escapeHtml(bucket.name)} to merge it into their portfolio.`
+        : result.error ?? "Failed to transfer bucket access", htmlReplyOptions);
+      return;
+    }
+    if (parsed.action === "include" || parsed.action === "exclude") {
+      const included = parsed.action === "include";
+      const result = setBucketIncluded({
+        database: ctx.db, userId: ctx.dbEntities.user.userId,
+        name: bucket.name, included,
+      });
+      await ctx.reply(result.success
+        ? `Bucket ${included ? "included in" : "excluded from"} your portfolio: ${escapeHtml(bucket.name)}`
+        : result.error ?? "Failed to update bucket inclusion", htmlReplyOptions);
+      return;
+    }
+    if (bucket.ownerUserId !== ctx.dbEntities.user.userId) {
+      await ctx.reply("Only the bucket owner can change its trades.");
+      return;
+    }
     await replyBucketMoveHistory(ctx, bucket.name);
   } catch (error) {
     await replyIntegrationError(ctx, error);
@@ -557,6 +580,10 @@ tickersComposer.hears(BUCKET_ACTION_PATTERN, async (ctx) => {
     return;
   }
 
+  if (bucket.ownerUserId !== ctx.dbEntities.user.userId) {
+    await ctx.reply("Only the bucket owner can change its trades.");
+    return;
+  }
   if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
     await ctx.text("no_integrations");
     return;
@@ -864,7 +891,7 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 tickersComposer.command("portfolio", async (ctx) => {
 	const bucketName = await resolveBucketName(ctx);
 	if (bucketName === undefined || !ctx.dbEntities.user) return;
-	if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+	if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
 		await ctx.text("no_integrations");
 		return;
 	}
@@ -902,7 +929,7 @@ tickersComposer.command("stocks", async (ctx) => {
     tickerEmojiMappings,
   } = await readTickerDisplayPreferences(ctx.from.id);
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
     return;
   }
@@ -954,7 +981,7 @@ tickersComposer.command("options", async (ctx) => {
     tickerEmojiMappings,
   });
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
     return;
   }
@@ -988,16 +1015,16 @@ tickersComposer.command("dump_options", async (ctx) => {
     return;
   }
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  const bucketName = await resolveBucketName(ctx);
+  if (bucketName === undefined) return;
+
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
     return;
   }
 
   try {
-    const positions = await fetchIntegratedPortfolio(
-      ctx.db,
-      ctx.dbEntities.user.userId,
-    );
+    const positions = await fetchBucketedPositions(ctx, bucketName);
     await replyJsonDump(
       ctx,
       (await portfolioPositionsInUsd(positions.filter(isOptionPosition))).map(toDumpablePosition),
@@ -1013,16 +1040,16 @@ tickersComposer.command("dump_tickers", async (ctx) => {
     return;
   }
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  const bucketName = await resolveBucketName(ctx);
+  if (bucketName === undefined) return;
+
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
     return;
   }
 
   try {
-    const positions = await fetchIntegratedPortfolio(
-      ctx.db,
-      ctx.dbEntities.user.userId,
-    );
+    const positions = await fetchBucketedPositions(ctx, bucketName);
     await replyJsonDump(
       ctx,
       (await portfolioPositionsInUsd(positions.filter(isStockPosition))).map(toDumpablePosition),
@@ -1057,7 +1084,7 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber"], async (ctx) 
     tickerEmojiMappings,
   });
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
     return;
   }
@@ -1067,23 +1094,11 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber"], async (ctx) 
     const numberOnly = ctx.hasCommand(["number", "allnumber"]);
     let performanceList: string;
     if (isAllTime) {
-      const userId = ctx.dbEntities.user.userId;
-      const [livePositions, orders] = await Promise.all([
-        fetchIntegratedPortfolio(ctx.db, userId),
-        fetchIntegratedOrderHistory(ctx.db, userId),
-      ]);
-      const transactionBuckets = readBucketAssignments(ctx.db, userId);
-      const positions = buildBucketedPortfolioPositions({
-        orders,
-        livePositions,
-        transactionBuckets,
-        bucketName,
-      });
+      const view = await fetchPortfolioView(
+        ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true },
+      );
       performanceList = await buildIntegratedAllTimePerformanceList({
-        positions,
-        orders,
-        transactionBuckets,
-        bucketName,
+        ...view,
         numberOnly,
         ...preferences,
         formatTicker,
@@ -1120,6 +1135,8 @@ tickersComposer.command("sold", async (ctx) => {
     return;
   }
 
+  const bucketName = await resolveBucketName(ctx);
+  if (bucketName === undefined) return;
   const preferences = await readTickerDisplayPreferences(ctx.from.id);
   const {
     tickerDecorations,
@@ -1134,18 +1151,17 @@ tickersComposer.command("sold", async (ctx) => {
     tickerEmojiMappings,
   });
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
     return;
   }
 
   try {
-    const orders = await fetchIntegratedOrderHistory(
-      ctx.db,
-      ctx.dbEntities.user.userId,
+    const view = await fetchPortfolioView(
+      ctx.db, ctx.dbEntities.user.userId, bucketName, { positions: false, history: true },
     );
     const performanceList = await buildIntegratedSoldPerformanceList({
-      orders,
+      ...view,
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,
@@ -1189,7 +1205,7 @@ tickersComposer.command("dpnl", async (ctx) => {
     tickerEmojiMappings,
   });
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
     return;
   }
@@ -1234,7 +1250,7 @@ tickersComposer.command("history", async (ctx) => {
     tickerEmojiMappings,
   } = await readTickerDisplayPreferences(ctx.from.id);
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
     return;
   }
@@ -1291,16 +1307,13 @@ tickersComposer.command("when", async (ctx) => {
     tickerEmojiMappings,
   });
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, null)) {
     await ctx.text("no_integrations");
     return;
   }
 
   try {
-    const positions = await fetchIntegratedPortfolio(
-      ctx.db,
-      ctx.dbEntities.user.userId,
-    );
+    const positions = await fetchBucketedPositions(ctx, null);
     const priceList = await buildIntegratedTickerList({
       positions,
       priceOverrides,

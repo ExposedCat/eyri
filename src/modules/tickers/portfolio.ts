@@ -50,6 +50,8 @@ type BuildIntegratedHistoryArgs = {
 
 type BuildIntegratedSoldPerformanceArgs = BuildIntegratedHistoryArgs & {
   formatTicker?: (ticker: string) => string;
+  transactionBuckets?: Map<string, string>;
+  bucketName?: string | null;
 };
 
 type BuildIntegratedAllTimePerformanceArgs = BuildIntegratedTickerListArgs & {
@@ -926,8 +928,10 @@ export async function buildIntegratedSoldPerformanceList({
   tickerLabelLinks,
   tickerEmojiMappings,
   formatTicker,
+  transactionBuckets,
+  bucketName = null,
 }: BuildIntegratedSoldPerformanceArgs): Promise<string> {
-  const sold = buildIntegratedSoldPerformances(orders);
+  const sold = buildIntegratedSoldPerformances(orders, transactionBuckets, bucketName);
   const rates = await fetchUsdConversionRates(
     sold.map((p) => p.currency),
     request,

@@ -9,13 +9,8 @@ import {
   saveYahooMapping,
 } from "../market_data/mappings.ts";
 import { escapeHtml } from "./decorations.ts";
-import { getUserBucket, readBucketAssignments } from "../database/bucket.ts";
-import { hasUserIntegrations } from "../database/integration.ts";
-import {
-  fetchIntegratedOrderHistory,
-  fetchIntegratedPortfolio,
-} from "../integrations/service.ts";
-import { buildBucketedPortfolioPositions } from "./portfolio.ts";
+import { getUserBucket } from "../database/bucket.ts";
+import { fetchPortfolioView, hasPortfolioViewIntegrations } from "./portfolio_view.ts";
 import {
   type AllTimeDataset,
   ensureChartSchema,
@@ -36,27 +31,17 @@ const pending = new Map<string, Promise<unknown>>();
 
 async function datasetFor(ctx: CustomContext, bucketName: string | null) {
   const userId = ctx.from!.id;
-  if (!hasUserIntegrations(ctx.db, userId)) {
+  if (!hasPortfolioViewIntegrations(ctx.db, userId, bucketName)) {
     throw new Error(
       "Configure an integration before charting your all-time performance.",
     );
   }
-  const [livePositions, orders] = await Promise.all([
-    fetchIntegratedPortfolio(ctx.db, userId),
-    fetchIntegratedOrderHistory(ctx.db, userId),
-  ]);
-  const transactionBuckets = readBucketAssignments(ctx.db, userId);
-  const positions = buildBucketedPortfolioPositions({
-    livePositions,
-    orders,
-    transactionBuckets,
-    bucketName,
-  });
+  const view = await fetchPortfolioView(ctx.db, userId, bucketName, { history: true });
   const label = [ctx.from!.first_name, ctx.from!.last_name].filter(Boolean)
     .join(" ").slice(0, 60);
   return loadAllTimeDataset(
     ctx.db,
-    { positions, orders, transactionBuckets, bucketName },
+    view,
     userId,
     label,
   );

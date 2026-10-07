@@ -273,6 +273,7 @@ Deno.test("portfolio commands fetch only live holdings until bucket allocations 
     // Bucket views must still load history; failure must not masquerade as a
     // complete, unbucketed total. Live holdings can be empty for this check.
     trading212Adapter.fetchPortfolio = () => Promise.resolve([]);
+    db.exec("INSERT INTO portfolio_buckets (user_id, name) VALUES (1, 'Savings')");
     await rejects(fetchBucketedPositions(ctx, "Savings"), /HTTP 403/);
   } finally {
     trading212Adapter.fetchPortfolio = originalFetchPortfolio;

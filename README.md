@@ -129,13 +129,40 @@ instruments with no trade today show zero, as in Freedom24. The total daily
 percentage uses current portfolio value, matching the app's summary. Historical
 orders supply holding dates when their tickers still match.
 
+## Shared buckets
+
+Create a bucket with `/bucket new NAME`, then use `/bucket move NAME` to assign
+purchase transactions. `/bucket transfer NAME` grants read-only access to the
+author of the message you reply to. `/bucket transfer NAME TELEGRAM_ID` grants
+access by numeric Telegram user ID, even before that person starts the bot.
+The recipient must not already own or have access to a bucket with that name.
+Ownership and broker credentials remain with the original owner; recipients
+cannot change the bucket's trades or grant someone else access.
+
+Shared buckets appear in `/buckets` and work with named views such as
+`/perf NAME`, `/options NAME`, `/alltime NAME`, `/history NAME`, and `/chart NAME`.
+The owner's integrations provide the holdings and purchase/sale history. The
+recipient does not need an integration of their own to view a shared bucket.
+
+Use `/bucket include NAME` to merge an accessible bucket into your default
+portfolio reports, including `/portfolio`, `/stocks`, `/options`, `/perf`,
+`/alltime`, `/sold`, `/dpnl`, `/history`, `/number`, `/when`, and `/chart`.
+Repeated inclusion does not duplicate holdings. Matching holdings are combined;
+FIFO remains independent for each broker account, and realized gains follow the
+bucket of the original purchase. `/bucket exclude NAME` undoes inclusion without
+removing access. Owners can also include their own buckets in their default view.
+
+`/bucket remove NAME` removes a recipient's access without affecting the owner's
+bucket. If the owner removes the bucket, all grants and inclusions are removed.
+`/integrations` and `/restart` continue to manage only the sender's own accounts.
+
 ## All-time performance
 
 Use `/alltime` (or `/alltime BUCKET`) to combine `/perf` and `/sold` into one
 line per ticker and a single Total. Gains include current holdings and realized
 FIFO gains from available order history. Percentages use their combined cost
 basis. Sold lots follow the bucket of their purchase transaction; unbucketed
-views exclude bucketed lots. Periods run from the earliest purchase to today for
+views exclude bucketed lots unless explicitly included. Periods run from the earliest purchase to today for
 current holdings, or the final sale for fully sold holdings.
 
 Use `/number` or `/allnumber` for the same totals as `/perf` or `/alltime`
@@ -173,7 +200,7 @@ mint gains and pink losses. Every month has a label and a vertical grid line;
 the plot and participant legend fill the image, with no header or footer.
 **Compare** adds the person clicking the button to that same graph, up to six
 participants. Published curves remain snapshots of what their owners shared;
-the button fetches only the clicker's own accounts. Buttons are bound to their
+the button fetches the clicker's accounts and included shared buckets. Buttons are bound to their
 chat and message, survive restarts, and reject duplicate participants.
 
 Historical data is stored in the existing SQLite database. Finalized daily closes,

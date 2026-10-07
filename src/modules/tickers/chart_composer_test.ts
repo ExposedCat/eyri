@@ -7,6 +7,7 @@ import { createChartComposer, readChartSession } from "./chart_composer.ts";
 import type { AllTimeDataset } from "./alltime_chart.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
 import { readYahooMapping } from "../market_data/mappings.ts";
+import { createBucket, transferBucketAccess } from "../database/bucket.ts";
 
 function harness(db: Database) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
@@ -238,6 +239,23 @@ Deno.test("invalid bucket names cannot start a chart or fetch account data", asy
   } finally {
     db.close();
   }
+});
+
+Deno.test("chart accepts a shared bucket for its recipient and rejects ungranted users", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    db.exec("INSERT INTO users (user_id) VALUES (1), (2), (3)");
+    await createBucket({ database: db, userId: 1, name: "Core" });
+    ok(transferBucketAccess({ database: db, userId: 1, name: "Core", recipientId: 2 }).success);
+    const h = harness(db);
+    await h.command("/chart Core", 2);
+    deepStrictEqual(h.fetched, [2]);
+    equal(h.calls.filter((c) => c.method === "sendPhoto").length, 1);
+    await h.command("/chart Core", 3);
+    deepStrictEqual(h.fetched, [2]);
+    match(String(h.calls.at(-1)?.payload.text), /Bucket not found/);
+  } finally { db.close(); }
 });
 
 Deno.test("/chart reports historical failure without rendering or sending a partial image", async () => {

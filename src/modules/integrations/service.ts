@@ -97,7 +97,7 @@ function mergePosition(
   };
 }
 
-function mergePositions(positions: IntegrationPortfolioPosition[]) {
+export function mergePositions(positions: IntegrationPortfolioPosition[]) {
   const merged = new Map<string, IntegrationPortfolioPosition>();
 
   for (const position of positions) {

@@ -70,6 +70,25 @@ export function ensureSchema(database: Database) {
 
     CREATE INDEX IF NOT EXISTS portfolio_bucket_transactions_bucket_idx
       ON portfolio_bucket_transactions(user_id, bucket_name);
+
+    CREATE TABLE IF NOT EXISTS portfolio_bucket_access (
+      user_id INTEGER NOT NULL REFERENCES users(user_id),
+      bucket_name TEXT NOT NULL,
+      owner_user_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, bucket_name),
+      FOREIGN KEY (owner_user_id, bucket_name)
+        REFERENCES portfolio_buckets(user_id, name) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS portfolio_bucket_inclusions (
+      user_id INTEGER NOT NULL REFERENCES users(user_id),
+      bucket_name TEXT NOT NULL,
+      owner_user_id INTEGER NOT NULL,
+      PRIMARY KEY (user_id, bucket_name),
+      FOREIGN KEY (owner_user_id, bucket_name)
+        REFERENCES portfolio_buckets(user_id, name) ON DELETE CASCADE
+    );
   `);
   migrateIntegrations(database);
   migrateIntegrationSetup(database);
