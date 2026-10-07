@@ -5,7 +5,10 @@ const TRADERNET_API_BASE = "https://tradernet.com/api/v2/cmd";
 type TradernetApiError = {
   error?: unknown;
   message?: unknown;
+  errMsg?: unknown;
 };
+
+type TradernetParams = { [key: string]: string | number | TradernetParams };
 
 type TradernetRequestOptions = {
   onRawResponse?: (text: string) => void;
@@ -45,7 +48,7 @@ export type Freedom24PortfolioPosition = {
 
 export type Freedom24OrderHistoryResponse = {
   orders?: {
-    order?: Freedom24Order[];
+    order?: Freedom24Order[] | null;
   };
 };
 
@@ -71,23 +74,27 @@ export type Freedom24Quote = {
 };
 
 export type Freedom24Order = {
+  id?: string | number;
   instr?: string;
   date?: string;
-  oper?: number;
-  p?: number;
-  q?: number;
+  oper?: string | number;
+  p?: string | number;
+  q?: string | number;
+  cur?: string;
   curr?: string;
   curr_c?: string;
   base_currency?: string;
   base_contract_code?: string;
-  stat?: number;
+  stat?: string | number;
   trade?: Freedom24Trade[];
 };
 
 export type Freedom24Trade = {
-  p?: number;
-  q?: number;
-  v?: number;
+  id?: string | number;
+  p?: string | number;
+  q?: string | number;
+  v?: string | number;
+  fv?: string | number;
   profit?: number;
   date?: string;
 };
@@ -118,38 +125,50 @@ async function signTradernetRequest(
 }
 
 function getTradernetErrorMessage(body: TradernetApiError) {
-  const error = body.error ?? body.message;
+  const error = body.error ?? body.message ?? body.errMsg;
   if (typeof error === "string" && error.trim().length > 0) {
     return error;
   }
   return null;
 }
 
+// Tradernet SDK StringUtils.str_from_dict recursively sorts raw values for
+// signing; its http_build_query encodes nested objects with PHP bracket keys.
+function signatureParams(params: TradernetParams): string {
+  return Object.entries(params).map(([key, value]) =>
+    `${key}=${typeof value === "object" ? signatureParams(value) : value}`
+  ).sort().join("&");
+}
+
+function appendParams(
+  body: URLSearchParams,
+  params: TradernetParams,
+  prefix = "",
+) {
+  for (const [key, value] of Object.entries(params)) {
+    const name = prefix ? `${prefix}[${key}]` : key;
+    if (typeof value === "object") appendParams(body, value, name);
+    else body.append(name, String(value));
+  }
+}
+
 export async function makeTradernetApiRequest<T>(
   apiKey: string,
   secretKey: string,
   cmd: string,
-  params: Record<string, string> = {},
+  params: TradernetParams = {},
   options: TradernetRequestOptions = {},
 ): Promise<T> {
   const operation = `Freedom24 ${cmd}${
     params.tickers ? ` tickers=${params.tickers}` : ""
   }`;
-  return logFetch(operation, async () => {
+  return await logFetch(operation, async () => {
     const nonce = Date.now().toString();
-    let signatureString = `apiKey=${apiKey}&cmd=${cmd}&nonce=${nonce}`;
-
-    if (Object.keys(params).length > 0) {
-      const paramString = Object.entries(params)
-        .map(([key, value]) => `${key}=${value}`)
-        .join("&");
-      signatureString += `&params=${paramString}`;
-    }
-
-    const bodyParams = new URLSearchParams({ apiKey, cmd, nonce });
-    for (const [key, value] of Object.entries(params)) {
-      bodyParams.append(`params[${key}]`, value);
-    }
+    const payload: TradernetParams = { apiKey, cmd, nonce };
+    if (Object.keys(params).length) payload.params = params;
+    const signatureString = signatureParams(payload);
+    const bodyParams = new URLSearchParams();
+    appendParams(bodyParams, payload);
 
     const response = await fetch(`${TRADERNET_API_BASE}/${cmd}`, {
       method: "POST",
@@ -179,10 +198,9 @@ export async function makeTradernetApiRequest<T>(
       );
     }
 
-    const tradernetError =
-      body && typeof body === "object"
-        ? getTradernetErrorMessage(body as TradernetApiError)
-        : null;
+    const tradernetError = body && typeof body === "object"
+      ? getTradernetErrorMessage(body as TradernetApiError)
+      : null;
     if (tradernetError) {
       throw new Error(`Freedom24 ${cmd} failed: ${tradernetError}`);
     }

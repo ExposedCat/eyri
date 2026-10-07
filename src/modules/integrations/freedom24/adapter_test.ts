@@ -1,4 +1,4 @@
-import { deepStrictEqual, equal, match, ok } from "node:assert/strict";
+import { deepStrictEqual, equal, match, ok, rejects } from "node:assert/strict";
 import type { Integration } from "../../database/integration.ts";
 import type { Database } from "../../database/setup.ts";
 import {
@@ -9,7 +9,11 @@ import {
   getOrderTransactionKey,
 } from "../../tickers/portfolio.ts";
 import { freedom24Adapter } from "./adapter.ts";
-import type { Freedom24PortfolioPosition, Freedom24Quote } from "./api.ts";
+import type {
+  Freedom24Order,
+  Freedom24PortfolioPosition,
+  Freedom24Quote,
+} from "./api.ts";
 
 const integration: Integration = {
   id: 1,
@@ -34,37 +38,36 @@ async function withApi(
   const fetch = globalThis.fetch;
   const now = Date.now;
   Date.now = () => Date.parse("2026-10-06T14:01:00Z");
-  globalThis.fetch = async (input, init) => {
+  globalThis.fetch = (input, init) => {
     const command = String(input).split("/").at(-1);
     equal(new URLSearchParams(String(init?.body)).get("apiKey"), "test");
-    const body =
-      command === "getPositionJson"
-        ? { result: { ps: { pos: positions } } }
-        : command === "getOrdersHistory"
-          ? {
-              orders: {
-                order: [
-                  {
-                    instr: "VSCO.US",
-                    date: "2026-06-01T21:55:14",
-                    stat: 21,
-                    oper: 1,
-                    q: 1,
-                    p: 55.29,
-                  },
-                  {
-                    instr: "+APH.15JAN2027.C200",
-                    date: "2026-06-03T16:30:18",
-                    stat: 21,
-                    oper: 1,
-                    q: 1,
-                    p: 1086,
-                  },
-                ],
-              },
-            }
-          : { result: { q: quotes } };
-    return new Response(JSON.stringify(body));
+    const body = command === "getPositionJson"
+      ? { result: { ps: { pos: positions } } }
+      : command === "getOrdersHistory"
+      ? {
+        orders: {
+          order: [
+            {
+              instr: "VSCO.US",
+              date: "2026-06-01T21:55:14",
+              stat: 21,
+              oper: 1,
+              q: 1,
+              p: 55.29,
+            },
+            {
+              instr: "+APH.15JAN2027.C200",
+              date: "2026-06-03T16:30:18",
+              stat: 21,
+              oper: 1,
+              q: 1,
+              p: 1086,
+            },
+          ],
+        },
+      }
+      : { result: { q: quotes } };
+    return Promise.resolve(new Response(JSON.stringify(body)));
   };
   try {
     await run();
@@ -234,10 +237,12 @@ Deno.test("Freedom24 shows adjusted live holdings and zero daily movement for st
         required(positions.find((p) => p.ticker.includes("ETN"))).dailyPnl,
         0,
       );
-      for (const render of [
-        buildIntegratedDailyPerformanceList,
-        buildIntegratedPerformanceList,
-      ]) {
+      for (
+        const render of [
+          buildIntegratedDailyPerformanceList,
+          buildIntegratedPerformanceList,
+        ]
+      ) {
         const output = await render({ positions });
         ok(!output.includes("? ?"), output);
       }
@@ -372,4 +377,267 @@ Deno.test("Freedom24 values short positions at the ask and uses the exchange dat
       equal(position.dailyPnl, 2);
     },
   );
+});
+
+async function withHistory(
+  response: (body: URLSearchParams) => unknown,
+  run: () => Promise<void>,
+) {
+  const original = globalThis.fetch;
+  globalThis.fetch = (_input, init) =>
+    Promise.resolve(
+      Response.json(response(new URLSearchParams(String(init?.body)))),
+    );
+  try {
+    await run();
+  } finally {
+    globalThis.fetch = original;
+  }
+}
+
+Deno.test("Freedom24 imports BOTZ partial and cancelled fills at execution times, including margin purchases", async () => {
+  const ticker = "+BOTZ.15MAR2024.C33";
+  const rows = [
+    {
+      id: 1,
+      instr: ticker,
+      stat: 30,
+      oper: 1,
+      q: 10,
+      p: 999,
+      trade: [
+        { id: "buy1", date: "2024-02-08T10:00:00Z", q: "1", v: "10" },
+      ],
+    },
+    {
+      id: 2,
+      instr: ticker,
+      stat: "21",
+      oper: "2",
+      q: "1",
+      trade: [
+        { id: "buy2", date: "2024-02-09T12:00:00Z", q: "1", v: "20" },
+      ],
+    },
+    {
+      id: 3,
+      instr: ticker,
+      stat: 21,
+      oper: 3,
+      q: 2,
+      trade: [
+        { id: "sell1", date: "2024-02-08T11:00:00Z", q: 1, v: 15 },
+        { id: "sell2", date: "2024-02-09T13:00:00Z", q: 1, v: 25 },
+      ],
+    },
+    { id: 4, instr: ticker, stat: 31, oper: 1, q: 999, p: 1, trade: [] },
+  ];
+  await withHistory(() => ({ orders: { order: rows } }), async () => {
+    const orders = await freedom24Adapter.fetchOrderHistory(db, integration);
+    deepStrictEqual(
+      orders.map((o) => [o.quantity, o.price, o.date.toISOString()]),
+      [
+        [1, 10, "2024-02-08T10:00:00.000Z"],
+        [-1, 15, "2024-02-08T11:00:00.000Z"],
+        [1, 20, "2024-02-09T12:00:00.000Z"],
+        [-1, 25, "2024-02-09T13:00:00.000Z"],
+      ],
+    );
+    const { buildAllTimeSeries, instrumentKey } = await import(
+      "../../tickers/alltime_chart.ts"
+    );
+    const points = buildAllTimeSeries(
+      {
+        orders,
+        positions: [],
+        transactionBuckets: new Map(),
+        bucketName: null,
+        now: new Date("2024-02-10"),
+      },
+      new Map([[instrumentKey(orders[0]), {
+        symbol: "BOTZ240315C00033000",
+        currency: "USD",
+        instrumentType: "OPTION",
+        splits: [],
+        bars: [
+          { date: "2024-02-08", close: .1 },
+          { date: "2024-02-09", close: .2 },
+        ],
+      }]]),
+      new Map([["USD", 1]]),
+    );
+    equal(points.at(-1)!.gain, 10);
+    ok(Math.abs(points.at(-1)!.percentage - 100 / 3) < 1e-9);
+  });
+});
+
+Deno.test("Freedom24 fetches every page and deduplicates overlapping orders and executions", async () => {
+  const calls: number[] = [];
+  const buy = {
+    id: "purchase",
+    instr: "+BOTZ.15MAR2024.C33",
+    stat: 31,
+    oper: 1,
+    trade: [
+      { id: "buy", date: "2024-02-08T10:00:00Z", q: 1, v: 10 },
+    ],
+  };
+  const first: Freedom24Order[] = Array.from(
+    { length: 999 },
+    (_, id) => ({ id, stat: 31, oper: 1, trade: [] }),
+  );
+  first.push(buy);
+  await withHistory((body) => {
+    equal(body.get("params[order]"), null);
+    equal(body.get("params[page][take]"), "1000");
+    ok(body.get("params[till]"));
+    equal(body.get("params[to]"), null);
+    const skip = Number(body.get("params[page][skip]"));
+    calls.push(skip);
+    return {
+      orders: {
+        order: skip === 0 ? first : [buy, {
+          ...buy,
+          id: "same-execution-other-order",
+        }, {
+          id: "sale",
+          instr: buy.instr,
+          stat: 21,
+          oper: 3,
+          trade: [
+            { id: "sell", date: "2024-02-09T10:00:00Z", q: 1, v: 15 },
+          ],
+        }],
+      },
+    };
+  }, async () => {
+    const orders = await freedom24Adapter.fetchOrderHistory(db, integration);
+    deepStrictEqual(calls, [0, 1000]);
+    deepStrictEqual(orders.map((o) => [o.quantity, o.price]), [[1, 10], [
+      -1,
+      15,
+    ]]);
+  });
+});
+
+Deno.test("Freedom24 retains existing bucket identity when an order fills on multiple days", async () => {
+  await withHistory(
+    () => ({
+      orders: {
+        order: [{
+          id: 1,
+          instr: "ABC.US",
+          cur: "EUR",
+          oper: 1,
+          stat: 21,
+          trade: [
+            { date: "2024-02-08T10:00:00Z", q: 1, v: 10 },
+            { date: "2024-02-09T12:00:00Z", q: 1, v: 20 },
+          ],
+        }],
+      },
+    }),
+    async () => {
+      const orders = await freedom24Adapter.fetchOrderHistory(db, integration);
+      deepStrictEqual(orders.map(getOrderTransactionKey), [
+        '["2024-02-08","ABC.US","EUR"]',
+        '["2024-02-08","ABC.US","EUR"]',
+      ]);
+      deepStrictEqual(orders.map((o) => o.date.toISOString().slice(0, 10)), [
+        "2024-02-08",
+        "2024-02-09",
+      ]);
+      equal(orders[0].currency, "EUR");
+    },
+  );
+});
+
+Deno.test("Freedom24 missing execution amounts use premium units and contract multipliers", async () => {
+  await withHistory(() => ({
+    orders: {
+      order: [
+        {
+          id: 1,
+          instr: "+BOTZ.15MAR2024.C33",
+          oper: 1,
+          stat: 20,
+          trade: [{ q: 1, p: ".1", date: "2024-02-08" }],
+        },
+        {
+          id: 2,
+          instr: "+BOTZ.15MAR2024.C33",
+          oper: 1,
+          stat: 20,
+          trade: [{ q: 1, p: ".2", fv: "5000", date: "2024-02-09" }],
+        },
+        {
+          id: 3,
+          instr: "+NANOS.29SEP2025.C666",
+          oper: 1,
+          stat: 31,
+          trade: [{ q: 1, p: "2", date: "2024-02-10" }],
+        },
+      ],
+    },
+  }), async () => {
+    const orders = await freedom24Adapter.fetchOrderHistory(db, integration);
+    deepStrictEqual(orders.map((o) => o.price), [10, 10, 2]);
+  });
+});
+
+Deno.test("Freedom24 refuses broken executions or non-advancing pages instead of returning partial history", async () => {
+  for (
+    const response of [
+      {},
+      {
+        orders: {
+          order: [{
+            instr: "ABC.US",
+            stat: 31,
+            oper: 1,
+            trade: [{ date: "2024-02-08", q: "bad", v: "1" }],
+          }],
+        },
+      },
+      {
+        orders: {
+          order: [{
+            instr: "ABC.US",
+            stat: 21,
+            oper: 1,
+            q: 1,
+            date: "2024-02-08",
+          }],
+        },
+      },
+    ]
+  ) {
+    await withHistory(() => response, async () => {
+      await rejects(freedom24Adapter.fetchOrderHistory(db, integration));
+    });
+  }
+  const page = Array.from(
+    { length: 1000 },
+    (_, id) => ({ id, oper: 1, stat: 31, trade: [] }),
+  );
+  await withHistory(() => ({ orders: { order: page } }), async () => {
+    await rejects(
+      freedom24Adapter.fetchOrderHistory(db, integration),
+      /pagination did not advance/,
+    );
+  });
+  const fill = { id: "same", q: 1, v: 10, date: "2024-02-08" };
+  await withHistory(() => ({
+    orders: {
+      order: [
+        { id: 1, instr: "ABC.US", oper: 1, trade: [fill] },
+        { id: 2, instr: "ABC.US", oper: 1, trade: [{ ...fill, v: 20 }] },
+      ],
+    },
+  }), async () => {
+    await rejects(
+      freedom24Adapter.fetchOrderHistory(db, integration),
+      /Conflicting/,
+    );
+  });
 });
