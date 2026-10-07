@@ -1,3 +1,5 @@
+import { logFetch } from "../../../utils/fetch_logging.ts";
+
 const TRADERNET_API_BASE = "https://tradernet.com/api/v2/cmd";
 
 type TradernetApiError = {
@@ -130,55 +132,61 @@ export async function makeTradernetApiRequest<T>(
   params: Record<string, string> = {},
   options: TradernetRequestOptions = {},
 ): Promise<T> {
-  const nonce = Date.now().toString();
-  let signatureString = `apiKey=${apiKey}&cmd=${cmd}&nonce=${nonce}`;
+  const operation = `Freedom24 ${cmd}${
+    params.tickers ? ` tickers=${params.tickers}` : ""
+  }`;
+  return logFetch(operation, async () => {
+    const nonce = Date.now().toString();
+    let signatureString = `apiKey=${apiKey}&cmd=${cmd}&nonce=${nonce}`;
 
-  if (Object.keys(params).length > 0) {
-    const paramString = Object.entries(params)
-      .map(([key, value]) => `${key}=${value}`)
-      .join("&");
-    signatureString += `&params=${paramString}`;
-  }
+    if (Object.keys(params).length > 0) {
+      const paramString = Object.entries(params)
+        .map(([key, value]) => `${key}=${value}`)
+        .join("&");
+      signatureString += `&params=${paramString}`;
+    }
 
-  const bodyParams = new URLSearchParams({ apiKey, cmd, nonce });
-  for (const [key, value] of Object.entries(params)) {
-    bodyParams.append(`params[${key}]`, value);
-  }
+    const bodyParams = new URLSearchParams({ apiKey, cmd, nonce });
+    for (const [key, value] of Object.entries(params)) {
+      bodyParams.append(`params[${key}]`, value);
+    }
 
-  const response = await fetch(`${TRADERNET_API_BASE}/${cmd}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "X-NtApi-PublicKey": apiKey,
-      "X-NtApi-Sig": await signTradernetRequest(secretKey, signatureString),
-    },
-    body: bodyParams.toString(),
+    const response = await fetch(`${TRADERNET_API_BASE}/${cmd}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "X-NtApi-PublicKey": apiKey,
+        "X-NtApi-Sig": await signTradernetRequest(secretKey, signatureString),
+      },
+      body: bodyParams.toString(),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    const text = await response.text();
+    options.onRawResponse?.(text);
+    let body: unknown;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = null;
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Freedom24 ${cmd} failed: ${response.status} ${response.statusText}${
+          text ? ` - ${text.slice(0, 500)}` : ""
+        }`,
+      );
+    }
+
+    const tradernetError =
+      body && typeof body === "object"
+        ? getTradernetErrorMessage(body as TradernetApiError)
+        : null;
+    if (tradernetError) {
+      throw new Error(`Freedom24 ${cmd} failed: ${tradernetError}`);
+    }
+
+    return body as T;
   });
-
-  const text = await response.text();
-  options.onRawResponse?.(text);
-  let body: unknown;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = null;
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      `Freedom24 ${cmd} failed: ${response.status} ${response.statusText}${
-        text ? ` - ${text.slice(0, 500)}` : ""
-      }`,
-    );
-  }
-
-  const tradernetError =
-    body && typeof body === "object"
-      ? getTradernetErrorMessage(body as TradernetApiError)
-      : null;
-  if (tradernetError) {
-    throw new Error(`Freedom24 ${cmd} failed: ${tradernetError}`);
-  }
-
-  return body as T;
 }

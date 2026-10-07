@@ -64,6 +64,109 @@ function position(
   };
 }
 
+const numberSeparator = '<tg-emoji emoji-id="5463362738845671608">➖</tg-emoji>'
+  .repeat(10);
+const appleIcon = { tgEmoji: "apple", text: "🍎", isCustomEmoji: true };
+const microsoftIcon = { tgEmoji: "🪟", text: "🪟", isCustomEmoji: false };
+const numberPreferences = {
+  tickerDecorations: { AAPL: [appleIcon] },
+  tickerEmojiMappings: { AAPL: microsoftIcon, MSFT: microsoftIcon },
+  tickerLabelPreferences: { AAPL: "Apple Inc.", MSFT: false as const },
+  tickerLabelLinks: { AAPL: "AAPL:NASDAQ" },
+};
+const renderedAppleIcon = '<tg-emoji emoji-id="apple">🍎</tg-emoji>';
+
+Deno.test("number renders unique available icons including option underlyings and only the perf dollar total", async () => {
+  const output = await buildIntegratedPerformanceList({
+    positions: [
+      position(),
+      position({ ticker: "+AAPL.19DEC2025.C150" }),
+      position({ ticker: "MSFT" }),
+      position({ ticker: "NO_ICON" }),
+    ],
+    numberOnly: true,
+    ...numberPreferences,
+    formatTicker: () => {
+      throw new Error("Labels must not render");
+    },
+  });
+  equal(output, `${renderedAppleIcon}🪟\n${numberSeparator}\n+$480.00`);
+});
+
+Deno.test("allnumber combines current and FIFO sold gains with a single icon per ticker", async () => {
+  const output = await buildIntegratedAllTimePerformanceList({
+    positions: [position()],
+    orders: [
+      order("aapl", 10, 100, "2025-01-01"),
+      order("aapl", -4, 150, "2025-02-01"),
+      order("MSFT", 2, 100, "2025-01-01"),
+      order("MSFT", -2, 50, "2025-02-01"),
+    ],
+    numberOnly: true,
+    ...numberPreferences,
+  });
+  equal(output, `${renderedAppleIcon}🪟\n${numberSeparator}\n+$220.00`);
+});
+
+Deno.test("allnumber includes only icons and sold gains belonging to the selected purchase bucket", async () => {
+  const orders = [
+    order("AAPL", 1, 100, "2025-01-01"),
+    order("MSFT", 1, 100, "2025-01-01"),
+    order("AAPL", -1, 150, "2025-02-01"),
+    order("MSFT", -1, 50, "2025-02-01"),
+  ];
+  const transactionBuckets = new Map([[
+    getOrderTransactionKey(orders[0]),
+    "Core",
+  ]]);
+  for (const [bucketName, icon, total] of [
+    ["Core", renderedAppleIcon, "+$50.00"],
+    [null, "🪟", "-$50.00"],
+  ] as const) {
+    equal(await buildIntegratedAllTimePerformanceList({
+      positions: [],
+      orders,
+      transactionBuckets,
+      bucketName,
+      numberOnly: true,
+      ...numberPreferences,
+    }), `${icon}\n${numberSeparator}\n${total}`);
+  }
+});
+
+Deno.test("number summaries preserve empty results, missing values and USD conversion", async () => {
+  for (
+    const build of [
+      buildIntegratedPerformanceList,
+      buildIntegratedAllTimePerformanceList,
+    ]
+  ) {
+    equal(await build({ positions: [], orders: [], numberOnly: true }), "");
+    equal(await build({
+      positions: [position({ currentPrice: null })],
+      orders: [],
+      numberOnly: true,
+    }), `${numberSeparator}\n?`);
+    equal(await build({
+      positions: [position({ currentPrice: 100 })],
+      orders: [],
+      numberOnly: true,
+    }), `${numberSeparator}\n$0.00`);
+    equal(await build({
+      positions: [position({ currency: "EUR" })],
+      orders: [],
+      request: fxRequest,
+      numberOnly: true,
+    }), `${numberSeparator}\n+$150.00`);
+    await rejects(build({
+      positions: [position({ currency: "EUR" })],
+      orders: [],
+      request: async () => new Response(null, { status: 503 }),
+      numberOnly: true,
+    }), /Could not load USD exchange rate for EUR/);
+  }
+});
+
 Deno.test("alltime merges partial sales and current gains with a weighted total", async () => {
   const orders = [
     order("aapl", 10, 100, "2025-01-01"),

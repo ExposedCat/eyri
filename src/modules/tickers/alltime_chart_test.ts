@@ -467,3 +467,226 @@ Deno.test("failed option archive histories reject the complete chart and keep ma
     db.close();
   }
 });
+
+Deno.test("chart follows VSCO purchases through the VSXY rename and preserves their bucket", async () => {
+  const db = new Database(":memory:");
+  const buy = { ...trade(2, 20, "2026-05-29"), ticker: "VSCO.US" };
+  const sell = { ...trade(-1, 30, "2026-06-03"), ticker: "VSXY.US" };
+  const calls: string[] = [];
+  try {
+    const dataset = await loadAllTimeDataset(
+      db,
+      {
+        orders: [buy, sell],
+        positions: [{ ...holding(1, 20, 40), ticker: "VSXY.US" }],
+        transactionBuckets: new Map([[
+          getOrderTransactionKey(buy),
+          "investing",
+        ]]),
+        bucketName: "investing",
+        now: new Date("2026-06-04"),
+      },
+      1,
+      "Test",
+      {
+        resolve: (source: { ticker: string }) => {
+          calls.push(source.ticker);
+          return Promise.resolve("VSXY");
+        },
+        get: () =>
+          Promise.resolve(history("USD", [
+            { date: "2026-05-29", close: 20 },
+            { date: "2026-06-02", close: 30 },
+            { date: "2026-06-04", close: 40 },
+          ])),
+      } as never,
+    );
+    deepStrictEqual(calls, ["VSXY.US"]);
+    equal(dataset.points.at(-1)!.gain, 30);
+    equal(dataset.points.at(-1)!.percentage, 75);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("chart stitches APH option predecessors across the split without using unrelated strike history", async () => {
+  const db = new Database(":memory:");
+  const buy = {
+    ...trade(1, 600, "2026-08-31"),
+    ticker: "+APH.15JAN2027.C200",
+    integrationKind: "f24",
+    assetCategory: "OPT",
+  };
+  const sell = {
+    ...trade(-1, 400, "2026-09-04"),
+    ticker: "+APH.15JAN2027.C100",
+    integrationKind: "f24",
+    assetCategory: "OPT",
+  };
+  const calls: unknown[] = [];
+  try {
+    const dataset = await loadAllTimeDataset(
+      db,
+      {
+        orders: [buy, sell],
+        positions: [{
+          ...holding(1, 300, 500),
+          ticker: sell.ticker,
+          integrationKind: "f24",
+        }],
+        transactionBuckets: new Map([[
+          getOrderTransactionKey(buy),
+          "investing",
+        ]]),
+        bucketName: "investing",
+        now: new Date("2026-09-07"),
+      },
+      1,
+      "Test",
+      {
+        resolve: (
+          source: { ticker: string },
+          date: string | undefined,
+          _user: number,
+          end: string,
+        ) => {
+          calls.push([source.ticker, date, end]);
+          return Promise.resolve(source.ticker);
+        },
+        get: (symbol: string) =>
+          Promise.resolve(history(
+            "USD",
+            symbol === buy.ticker
+              ? [
+                { date: "2026-08-31", close: 6 },
+                { date: "2026-09-02", close: 8 },
+                { date: "2026-09-04", close: 999 },
+              ]
+              : [
+                { date: "2026-08-31", close: 999 },
+                { date: "2026-09-03", close: 4 },
+                { date: "2026-09-04", close: 4.5 },
+              ],
+          )),
+      } as never,
+    );
+    deepStrictEqual(calls, [
+      [buy.ticker, "2026-08-31", "2026-09-03"],
+      [sell.ticker, undefined, "2026-09-08"],
+    ]);
+    equal(dataset.points.find((p) => p.date === "2026-08-31")!.gain, 0);
+    equal(dataset.points.find((p) => p.date === "2026-09-02")!.gain, 200);
+    equal(dataset.points.find((p) => p.date === "2026-09-03")!.gain, 200);
+    equal(dataset.points.find((p) => p.date === "2026-09-04")!.gain, 250);
+    equal(dataset.points.at(-1)!.gain, 300);
+    equal(dataset.points.at(-1)!.percentage, 50);
+    const text = await buildIntegratedAllTimePerformanceList({
+      orders: [buy, sell],
+      positions: [{
+        ...holding(1, 300, 500),
+        ticker: sell.ticker,
+        integrationKind: "f24",
+      }],
+      transactionBuckets: new Map([[getOrderTransactionKey(buy), "investing"]]),
+      bucketName: "investing",
+      formatTicker: (ticker) => ticker,
+    });
+    match(text, /Total: \+50\.00% \+\$300\.00/);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("a current holding with no purchase is a history error, not a Yahoo mapping suggestion", async () => {
+  const db = new Database(":memory:");
+  try {
+    await rejects(
+      loadAllTimeDataset(
+        db,
+        {
+          orders: [trade(1, 100, "2025-01-02")],
+          positions: [holding(1, 100, 130), {
+            ...holding(1, 100, 130),
+            ticker: "OTHER",
+          }],
+          transactionBuckets: new Map(),
+          bucketName: null,
+          now,
+        },
+        1,
+        "Test",
+        {
+          resolve: () => {
+            throw new Error("Should not fetch");
+          },
+        } as never,
+      ),
+      /Purchase history is missing for OTHER/,
+    );
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("a post-split APH purchase fetches only the new contract; later failures suggest the correct mapping", async () => {
+  const db = new Database(":memory:");
+  const ticker = "+APH.15JAN2027.C100";
+  const current = { ...holding(1, 400, 500), ticker, integrationKind: "f24" };
+  const calls: string[] = [];
+  const args = {
+    orders: [{
+      ...trade(1, 400, "2026-09-04"),
+      ticker,
+      integrationKind: "f24",
+      assetCategory: "OPT",
+    }],
+    positions: [current],
+    transactionBuckets: new Map<string, string>(),
+    bucketName: null,
+    now: new Date("2026-09-07"),
+  };
+  try {
+    const dataset = await loadAllTimeDataset(db, args, 1, "Test", {
+      resolve: (source: { ticker: string }) => {
+        calls.push(source.ticker);
+        return Promise.resolve(source.ticker);
+      },
+      get: () =>
+        Promise.resolve(history("USD", [{ date: "2026-09-04", close: 4 }])),
+    } as never);
+    deepStrictEqual(calls, [ticker]);
+    equal(dataset.points.at(-1)!.gain, 100);
+    await rejects(
+      loadAllTimeDataset(
+        db,
+        {
+          ...args,
+          positions: [{
+            ...current,
+            amount: 2,
+            totalInput: 400,
+            averageUnitPrice: 200,
+          }],
+          orders: [{
+            ...args.orders[0],
+            ticker: "+APH.15JAN2027.C200",
+            date: new Date("2026-08-31"),
+          }],
+        },
+        1,
+        "Test",
+        {
+          resolve: (source: { ticker: string }) =>
+            source.ticker === ticker
+              ? Promise.reject(new Error("Unavailable new contract"))
+              : Promise.resolve("APH270115C00200000"),
+          get: () =>
+            Promise.resolve(history("USD", [{ date: "2026-08-31", close: 4 }])),
+        } as never,
+      ),
+      /Failed to fetch historical data:\n- \/yahoo \+APH\.15JAN2027\.C100 APH270115C00100000/,
+    );
+  } finally {
+    db.close();
+  }
+});

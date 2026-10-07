@@ -3,6 +3,7 @@ import {
   type Integration,
 } from "../database/integration.ts";
 import type { Database } from "../database/setup.ts";
+import { logFetch } from "../../utils/fetch_logging.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
 import { trading212Adapter } from "./trading212/adapter.ts";
@@ -17,6 +18,11 @@ const adapters: Record<Integration["kind"], IntegrationAdapter> = {
   ibkr: ibkrAdapter,
   t212: trading212Adapter,
 };
+
+const pendingPortfolios = new WeakMap<
+  Database,
+  Map<string, Promise<IntegrationPortfolioPosition[]>>
+>();
 
 function getAdapter(integration: Integration) {
   return adapters[integration.kind];
@@ -157,18 +163,37 @@ export async function fetchIntegratedPortfolio(
   const positions = await mapIntegrationData(
     database,
     integrations,
-    (adapter, db, integration) => adapter.fetchPortfolio(db, integration),
+    (_adapter, db, integration) => fetchIntegrationPortfolio(db, integration),
   );
 
   return mergePositions(positions);
 }
 
-export async function fetchIntegrationPortfolio(
+export function fetchIntegrationPortfolio(
   database: Database,
   integration: Integration,
 ) {
-  const adapter = getAdapter(integration);
-  return await adapter.fetchPortfolio(database, integration);
+  let pending = pendingPortfolios.get(database);
+  if (!pending) {
+    pending = new Map();
+    pendingPortfolios.set(database, pending);
+  }
+  const key = JSON.stringify([
+    integration.id, integration.kind, integration.credentials,
+  ]);
+  const existing = pending.get(key);
+  if (existing) {
+    console.log(`Reusing pending ${integration.kind} portfolio fetch integration=${integration.id}`);
+    return existing;
+  }
+  const request = Promise.resolve().then(() =>
+    logFetch(
+      `${integration.kind} portfolio integration=${integration.id}`,
+      () => getAdapter(integration).fetchPortfolio(database, integration),
+    )
+  ).finally(() => pending.delete(key));
+  pending.set(key, request);
+  return request;
 }
 
 export async function fetchIntegrationOrderHistory(

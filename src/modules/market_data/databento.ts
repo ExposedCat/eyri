@@ -1,4 +1,5 @@
 import type { Database } from "../database/setup.ts";
+import { logFetch } from "../../utils/fetch_logging.ts";
 import {
   dayAfter,
   missingRanges,
@@ -74,85 +75,87 @@ export async function fetchDatabentoOptionHistory(
   key: string,
   request: typeof fetch = fetch,
 ): Promise<PriceHistory> {
-  const rawSymbol = databentoOptionSymbol(symbol);
-  const response = await apiRequest(
-    "timeseries.get_range",
-    {
-      dataset: DATASET,
-      symbols: rawSymbol,
-      schema: "trades",
-      stype_in: "raw_symbol",
-      start,
-      end,
-      encoding: "json",
-      pretty_px: "true",
-      pretty_ts: "false",
-      map_symbols: "true",
-    },
-    key,
-    request,
-  );
-  if (!response.body) throw new Error("Empty Databento response.");
-  // OPRA OHLCV bars are per exchange. Stream all venues' trades and keep the
-  // last trade of each New York session, rather than choosing an arbitrary venue.
-  const daily = new Map<
-    string,
-    { event: bigint; received: bigint; close: number }
-  >();
-  const read = (line: string) => {
-    if (!line.trim()) return;
-    const record = JSON.parse(line);
-    if (
-      record.hd?.rtype !== 0 || record.action !== "T" ||
-      record.symbol !== rawSymbol
-    ) {
-      throw new Error("Invalid Databento option trade.");
-    }
-    const event = timestamp(record.hd.ts_event),
-      received = timestamp(record.ts_recv);
-    const close = typeof record.price === "string" && record.price.trim() !== ""
-      ? Number(record.price)
-      : NaN;
-    if (!Number.isFinite(close) || close < 0) {
-      throw new Error("Invalid Databento option premium.");
-    }
-    const date = tradingDate.format(new Date(Number(event / 1_000_000n)));
-    if (date < start || date >= end) return;
-    const previous = daily.get(date);
-    if (
-      !previous || event > previous.event ||
-      (event === previous.event && received >= previous.received)
-    ) {
-      daily.set(date, { event, received, close });
-    }
-  };
-  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
-  let pending = "";
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      pending += value;
-      let newline: number;
-      while ((newline = pending.indexOf("\n")) !== -1) {
-        read(pending.slice(0, newline));
-        pending = pending.slice(newline + 1);
+  return logFetch(`Databento option history ${symbol} ${start}..${end}`, async () => {
+    const rawSymbol = databentoOptionSymbol(symbol);
+    const response = await apiRequest(
+      "timeseries.get_range",
+      {
+        dataset: DATASET,
+        symbols: rawSymbol,
+        schema: "trades",
+        stype_in: "raw_symbol",
+        start,
+        end,
+        encoding: "json",
+        pretty_px: "true",
+        pretty_ts: "false",
+        map_symbols: "true",
+      },
+      key,
+      request,
+    );
+    if (!response.body) throw new Error("Empty Databento response.");
+    // OPRA OHLCV bars are per exchange. Stream all venues' trades and keep the
+    // last trade of each New York session, rather than choosing an arbitrary venue.
+    const daily = new Map<
+      string,
+      { event: bigint; received: bigint; close: number }
+    >();
+    const read = (line: string) => {
+      if (!line.trim()) return;
+      const record = JSON.parse(line);
+      if (
+        record.hd?.rtype !== 0 || record.action !== "T" ||
+        record.symbol !== rawSymbol
+      ) {
+        throw new Error("Invalid Databento option trade.");
       }
+      const event = timestamp(record.hd.ts_event),
+        received = timestamp(record.ts_recv);
+      const close = typeof record.price === "string" && record.price.trim() !== ""
+        ? Number(record.price)
+        : NaN;
+      if (!Number.isFinite(close) || close < 0) {
+        throw new Error("Invalid Databento option premium.");
+      }
+      const date = tradingDate.format(new Date(Number(event / 1_000_000n)));
+      if (date < start || date >= end) return;
+      const previous = daily.get(date);
+      if (
+        !previous || event > previous.event ||
+        (event === previous.event && received >= previous.received)
+      ) {
+        daily.set(date, { event, received, close });
+      }
+    };
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+    let pending = "";
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        pending += value;
+        let newline: number;
+        while ((newline = pending.indexOf("\n")) !== -1) {
+          read(pending.slice(0, newline));
+          pending = pending.slice(newline + 1);
+        }
+      }
+      read(pending);
+    } finally {
+      await reader.cancel();
+      reader.releaseLock();
     }
-    read(pending);
-  } finally {
-    await reader.cancel();
-    reader.releaseLock();
-  }
-  return {
-    symbol: DATABENTO_PREFIX + yahooOptionContract(symbol)!.symbol,
-    currency: "USD",
-    instrumentType: "OPTION",
-    splits: [],
-    bars: [...daily].sort(([a], [b]) => a.localeCompare(b)).map((
-      [date, { close }],
-    ) => ({ date, close })),
-  };
+    return {
+      symbol: DATABENTO_PREFIX + yahooOptionContract(symbol)!.symbol,
+      currency: "USD",
+      instrumentType: "OPTION",
+      splits: [],
+      bars: [...daily].sort(([a], [b]) => a.localeCompare(b)).map((
+        [date, { close }],
+      ) => ({ date, close })),
+    };
+  }, (history) => history.bars.length);
 }
 
 export class DatabentoHistoryCache {
@@ -209,7 +212,7 @@ export class DatabentoHistoryCache {
       return Promise.resolve(this.availability.range);
     }
     if (this.availabilityRequest) return this.availabilityRequest;
-    this.availabilityRequest = (async () => {
+    this.availabilityRequest = logFetch("Databento dataset availability OPRA.PILLAR", async () => {
       const data = await (await apiRequest(
         "metadata.get_dataset_range",
         { dataset: DATASET },
@@ -230,7 +233,7 @@ export class DatabentoHistoryCache {
       };
       this.availability = { fetchedAt: +this.now(), range };
       return range;
-    })().finally(() => {
+    }).finally(() => {
       this.availabilityRequest = undefined;
     });
     return this.availabilityRequest;

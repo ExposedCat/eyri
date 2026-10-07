@@ -1,5 +1,6 @@
 import { validateEnv } from "../../utils/env.ts";
 import { createBot, setupBotCommands } from "../bot/setup.ts";
+import { runBot } from "../bot/runtime.ts";
 import type { Database } from "../database/setup.ts";
 import { connectToDb } from "../database/setup.ts";
 import { startIbkrExecutionSyncLoop } from "../integrations/ibkr/adapter.ts";
@@ -26,13 +27,15 @@ export async function startApp() {
   try {
     console.log("Starting bot...");
     const bot = createBot(database);
+    await bot.init();
+    await bot.api.deleteWebhook();
     await setupBotCommands(bot);
 
-    await new Promise((resolve) =>
-      bot.start({
-        onStart: () => resolve(undefined),
-      }),
-    );
+    const runner = runBot(bot);
+    runner.task()?.catch((error) => {
+      console.error("Bot polling stopped:", error);
+      Deno.exit(4);
+    });
     console.log("Bot started");
   } catch (error) {
     console.error("Error occurred while starting the bot:", error);

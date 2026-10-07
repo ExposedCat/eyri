@@ -1,4 +1,5 @@
 import type { Trading212Credentials } from "./credentials.ts";
+import { logFetch } from "../../../utils/fetch_logging.ts";
 
 export type Trading212Instrument = {
   ticker: string;
@@ -91,7 +92,19 @@ export class Trading212Client {
       return Promise.reject(new Error("Invalid Trading 212 API path"));
     }
     const previous = this.queues.get(url.pathname) ?? Promise.resolve();
-    const request = previous.catch(() => {}).then(() => this.request<T>(url));
+    const request = previous.catch(() => {}).then(() =>
+      logFetch(
+        `Trading 212 ${url.pathname}`,
+        () => this.request<T>(url),
+        (result) => {
+          if (
+            result && typeof result === "object" && "items" in result &&
+            Array.isArray(result.items)
+          ) return result.items.length;
+          return undefined;
+        },
+      )
+    );
     this.queues.set(url.pathname, request);
     return request;
   }
@@ -103,7 +116,12 @@ export class Trading212Client {
       if (delay > 60_000) {
         throw new Error("Trading 212 rate limit reached; try again later");
       }
-      if (delay > 0) await this.runtime.sleep(delay);
+      if (delay > 0) {
+        console.log(
+          `Trading 212 ${url.pathname}: waiting ${delay}ms for rate limit`,
+        );
+        await this.runtime.sleep(delay);
+      }
       this.nextAllowed.set(
         url.pathname,
         this.runtime.now() + intervals[url.pathname],
@@ -140,6 +158,7 @@ export class Trading212Client {
         );
       }
       if (response.status === 429 && attempt === 0) {
+        console.warn(`Trading 212 ${url.pathname}: HTTP 429, retrying`);
         await response.body?.cancel();
         continue;
       }

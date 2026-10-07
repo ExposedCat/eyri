@@ -8,6 +8,7 @@ import { tickersComposer } from "../tickers/composer.ts";
 import { chartComposer } from "../tickers/chart_composer.ts";
 import type { Bot, CustomContext } from "./types.ts";
 import { createReplyWithTextFunc } from "./utils.ts";
+import { setupBotRuntime } from "./runtime.ts";
 
 function extendContext(bot: Bot, database: Database) {
   bot.use(async (ctx, next) => {
@@ -41,6 +42,7 @@ export function createBot(database: Database): Bot {
 
   const bot = new TelegramBot<CustomContext>(TOKEN);
 
+  setupBotRuntime(bot);
   extendContext(bot, database);
   setupComposers(bot);
 
@@ -60,10 +62,12 @@ const botCommands = [
   { command: "rsu_at", description: "Show RSUs with a vesting cutoff date" },
   { command: "options", description: "Show option performance" },
   { command: "perf", description: "Show concise performance" },
+  { command: "number", description: "Show ticker icons and current total gain" },
   {
     command: "alltime",
     description: "Show combined current and sold performance",
   },
+  { command: "allnumber", description: "Show ticker icons and all-time total gain" },
   { command: "buckets", description: "Show portfolio buckets" },
   { command: "bucket", description: "Manage portfolio buckets" },
   { command: "sold", description: "Show sold position performance" },

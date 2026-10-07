@@ -10,6 +10,7 @@ import { ibkrAdapter } from "./ibkr/adapter.ts";
 import {
   fetchIntegratedOrderHistory,
   fetchIntegratedPortfolio,
+  fetchIntegrationPortfolio,
 } from "./service.ts";
 import type {
   IntegrationOrder,
@@ -19,6 +20,56 @@ import {
   buildIntegratedPerformanceList,
   buildIntegratedSoldPerformanceList,
 } from "../tickers/portfolio.ts";
+
+Deno.test("concurrent reports share a pending portfolio fetch and retry after failure", async () => {
+  const db = new Database(":memory:");
+  const original = freedom24Adapter.fetchPortfolio;
+  let resolvePortfolio!: (positions: IntegrationPortfolioPosition[]) => void;
+  let requests = 0;
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    const saved = await createIntegration({
+      database: db,
+      userId: 1,
+      kind: "f24",
+      credentials: {},
+    });
+    ok(saved.data);
+    const integration = saved.data;
+    freedom24Adapter.fetchPortfolio = () => {
+      requests++;
+      return new Promise((resolve) => {
+        resolvePortfolio = resolve;
+      });
+    };
+    const first = fetchIntegratedPortfolio(db, 1);
+    const second = fetchIntegratedPortfolio(db, 1);
+    await Promise.resolve();
+    equal(requests, 1);
+    resolvePortfolio([position(integration)]);
+    const portfolios = await Promise.all([first, second]);
+    deepStrictEqual(portfolios[0], portfolios[1]);
+
+    freedom24Adapter.fetchPortfolio = () => {
+      requests++;
+      return Promise.reject(new Error("Temporary failure"));
+    };
+    await rejects(
+      fetchIntegrationPortfolio(db, integration),
+      /Temporary failure/,
+    );
+    freedom24Adapter.fetchPortfolio = () => {
+      requests++;
+      return Promise.resolve([position(integration)]);
+    };
+    equal((await fetchIntegrationPortfolio(db, integration)).length, 1);
+    equal(requests, 3);
+  } finally {
+    freedom24Adapter.fetchPortfolio = original;
+    db.close();
+  }
+});
 
 function position(integration: Integration): IntegrationPortfolioPosition {
   const id = integration.id;

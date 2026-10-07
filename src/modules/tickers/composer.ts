@@ -1032,7 +1032,7 @@ tickersComposer.command("dump_tickers", async (ctx) => {
   }
 });
 
-tickersComposer.command(["perf", "alltime"], async (ctx) => {
+tickersComposer.command(["perf", "alltime", "number", "allnumber"], async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
@@ -1063,7 +1063,8 @@ tickersComposer.command(["perf", "alltime"], async (ctx) => {
   }
 
   try {
-    const isAllTime = ctx.hasCommand("alltime");
+    const isAllTime = ctx.hasCommand(["alltime", "allnumber"]);
+    const numberOnly = ctx.hasCommand(["number", "allnumber"]);
     let performanceList: string;
     if (isAllTime) {
       const userId = ctx.dbEntities.user.userId;
@@ -1083,6 +1084,7 @@ tickersComposer.command(["perf", "alltime"], async (ctx) => {
         orders,
         transactionBuckets,
         bucketName,
+        numberOnly,
         ...preferences,
         formatTicker,
       });
@@ -1090,6 +1092,7 @@ tickersComposer.command(["perf", "alltime"], async (ctx) => {
       const positions = await fetchBucketedPositions(ctx, bucketName);
       performanceList = await buildIntegratedPerformanceList({
         positions,
+        numberOnly,
         ...preferences,
         formatTicker,
       });
@@ -1100,7 +1103,12 @@ tickersComposer.command(["perf", "alltime"], async (ctx) => {
       return;
     }
 
-    await replyPortfolioText(ctx, performanceList);
+    if (numberOnly) {
+      // Telegram limits parsed text; a single icon line can contain much more HTML.
+      await ctx.reply(performanceList, htmlReplyOptions);
+    } else {
+      await replyPortfolioText(ctx, performanceList);
+    }
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }

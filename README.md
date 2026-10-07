@@ -69,7 +69,7 @@ preserved. If any account fails, the command identifies it instead of displaying
 an incomplete total. Existing accounts and cached broker history are preserved
 by an automatic database migration on startup.
 
-`/stocks`, `/options`, `/perf`, `/sold`, `/alltime`, `/dpnl`, `/history`,
+`/stocks`, `/options`, `/perf`, `/number`, `/sold`, `/alltime`, `/allnumber`, `/dpnl`, `/history`,
 `/when`, bucket views and diagnostic dumps display USD amounts using the latest
 Frankfurter rates. Prices supplied to `/when` are USD. History prices and realized
 gains use the same current FX rates as holdings; FIFO matching and bucket shortcuts
@@ -94,6 +94,12 @@ FIFO gains from available order history. Percentages use their combined cost
 basis. Sold lots follow the bucket of their purchase transaction; unbucketed
 views exclude bucketed lots. Periods run from the earliest purchase to today for
 current holdings, or the final sale for fully sold holdings.
+
+Use `/number` or `/allnumber` for the same totals as `/perf` or `/alltime`
+in a compact format: available ticker icons on one line, a separator, and only
+the total dollar gain or loss. Icons are deduplicated; tickers without an icon
+are omitted from the icon line but still count toward the total. Both commands
+accept an optional bucket name.
 
 ## Portfolio chart
 
@@ -183,6 +189,14 @@ or the standard 100 multiplier for sold contracts (1 for NANOS).
 Zero option premiums are valid. Expired histories fetch only through expiry and
 remain cached permanently, without requesting unavailable current quotes.
 
+Verified corporate actions preserve purchase lots in `/chart` and `/alltime`:
+VSCO/VSCO.US joins VSXY/VSXY.US using Yahoo's combined VSXY history. APH option
+splits on June 12, 2024 and September 3, 2026 double contract quantities and halve
+strikes and unit costs. The chart stitches the predecessor strike's historical
+premiums into the adjusted contract, preserving original bucket assignments.
+A holding without matching purchases reports missing purchase history rather
+than suggesting an unrelated `/yahoo` mapping.
+
 If Yahoo cannot resolve an option or supply its purchase-date history, `/chart`
 can fall back to Databento's `OPRA.PILLAR` archive. Set `DATABENTO_API_KEY` (or
 `EYRI_DATABENTO_API_KEY`) in the bot environment to enable it. Stocks and ETFs
@@ -270,9 +284,9 @@ numbers, and underscores, and must start with a letter.
 
 Use `/bucket move NAME` to render order history with `/move_NAME_IDX` and
 `/remove_NAME_IDX` shortcuts. Moving a transaction puts it in that bucket and
-removes it from any other bucket. Unbucketed `/perf`, `/alltime`, `/stocks`, `/options`,
+removes it from any other bucket. Unbucketed `/perf`, `/number`, `/alltime`, `/allnumber`, `/stocks`, `/options`,
 `/dpnl`, and `/history` views exclude bucketed transactions; pass `NAME` to
-`/perf NAME`, `/alltime NAME`, `/stocks NAME`, `/options NAME`, `/dpnl NAME`, or `/history NAME`
+`/perf NAME`, `/number NAME`, `/alltime NAME`, `/allnumber NAME`, `/stocks NAME`, `/options NAME`, `/dpnl NAME`, or `/history NAME`
 to view a bucket.
 
 ## Restarting IB Gateway

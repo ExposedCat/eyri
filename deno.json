@@ -11,6 +11,9 @@
     "@db/sqlite": "jsr:@db/sqlite@^0.13.0",
     "@stoqey/ib": "npm:@stoqey/ib@1.5.5",
     "grammy": "https://deno.land/x/grammy/mod.ts",
+    "grammy_runner": "https://deno.land/x/grammy_runner@v2.0.3/mod.ts",
+    "https://lib.deno.dev/x/grammy@v1/mod.ts": "https://deno.land/x/grammy@v1.38.3/mod.ts",
+    "https://lib.deno.dev/x/grammy@v1/types.ts": "https://deno.land/x/grammy@v1.38.3/types.ts",
     "grammy_types": "https://deno.land/x/grammy_types/mod.ts"
   },
   "unstable": ["cron"]

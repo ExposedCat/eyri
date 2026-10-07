@@ -22,6 +22,8 @@ const DEFAULT_PATTERNS = [
 const DEFAULT_MAPPINGS: Record<string, string> = {
   "VUAA:USD": "VUAA.L",
   "SPYL:USD": "SPYL.L",
+  "VSCO:USD": "VSXY",
+  "VSCO.US:USD": "VSXY",
 };
 
 export function defaultYahooSymbols(

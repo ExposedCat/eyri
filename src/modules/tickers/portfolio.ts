@@ -10,7 +10,12 @@ import type {
   IntegrationPortfolioPosition,
 } from "../integrations/types.ts";
 import {
+  adjustOrderForCorporateActions,
+  currentStockTicker,
+} from "../market_data/corporate_actions.ts";
+import {
   formatDecoratedTicker,
+  formatTickerDecoration,
   type TickerDecorations,
   type TickerEmojiMappings,
   type TickerLabelLinks,
@@ -27,6 +32,7 @@ type BuildIntegratedTickerListArgs = {
   tickerLabelLinks?: TickerLabelLinks;
   tickerEmojiMappings?: TickerEmojiMappings;
   formatTicker?: (ticker: string) => string;
+  numberOnly?: boolean;
 };
 
 type BuildIntegratedHistoryArgs = {
@@ -153,6 +159,32 @@ function formatOptionStrike(strike: string) {
   return Number.isInteger(number)
     ? number.toFixed(0)
     : number.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function buildNumberSummary(
+  tickers: string[],
+  change: number | null,
+  tickerDecorations?: TickerDecorations,
+  tickerEmojiMappings?: TickerEmojiMappings,
+) {
+  const icons = new Set<string>();
+  for (const ticker of tickers) {
+    const key = (parseOptionTicker(ticker)?.underlying ?? ticker).trim()
+      .toUpperCase();
+    const decorations = tickerDecorations?.[key];
+    const fallback = tickerEmojiMappings?.[key];
+    const available = decorations?.length
+      ? decorations
+      : fallback ? [fallback] : [];
+    for (const decoration of available) {
+      icons.add(formatTickerDecoration(decoration));
+    }
+  }
+  return [
+    ...(icons.size > 0 ? [[...icons].join("")] : []),
+    GAINER_LOSER_SEPARATOR,
+    change === null ? "?" : formatMoneyChange(change),
+  ].join("\n");
 }
 
 function formatTickerName(
@@ -813,6 +845,7 @@ export async function buildIntegratedPerformanceList({
   tickerLabelLinks,
   tickerEmojiMappings,
   formatTicker,
+  numberOnly = false,
 }: BuildIntegratedTickerListArgs): Promise<string> {
   if (positions.length === 0) {
     return "";
@@ -825,6 +858,16 @@ export async function buildIntegratedPerformanceList({
       buildIntegratedPositionPerformance(position, now, priceOverrides)
     ),
   );
+
+  const totals = buildIntegratedPortfolioTotals(performances, now);
+  if (numberOnly) {
+    return buildNumberSummary(
+      performances.map((p) => p.position.ticker),
+      totals.totalChange,
+      tickerDecorations,
+      tickerEmojiMappings,
+    );
+  }
 
   const lines = buildSeparatedChangeLines(
     performances,
@@ -860,7 +903,6 @@ export async function buildIntegratedPerformanceList({
     },
   );
 
-  const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalLine =
     totals.totalChange === null || totals.totalPercentageChange === null
       ? `Total: ? ? (${totals.elapsedPeriod.label})`
@@ -950,7 +992,15 @@ export async function buildIntegratedAllTimePerformanceList({
   formatTicker,
   transactionBuckets,
   bucketName = null,
+  numberOnly = false,
 }: BuildIntegratedAllTimePerformanceArgs): Promise<string> {
+  const now = new Date();
+  const through = now.toISOString().slice(0, 10);
+  orders = orders.map((order) => adjustOrderForCorporateActions(order, through));
+  positions = positions.map((position) => ({
+    ...position,
+    ticker: currentStockTicker(position.ticker, position.currency),
+  }));
   const nativeSold = buildIntegratedSoldPerformances(
     orders,
     transactionBuckets,
@@ -963,7 +1013,6 @@ export async function buildIntegratedAllTimePerformanceList({
   positions = positions.map((p) => portfolioPositionInUsd(p, rates));
   const soldPerformances = soldPerformancesInUsd(nativeSold, rates);
 
-  const now = new Date();
   type Performance = {
     ticker: string;
     currency: string;
@@ -1036,6 +1085,22 @@ export async function buildIntegratedAllTimePerformanceList({
       (a.change ?? Number.NEGATIVE_INFINITY) ||
     a.ticker.localeCompare(b.ticker)
   );
+  const total = performances.reduce((total, next) => merge(total, next), {
+    ticker: "",
+    currency: performances[0].currency,
+    cost: 0,
+    change: 0,
+    openedAt: null,
+    endedAt: new Date(0),
+  } as Performance);
+  if (numberOnly) {
+    return buildNumberSummary(
+      performances.map((p) => p.ticker),
+      total.change,
+      tickerDecorations,
+      tickerEmojiMappings,
+    );
+  }
   const render = (name: string, performance: Performance) => {
     const elapsed = getElapsedPeriod(performance.openedAt, performance.endedAt);
     if (performance.cost === null || performance.change === null) {
@@ -1064,14 +1129,6 @@ export async function buildIntegratedAllTimePerformanceList({
         p,
       ),
   );
-  const total = performances.reduce((total, next) => merge(total, next), {
-    ticker: "",
-    currency: performances[0].currency,
-    cost: 0,
-    change: 0,
-    openedAt: null,
-    endedAt: new Date(0),
-  } as Performance);
   return [...lines, render("Total:", total)].join("\n\n");
 }
 

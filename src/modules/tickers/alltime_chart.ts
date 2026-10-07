@@ -6,6 +6,11 @@ import {
   HistoricalDataError,
 } from "../market_data/errors.ts";
 import { defaultYahooSymbols } from "../market_data/symbols.ts";
+import {
+  adjustOrderForCorporateActions,
+  currentStockTicker,
+  optionHistorySegments,
+} from "../market_data/corporate_actions.ts";
 import { readYahooMapping } from "../market_data/mappings.ts";
 import type {
   IntegrationOrder,
@@ -310,6 +315,17 @@ export async function loadAllTimeDataset(
   request: typeof fetch = fetch,
 ): Promise<AllTimeDataset> {
   ensureChartSchema(db);
+  const through = dateOf(args.now ?? new Date());
+  args = {
+    ...args,
+    orders: args.orders.map((order) =>
+      adjustOrderForCorporateActions(order, through)
+    ),
+    positions: args.positions.map((position) => ({
+      ...position,
+      ticker: currentStockTicker(position.ticker, position.currency),
+    })),
+  };
   const selected = selectedChartOrders(args);
   if (!selected.length) {
     throw new Error(
@@ -331,10 +347,18 @@ export async function loadAllTimeDataset(
   const relevant = args.orders.filter(isDisplayableOrder).filter((o) =>
     sources.has(instrumentKey(o))
   );
+  for (const [key, source] of sources) {
+    if (!relevant.some((o) => instrumentKey(o) === key && o.quantity > 0)) {
+      throw new Error(
+        `Purchase history is missing for ${source.ticker}. Check transfers and corporate actions.`,
+      );
+    }
+  }
   const histories = new Map<string, PriceHistory>();
   const entries = [...sources];
   const failures: FailedHistory[] = [];
   const symbols = new Map<string, string>();
+  const requestedSources = new Map<string, typeof entries[number][1]>();
   for (let i = 0; i < entries.length; i += 3) {
     const batch = entries.slice(i, i + 3);
     const results = await Promise.allSettled(
@@ -351,22 +375,57 @@ export async function loadAllTimeDataset(
         const end = held ? undefined : dayAfter(
           instrumentOrders.map((o) => dateOf(o.date)).sort().at(-1)!,
         );
-        const symbol = await cache.resolve(source, firstPurchase, userId, end);
-        symbols.set(key, symbol);
-        const history = await cache.get(
-          symbol,
+        const segments = optionHistorySegments(
+          source.ticker,
+          source.currency,
           dayAfter(firstPurchase, -7),
-          end,
-        );
-        if (!history.bars.length) {
-          throw new Error("No historical closing prices returned.");
+          end ?? dayAfter(through),
+          through,
+        ).filter((segment) => segment.end > firstPurchase);
+        let history: PriceHistory | undefined;
+        for (const segment of segments) {
+          const segmentSource = { ...source, ticker: segment.ticker };
+          requestedSources.set(key, segmentSource);
+          symbols.delete(key);
+          // Broker hints describe the current contract, not its predecessor.
+          if (segment.ticker !== source.ticker) {
+            delete segmentSource.yahooSymbol;
+          }
+          const symbol = await cache.resolve(
+            segmentSource,
+            segment.start <= firstPurchase ? firstPurchase : undefined,
+            userId,
+            segment.end,
+          );
+          symbols.set(key, symbol);
+          const part = await cache.get(symbol, segment.start, segment.end);
+          const bars = part.bars.filter((bar) =>
+            bar.date >= segment.start && bar.date < segment.end
+          ).map((bar) => ({ ...bar, close: bar.close * segment.priceFactor }));
+          if (!bars.length) {
+            throw new Error("No historical closing prices returned.");
+          }
+          if (history && history.currency !== part.currency) {
+            throw new Error("Historical contract currencies do not match.");
+          }
+          history = history
+            ? { ...history, bars: [...history.bars, ...bars] }
+            : {
+              ...part,
+              bars,
+            };
         }
+        if (!history) throw new Error("No historical closing prices returned.");
         histories.set(key, history);
       }),
     );
     for (const [index, result] of results.entries()) {
       if (result.status === "rejected") {
-        const source = batch[index][1];
+        const source = requestedSources.get(batch[index][0]) ?? batch[index][1];
+        console.error(
+          `Chart history failed for ${source.ticker} (${source.currency}):`,
+          result.reason,
+        );
         const symbol = symbols.get(batch[index][0]) ??
           readYahooMapping(db, userId, source.ticker) ??
           defaultYahooSymbols(source)[0] ?? source.ticker;

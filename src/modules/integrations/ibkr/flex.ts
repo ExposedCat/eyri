@@ -3,6 +3,7 @@ import {
   type Integration,
 } from "../../database/integration.ts";
 import type { Database } from "../../database/setup.ts";
+import { logFetch } from "../../../utils/fetch_logging.ts";
 import type { IntegrationOrder } from "../types.ts";
 import { type IbkrCredentials, parseIbkrCredentials } from "./credentials.ts";
 
@@ -150,19 +151,21 @@ function getXmlElements(xml: string, tagNames: string[]) {
 }
 
 async function fetchFlexXml(path: string, params: Record<string, string>) {
-  const url = new URL(`${FLEX_BASE_URL}${path}`);
-  for (const [key, value] of Object.entries(params)) {
-    url.searchParams.set(key, value);
-  }
+  return logFetch(`IBKR Flex ${path}`, async () => {
+    const url = new URL(`${FLEX_BASE_URL}${path}`);
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
+    }
 
-  const response = await fetch(url, {
-    headers: { "User-Agent": "eyri" },
+    const response = await fetch(url, {
+      headers: { "User-Agent": "eyri" },
+    });
+    if (!response.ok) {
+      throw new Error(`IBKR Flex request failed: ${response.status}`);
+    }
+
+    return await response.text();
   });
-  if (!response.ok) {
-    throw new Error(`IBKR Flex request failed: ${response.status}`);
-  }
-
-  return await response.text();
 }
 
 function formatFlexDate(date: Date) {

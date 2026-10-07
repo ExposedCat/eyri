@@ -1,4 +1,5 @@
 import type { Database } from "../database/setup.ts";
+import { logFetch } from "../../utils/fetch_logging.ts";
 import { defaultYahooSymbols, likelyYahooSymbols } from "./symbols.ts";
 import { readYahooMapping } from "./mappings.ts";
 import { yahooOptionContract } from "./options.ts";
@@ -42,17 +43,23 @@ export function ensureMarketDataSchema(db: Database) {
   `);
 }
 
-async function jsonRequest(url: string, request: typeof fetch) {
-  const response = await request(url, {
-    headers,
-    redirect: "error",
-    signal: AbortSignal.timeout(20_000),
-  });
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new Error(`Yahoo Finance returned HTTP ${response.status}.`);
-  }
-  return response.json();
+async function jsonRequest(
+  url: string,
+  request: typeof fetch,
+  operation = new URL(url).pathname,
+) {
+  return logFetch(`Yahoo ${operation}`, async () => {
+    const response = await request(url, {
+      headers,
+      redirect: "error",
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Yahoo Finance returned HTTP ${response.status}.`);
+    }
+    return await response.json();
+  }, (data) => data?.chart?.result?.[0]?.timestamp?.length ?? data?.quotes?.length);
 }
 
 function tradingDate(timestamp: number, timezone: string) {
@@ -79,7 +86,9 @@ export async function fetchYahooHistory(
   url.searchParams.set("period2", String(Date.parse(end) / 1000));
   url.searchParams.set("interval", "1d");
   url.searchParams.set("events", "splits");
-  const data = await jsonRequest(String(url), request);
+  const data = await jsonRequest(
+    String(url), request, `history ${symbol} ${start}..${end}`,
+  );
   const result = data?.chart?.result?.[0];
   if (
     data?.chart?.error || !result?.meta?.currency ||

@@ -15,6 +15,7 @@ import type {
 } from "../types.ts";
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
 import { readFlexOrders } from "./flex.ts";
+import { logFetch } from "../../../utils/fetch_logging.ts";
 
 const EXECUTION_SYNC_INTERVAL_MS = 15 * 1000;
 const EXECUTION_CLIENT_ID_OFFSET = 1000;
@@ -391,25 +392,27 @@ async function syncIntegrationExecutions(
   database: Database,
   integration: Integration,
 ) {
-  const { config } = getConnectionConfig(integration);
-  const executionConfig = {
-    ...config,
-    clientId: config.clientId + EXECUTION_CLIENT_ID_OFFSET,
-  };
-  const api = await connect(executionConfig);
+  return logFetch(`IBKR execution sync integration=${integration.id}`, async () => {
+    const { config } = getConnectionConfig(integration);
+    const executionConfig = {
+      ...config,
+      clientId: config.clientId + EXECUTION_CLIENT_ID_OFFSET,
+    };
+    const api = await connect(executionConfig);
 
-  try {
-    const accountId = await getManagedAccount(api, executionConfig);
-    const orders = await fetchTodayExecutions(
-      api,
-      integration,
-      accountId,
-      executionConfig,
-    );
-    writeExecutionOrders(database, integration, orders);
-  } finally {
-    api.disconnect();
-  }
+    try {
+      const accountId = await getManagedAccount(api, executionConfig);
+      const orders = await fetchTodayExecutions(
+        api,
+        integration,
+        accountId,
+        executionConfig,
+      );
+      writeExecutionOrders(database, integration, orders);
+    } finally {
+      api.disconnect();
+    }
+  });
 }
 
 function toPortfolioPosition(

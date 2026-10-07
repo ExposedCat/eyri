@@ -1,4 +1,5 @@
 import { InputFile, type Api } from "grammy";
+import { logFetch } from "../../utils/fetch_logging.ts";
 import type { Database } from "../database/setup.ts";
 import { getAllIntegrations } from "../database/integration.ts";
 import { fetchIntegrationOrderHistory } from "../integrations/service.ts";
@@ -318,12 +319,17 @@ async function uploadTickerIcon({
   const errors: string[] = [];
   for (const source of getIconSources(iconTicker)) {
     try {
-      const response = await fetch(source.url);
-      if (!response.ok) {
-        throw new Error(`${response.status} ${response.statusText}`);
-      }
+      const iconBytes = await logFetch(
+        `Icon ${source.name} ticker=${ticker}`,
+        async () => {
+          const response = await fetch(source.url);
+          if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`);
+          }
 
-      const iconBytes = new Uint8Array(await response.arrayBuffer());
+          return new Uint8Array(await response.arrayBuffer());
+        },
+      );
       const uploaded = await api.uploadStickerFile(
         ownerUserId,
         "static",
