@@ -130,7 +130,9 @@ export function isOptionTicker(ticker: string) {
 }
 
 export function isOptionPosition(position: IntegrationPortfolioPosition) {
-  return isOptionTicker(position.ticker);
+  const category = position.assetCategory?.trim().toUpperCase();
+  return isOptionTicker(position.ticker) || category === "OPT" ||
+    category === "WAR";
 }
 
 export function isStockPosition(position: IntegrationPortfolioPosition) {
@@ -1488,6 +1490,9 @@ export function buildBucketedPortfolioPositions({
         integrationKind: draft.integrationKind,
         account: [...draft.accounts].join(", ") || livePosition?.account || "",
         ticker: draft.ticker,
+        ...(livePosition.assetCategory !== undefined
+          ? { assetCategory: livePosition.assetCategory }
+          : {}),
         amount: draft.amount,
         averageUnitPrice: draft.totalInput / draft.amount,
         currentPrice,

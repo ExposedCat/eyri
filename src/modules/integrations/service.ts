@@ -64,6 +64,9 @@ function mergePosition(
 
   return {
     ...current,
+    ...(current.assetCategory == null && next.assetCategory != null
+      ? { assetCategory: next.assetCategory }
+      : {}),
     account: [current.account, next.account]
       .filter(Boolean)
       .filter((value, index, list) => list.indexOf(value) === index)

@@ -6,6 +6,7 @@ export type IntegrationPortfolioPosition = {
   integrationKind: string;
   account: string;
   ticker: string;
+  assetCategory?: string | null;
   amount: number;
   averageUnitPrice: number | null;
   currentPrice: number | null;

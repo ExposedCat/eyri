@@ -443,6 +443,7 @@ function toPortfolioPosition(
     integrationKind: integration.kind,
     account: accountName ?? "",
     ticker: getTicker(contract),
+    assetCategory: contract.secType ?? null,
     amount,
     averageUnitPrice,
     currentPrice: resolvedCurrentPrice,

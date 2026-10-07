@@ -60,7 +60,7 @@ const botCommands = [
   { command: "rsu", description: "Show or record RSU vesting" },
   { command: "rsu_rm", description: "Remove RSU awards for a ticker" },
   { command: "rsu_at", description: "Show RSUs with a vesting cutoff date" },
-  { command: "options", description: "Show option performance" },
+  { command: "options", description: "Show option and warrant performance" },
   { command: "perf", description: "Show concise performance" },
   { command: "number", description: "Show ticker icons and current total gain" },
   {

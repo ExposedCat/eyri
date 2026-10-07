@@ -13,6 +13,8 @@ import {
   buildIntegratedSoldPerformanceList,
   buildIntegratedTickerList,
   getOrderTransactionKey,
+  isOptionPosition,
+  isStockPosition,
 } from "./portfolio.ts";
 
 const formatTicker = (ticker: string) => ticker.toUpperCase();
@@ -75,6 +77,26 @@ const numberPreferences = {
   tickerLabelLinks: { AAPL: "AAPL:NASDAQ" },
 };
 const renderedAppleIcon = '<tg-emoji emoji-id="apple">🍎</tg-emoji>';
+
+Deno.test("options include warrants and preserve their category through bucket allocation", () => {
+  const warrant = position({ ticker: "VY8GR5", assetCategory: "WAR" });
+  const buy = { ...order("VY8GR5", 6, 100, "2025-01-01"), assetCategory: "WAR" };
+  const bucketed = buildBucketedPortfolioPositions({
+    orders: [buy],
+    livePositions: [warrant],
+    transactionBuckets: new Map([[getOrderTransactionKey(buy), "minion"]]),
+    bucketName: "minion",
+  });
+  equal(bucketed.length, 1);
+  equal(bucketed[0].assetCategory, "WAR");
+  for (const holding of [warrant, bucketed[0]]) {
+    equal(isOptionPosition(holding), true);
+    equal(isStockPosition(holding), false);
+  }
+  equal(isOptionPosition(position({ ticker: "+AAPL.19DEC2025.C150" })), true);
+  equal(isOptionPosition(position({ ticker: "AAPL", assetCategory: "STK" })), false);
+  equal(isStockPosition(position()), true);
+});
 
 Deno.test("number renders unique available icons including option underlyings and only the perf dollar total", async () => {
   const output = await buildIntegratedPerformanceList({
