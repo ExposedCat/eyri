@@ -1,5 +1,25 @@
 import { logFetch } from "./fetch_logging.ts";
 
+// Returned factors convert native amounts to the requested reporting currency.
+export async function fetchConversionRates(
+	currencies: string[],
+	currency = "USD",
+	request: typeof fetch = fetch,
+): Promise<Map<string, number>> {
+	if (!currencies.length) return new Map();
+	const target = currency.trim().toUpperCase();
+	const rates = await fetchUsdConversionRates([...currencies, target], request);
+	const targetRate = rates.get(target)!;
+	return new Map(currencies.map((source) => {
+		const code = source.trim().toUpperCase();
+		const factor = rates.get(code)! / targetRate;
+		if (!Number.isFinite(factor) || factor <= 0) {
+			throw new Error(`Conversion unavailable for ${code} to ${target}.`);
+		}
+		return [code, factor];
+	}));
+}
+
 // Returned factors convert one unit of each requested currency into USD.
 export async function fetchUsdConversionRates(
 	currencies: string[],

@@ -2,15 +2,17 @@ import type { Database } from "./setup.ts";
 
 export type User = {
   userId: number;
+  currency?: string | null;
 };
 
 type UserRow = {
   user_id: number;
+  currency: string | null;
 };
 
 function readUser(database: Database, userId: number): User | null {
   const row = database
-    .prepare("SELECT user_id FROM users WHERE user_id = ?")
+    .prepare("SELECT user_id, currency FROM users WHERE user_id = ?")
     .get(userId) as UserRow | undefined;
 
   if (!row) {
@@ -19,7 +21,13 @@ function readUser(database: Database, userId: number): User | null {
 
   return {
     userId: row.user_id,
+    currency: row.currency,
   };
+}
+
+export function setUserCurrency(database: Database, userId: number, currency: string | null) {
+  database.prepare("UPDATE users SET currency = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?")
+    .run(currency, userId);
 }
 
 export async function findOrCreateUser(

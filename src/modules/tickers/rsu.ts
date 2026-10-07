@@ -143,11 +143,11 @@ export function getRsuView(awards: RsuAward[], now: Date, cutoff?: string) {
 	};
 }
 
-function formatRsuValue(value: number | undefined, cost: number) {
+function formatRsuValue(value: number | undefined, cost: number, currency: string, displayRate: number) {
 	if (value === undefined) return "? (? ?)";
 	const change = value - cost;
 	const percentage = cost === 0 ? 0 : change / cost * 100;
-	return `${formatMoney(value)} (${formatMoneyChange(change)} ${
+	return `${formatMoney(value * displayRate, currency)} (${formatMoneyChange(change * displayRate, "$", 2, currency)} ${
 		formatMoneyChange(percentage, "%")
 	})`;
 }
@@ -158,6 +158,8 @@ export function buildRsuSummary(
 	prices: Map<string, number>,
 	start: string,
 	end: string,
+	currency = "USD",
+	displayRate = 1,
 ) {
 	let value = 0;
 	let cost = 0;
@@ -169,7 +171,7 @@ export function buildRsuSummary(
 		cost += vesting.amount * vesting.awardPrice;
 	}
 	return `${label}: ${
-		formatRsuValue(complete ? value : undefined, cost)
+		formatRsuValue(complete ? value : undefined, cost, currency, displayRate)
 	} over ${formatRsuDuration(start, end)}`;
 }
 
@@ -178,6 +180,8 @@ export function buildRsuGroups(
 	prices: Map<string, number>,
 	formatTicker: (ticker: string) => string,
 	now: Date,
+	currency = "USD",
+	displayRate = 1,
 ) {
 	const dates = new Map<
 		string,
@@ -196,7 +200,7 @@ export function buildRsuGroups(
 			const price = prices.get(ticker);
 			const name = formatTicker(ticker);
 			return `${name} ${
-				formatRsuValue(price === undefined ? undefined : amount * price, cost)
+				formatRsuValue(price === undefined ? undefined : amount * price, cost, currency, displayRate)
 			}`;
 		});
 		return `${date.split("-").reverse().join(".")} (${

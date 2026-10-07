@@ -19,6 +19,8 @@ import type {
 import {
   buildIntegratedPerformanceList,
   buildIntegratedSoldPerformanceList,
+  buildBucketedPortfolioPositions,
+  getOrderTransactionKey,
 } from "../tickers/portfolio.ts";
 
 Deno.test("concurrent reports share a pending portfolio fetch and retry after failure", async () => {
@@ -94,6 +96,93 @@ function position(integration: Integration): IntegrationPortfolioPosition {
   };
 }
 
+Deno.test("integrated portfolios refresh Vontobel warrants before merging and bucket calculations", async () => {
+  const db = new Database(":memory:");
+  const originalPortfolio = ibkrAdapter.fetchPortfolio;
+  const originalFetch = globalThis.fetch;
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    const saved = createIntegration({
+      database: db,
+      userId: 1,
+      kind: "ibkr",
+      credentials: {},
+    });
+    ok(saved.data);
+    const integration = saved.data;
+    const raw = position(integration);
+    Object.assign(raw, {
+      ticker: "VY8GR5",
+      assetCategory: "WAR",
+      currency: "EUR",
+      amount: 1042,
+      currentPrice: .4343,
+      totalNow: 452.54,
+      averageUnitPrice: .49383875,
+      totalInput: 514.5799775,
+    });
+    const original = structuredClone(raw);
+    ibkrAdapter.fetchPortfolio = () => Promise.resolve([raw]);
+    globalThis.fetch = async (input) => {
+      ok(String(input).includes("productdetailpage/DE000VY8GR55"));
+      return Response.json({
+        isSuccess: true,
+        payload: {
+          data: {
+            isin: "DE000VY8GR55",
+            currency: "EUR",
+            issuer: "Vontobel",
+            productType: 3,
+          },
+          priceFactor: 1,
+          price: {
+            bid: .50,
+            currency: "EUR",
+            isPercentPrice: false,
+            latestTimestamp: "2026-10-07T19:56:36Z",
+          },
+        },
+      });
+    };
+    const [updated] = await fetchIntegratedPortfolio(db, 1);
+    equal(updated.currentPrice, .50);
+    equal(updated.totalNow, 521);
+    equal(updated.totalInput, original.totalInput);
+    equal(updated.currency, "EUR");
+    deepStrictEqual(raw, original);
+    const buy: IntegrationOrder = {
+      integrationId: integration.id,
+      integrationKind: integration.kind,
+      account: updated.account,
+      ticker: updated.ticker,
+      currency: "EUR",
+      assetCategory: "WAR",
+      quantity: 1042,
+      price: .49,
+      date: new Date("2026-10-07"),
+    };
+    const [bucketed] = buildBucketedPortfolioPositions({
+      orders: [buy],
+      livePositions: [updated],
+      bucketName: "Core",
+      transactionBuckets: new Map([[getOrderTransactionKey(buy), "Core"]]),
+    });
+    equal(bucketed.currency, "EUR");
+    equal(bucketed.currentPrice, .50);
+    equal(bucketed.totalNow, 521);
+    globalThis.fetch = async () => new Response(null, { status: 503 });
+    await rejects(
+      fetchIntegratedPortfolio(db, 1),
+      /Vontobel bid quote unavailable/,
+    );
+  } finally {
+    ibkrAdapter.fetchPortfolio = originalPortfolio;
+    globalThis.fetch = originalFetch;
+    db.close();
+  }
+});
+
 function orders(integration: Integration): IntegrationOrder[] {
   const base = {
     integrationId: integration.id,
@@ -119,6 +208,7 @@ function orders(integration: Integration): IntegrationOrder[] {
     },
   ];
 }
+
 
 Deno.test("2 Freedom24 + 2 IBKR accounts fetch independently and aggregate holdings and history", async () => {
   const db = new Database(":memory:");

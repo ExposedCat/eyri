@@ -32,6 +32,18 @@ function position(
 	};
 }
 
+Deno.test("portfolio chart uses preferred currency for values and gains with unchanged weights and returns", async () => {
+  const positions = [position("US", 100, 80), position("EU", 80, 40, { currency: "EUR" })];
+  const request: typeof fetch = async () => Response.json({ base: "USD", quote: "EUR", rate: .8 });
+  const usd = await buildPortfolioChart(positions, request);
+  const eur = await buildPortfolioChart(positions, request, "EUR");
+  ok(usd); ok(eur);
+  equal(eur.total, "160.00 EUR");
+  deepStrictEqual(eur.holdings.map((h) => [h.weight, h.returnLabel]), usd.holdings.map((h) => [h.weight, h.returnLabel]));
+  equal(eur.holdings[0].value, "80 EUR");
+  equal(eur.holdings[0].changeLabel, "+16.00 EUR");
+});
+
 Deno.test("portfolio chart sorts by share and measures gain or loss against purchase cost", async () => {
 	const chart = await buildPortfolioChart([
 		position("AAPL", 17000, 15000),

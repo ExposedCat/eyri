@@ -1,5 +1,5 @@
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
-import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
+import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { isStockPosition } from "./portfolio.ts";
 
@@ -19,12 +19,14 @@ export type PortfolioChart = {
 export async function buildPortfolioChart(
 	positions: IntegrationPortfolioPosition[],
 	request: typeof fetch = fetch,
+	currency = "USD",
 ): Promise<PortfolioChart | null> {
 	const stocks = positions.filter((position) =>
 		isStockPosition(position) && position.amount !== 0
 	);
-	const conversionRates = await fetchUsdConversionRates(
+	const conversionRates = await fetchConversionRates(
 		stocks.map((position) => position.currency),
+		currency,
 		request,
 	);
 	const entries = new Map<
@@ -87,16 +89,16 @@ export async function buildPortfolioChart(
 	if (grossValue === 0) return null;
 	const total = holdings.reduce((sum, [, holding]) => sum + holding.value, 0);
 	return {
-		total: formatMoney(total),
+		total: formatMoney(total, currency),
 		holdingsCount: holdings.length,
 		holdings: holdings.map(([ticker, holding]) => ({
 			ticker,
 			weight: Math.abs(holding.value) / grossValue * 100,
-			value: formatMoney(holding.value, "USD", 0),
+			value: formatMoney(holding.value, currency, 0),
 			change: holding.change,
 			changeLabel: holding.change === null
 				? "?"
-				: formatMoneyChange(holding.change),
+				: formatMoneyChange(holding.change, "$", 2, currency),
 			returnLabel:
 				holding.change === null || holding.cost === null || holding.cost === 0
 					? "?"

@@ -10,7 +10,7 @@ export type TickerDecoration = {
 
 export type TickerDecorations = Record<string, TickerDecoration[]>;
 export type TickerLabelPreferences = Record<string, string | false>;
-export type TickerLabelLinks = Record<string, string>;
+export type TickerLabelLinks = Record<string, string | false>;
 export type TickerEmojiMappings = Record<string, TickerDecoration>;
 
 type TickerDecorationRow = {
@@ -299,12 +299,16 @@ function migrateTickerDecorationsTable(db: Database) {
     createTickerDecorationsTable(db);
     // Keep the newest complete set for each ticker, never mix different users' sets.
     db.exec(`
-      ${hasUserId ? `WITH sets AS (
+      ${
+        hasUserId
+          ? `WITH sets AS (
         SELECT ticker, user_id, ROW_NUMBER() OVER (
           PARTITION BY ticker ORDER BY MAX(updated_at) DESC, user_id DESC
         ) AS rank
         FROM ticker_decorations_old GROUP BY ticker, user_id
-      )` : ""}
+      )`
+          : ""
+      }
       INSERT INTO ticker_decorations (
         ticker, emoji_index, tg_emoji, emoji_text, is_custom_emoji,
         created_at, updated_at
@@ -313,8 +317,12 @@ function migrateTickerDecorationsTable(db: Database) {
         old.tg_emoji, old.emoji_text, old.is_custom_emoji,
         old.created_at, old.updated_at
       FROM ticker_decorations_old old
-      ${hasUserId ? `JOIN sets ON sets.ticker = old.ticker
-        AND sets.user_id = old.user_id AND sets.rank = 1` : ""};
+      ${
+        hasUserId
+          ? `JOIN sets ON sets.ticker = old.ticker
+        AND sets.user_id = old.user_id AND sets.rank = 1`
+          : ""
+      };
       DROP TABLE ticker_decorations_old;
     `);
   })();
@@ -339,6 +347,43 @@ export function ensureTickerDisplaySchema(db: Database) {
     migrateTickerLabelLinksTable(db);
   }
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticker_decoration_overrides (
+      user_id TEXT NOT NULL,
+      ticker TEXT NOT NULL,
+      emoji_index INTEGER NOT NULL,
+      tg_emoji TEXT NOT NULL,
+      emoji_text TEXT NOT NULL,
+      is_custom_emoji INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (user_id, ticker, emoji_index)
+    )
+  `);
+
+  if (!tableExists(db, "ticker_display_defaults")) {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE ticker_display_defaults (
+          ticker TEXT NOT NULL,
+          preference TEXT NOT NULL CHECK (preference IN ('label', 'link')),
+          value TEXT NOT NULL,
+          PRIMARY KEY (ticker, preference)
+        );
+        INSERT INTO ticker_display_defaults (ticker, preference, value)
+        SELECT ticker, 'label', label FROM (
+          SELECT ticker, label, ROW_NUMBER() OVER (
+            PARTITION BY ticker ORDER BY updated_at DESC, user_id DESC
+          ) AS rank FROM ticker_label_preferences
+        ) WHERE rank = 1;
+        INSERT INTO ticker_display_defaults (ticker, preference, value)
+        SELECT ticker, 'link', tag FROM (
+          SELECT ticker, tag, ROW_NUMBER() OVER (
+            PARTITION BY ticker ORDER BY updated_at DESC, user_id DESC
+          ) AS rank FROM ticker_label_links
+        ) WHERE rank = 1;
+      `);
+    })();
+  }
+
   if (!tableExists(db, "ticker_emoji_packs")) {
     createTickerEmojiPacksTable(db);
   }
@@ -348,16 +393,25 @@ export function ensureTickerDisplaySchema(db: Database) {
   }
 }
 
-export async function readTickerDecorations(): Promise<TickerDecorations> {
+export async function readTickerDecorations(
+  userId: string | number,
+): Promise<TickerDecorations> {
   const db = await getDatabase();
   ensureTickerDisplaySchema(db);
   const rows = db
     .prepare(`
       SELECT ticker, emoji_index, tg_emoji, emoji_text, is_custom_emoji
       FROM ticker_decorations
+      WHERE NOT EXISTS (
+        SELECT 1 FROM ticker_decoration_overrides
+        WHERE user_id = ? AND ticker = ticker_decorations.ticker
+      )
+      UNION ALL
+      SELECT ticker, emoji_index, tg_emoji, emoji_text, is_custom_emoji
+      FROM ticker_decoration_overrides WHERE user_id = ?
       ORDER BY ticker, emoji_index
     `)
-    .all() as TickerDecorationRow[];
+    .all(String(userId), String(userId)) as TickerDecorationRow[];
 
   const decorations: TickerDecorations = {};
   for (const row of rows) {
@@ -373,31 +427,46 @@ export async function readTickerDecorations(): Promise<TickerDecorations> {
 }
 
 export async function setTickerDecoration(
+  userId: string | number,
   ticker: string,
   decorations: TickerDecoration[],
 ) {
   const db = await getDatabase();
   ensureTickerDisplaySchema(db);
   const normalizedTicker = normalizeTicker(ticker);
+  if (decorations.length === 0) {
+    throw new Error("At least one ticker decoration is required");
+  }
 
-  db.exec("BEGIN");
-  try {
-    db.prepare(`
-      DELETE FROM ticker_decorations
-      WHERE ticker = ?
-    `).run(normalizedTicker);
+  return db.transaction(() => {
+    const hasGlobal = Boolean(
+      db
+        .prepare(`
+          SELECT 1 FROM ticker_decorations WHERE ticker = ?
+          UNION ALL
+          SELECT 1 FROM ticker_emoji_mappings WHERE ticker = ?
+        `)
+        .get(normalizedTicker, normalizedTicker),
+    );
+    if (hasGlobal) {
+      db.prepare(`
+        DELETE FROM ticker_decoration_overrides WHERE user_id = ? AND ticker = ?
+      `).run(String(userId), normalizedTicker);
+    }
 
     const insertDecoration = db.prepare(`
-      INSERT INTO ticker_decorations (
+      INSERT INTO ${hasGlobal ? "ticker_decoration_overrides" : "ticker_decorations"} (
+        ${hasGlobal ? "user_id," : ""}
         ticker,
         emoji_index,
         tg_emoji,
         emoji_text,
         is_custom_emoji
-      ) VALUES (?, ?, ?, ?, ?)
+      ) VALUES (${hasGlobal ? "?," : ""} ?, ?, ?, ?, ?)
     `);
     decorations.forEach((decoration, index) => {
       insertDecoration.run(
+        ...(hasGlobal ? [String(userId)] : []),
         normalizedTicker,
         index,
         decoration.tgEmoji,
@@ -406,11 +475,41 @@ export async function setTickerDecoration(
       );
     });
 
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+    return hasGlobal ? ("personal" as const) : ("global" as const);
+  })();
+}
+
+function setTickerDisplayValue(
+  db: Database,
+  userId: string | number,
+  ticker: string,
+  preference: "label" | "link",
+  value: string | false,
+) {
+  const normalizedTicker = normalizeTicker(ticker);
+  const storedValue = value === false ? "false" : value;
+  return db.transaction(() => {
+    const created = db
+      .prepare(`
+      INSERT INTO ticker_display_defaults (ticker, preference, value)
+      VALUES (?, ?, ?) ON CONFLICT(ticker, preference) DO NOTHING
+      RETURNING ticker
+    `)
+      .get(normalizedTicker, preference, storedValue);
+    if (created) return "global" as const;
+
+    const table =
+      preference === "label"
+        ? "ticker_label_preferences"
+        : "ticker_label_links";
+    const column = preference === "label" ? "label" : "tag";
+    db.prepare(`
+      INSERT INTO ${table} (user_id, ticker, ${column}) VALUES (?, ?, ?)
+      ON CONFLICT(user_id, ticker) DO UPDATE SET
+        ${column} = excluded.${column}, updated_at = CURRENT_TIMESTAMP
+    `).run(String(userId), normalizedTicker, storedValue);
+    return "personal" as const;
+  })();
 }
 
 export async function readTickerLabelPreferences(
@@ -421,10 +520,15 @@ export async function readTickerLabelPreferences(
   const rows = db
     .prepare(`
       SELECT ticker, label
-      FROM ticker_label_preferences
-      WHERE user_id = ?
+      FROM ticker_label_preferences WHERE user_id = ?
+      UNION ALL
+      SELECT ticker, value AS label FROM ticker_display_defaults
+      WHERE preference = 'label' AND NOT EXISTS (
+        SELECT 1 FROM ticker_label_preferences
+        WHERE user_id = ? AND ticker = ticker_display_defaults.ticker
+      )
     `)
-    .all(String(userId)) as TickerLabelPreferenceRow[];
+    .all(String(userId), String(userId)) as TickerLabelPreferenceRow[];
 
   return Object.fromEntries(
     rows.map((row) => [
@@ -441,20 +545,7 @@ export async function setTickerLabelPreference(
 ) {
   const db = await getDatabase();
   ensureTickerDisplaySchema(db);
-  db.prepare(`
-    INSERT INTO ticker_label_preferences (
-      user_id,
-      ticker,
-      label
-    ) VALUES (?, ?, ?)
-    ON CONFLICT(user_id, ticker) DO UPDATE SET
-      label = excluded.label,
-      updated_at = CURRENT_TIMESTAMP
-  `).run(
-    String(userId),
-    normalizeTicker(ticker),
-    label === false ? "false" : label,
-  );
+  return setTickerDisplayValue(db, userId, ticker, "label", label);
 }
 
 export async function readTickerLabelLinks(
@@ -465,13 +556,21 @@ export async function readTickerLabelLinks(
   const rows = db
     .prepare(`
       SELECT ticker, tag
-      FROM ticker_label_links
-      WHERE user_id = ?
+      FROM ticker_label_links WHERE user_id = ?
+      UNION ALL
+      SELECT ticker, value AS tag FROM ticker_display_defaults
+      WHERE preference = 'link' AND NOT EXISTS (
+        SELECT 1 FROM ticker_label_links
+        WHERE user_id = ? AND ticker = ticker_display_defaults.ticker
+      )
     `)
-    .all(String(userId)) as TickerLabelLinkRow[];
+    .all(String(userId), String(userId)) as TickerLabelLinkRow[];
 
   return Object.fromEntries(
-    rows.map((row) => [normalizeTicker(row.ticker), row.tag]),
+    rows.map((row) => [
+      normalizeTicker(row.ticker),
+      row.tag === "false" ? false : row.tag,
+    ]),
   );
 }
 
@@ -504,27 +603,7 @@ export async function setTickerLabelLink(
 ) {
   const db = await getDatabase();
   ensureTickerDisplaySchema(db);
-  const normalizedUserId = String(userId);
-  const normalizedTicker = normalizeTicker(ticker);
-
-  if (tag === false) {
-    db.prepare(`
-      DELETE FROM ticker_label_links
-      WHERE user_id = ? AND ticker = ?
-    `).run(normalizedUserId, normalizedTicker);
-    return;
-  }
-
-  db.prepare(`
-    INSERT INTO ticker_label_links (
-      user_id,
-      ticker,
-      tag
-    ) VALUES (?, ?, ?)
-    ON CONFLICT(user_id, ticker) DO UPDATE SET
-      tag = excluded.tag,
-      updated_at = CURRENT_TIMESTAMP
-  `).run(normalizedUserId, normalizedTicker, tag);
+  return setTickerDisplayValue(db, userId, ticker, "link", tag);
 }
 
 export function escapeHtml(value: string) {
@@ -582,11 +661,11 @@ export function formatDecoratedTicker(
   const normalizedTicker = normalizeTicker(ticker);
   const labelPreference = labelPreferences?.[normalizedTicker];
   const label = labelPreference === false ? null : (labelPreference ?? ticker);
+  const linkPreference = labelLinks?.[normalizedTicker];
   const linkTag =
-    label === null
+    label === null || linkPreference === false
       ? undefined
-      : (labelLinks?.[normalizedTicker] ??
-        getDefaultTickerLabelLink(normalizedTicker));
+      : (linkPreference ?? getDefaultTickerLabelLink(normalizedTicker));
   const tickerDecorations = decorations?.[normalizedTicker];
   const decorated =
     tickerDecorations && tickerDecorations.length > 0

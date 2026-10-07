@@ -1,5 +1,17 @@
 import { deepStrictEqual, equal, ok, rejects } from "node:assert/strict";
-import { fetchUsdConversionRates } from "./exchange_rates.ts";
+import { fetchConversionRates, fetchUsdConversionRates } from "./exchange_rates.ts";
+
+Deno.test("report conversion handles cross rates and pence as source or target", async () => {
+  const request: typeof fetch = async (input) => {
+    const quote = String(input).split("/").at(-1)!.toUpperCase();
+    return Response.json({ base: "USD", quote, rate: quote === "EUR" ? .8 : .5 });
+  };
+  deepStrictEqual(await fetchConversionRates(["USD", "EUR", "GBP", "GBX"], "EUR", request),
+    new Map([["USD", .8], ["EUR", 1], ["GBP", 1.6], ["GBX", .016]]));
+  deepStrictEqual(await fetchConversionRates(["USD", "GBP", "GBX"], "GBX", request),
+    new Map([["USD", 50], ["GBP", 100], ["GBX", 1]]));
+  await rejects(fetchConversionRates(["USD"], "EUR", async () => new Response(null, { status: 503 })), /EUR/);
+});
 
 Deno.test("USD conversion needs no exchange-rate request", async () => {
 	const noFetch: typeof fetch = () => {

@@ -90,6 +90,10 @@ export function ensureSchema(database: Database) {
         REFERENCES portfolio_buckets(user_id, name) ON DELETE CASCADE
     );
   `);
+  const userColumns = database.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+  if (!userColumns.some((column) => column.name === "currency")) {
+    database.exec("ALTER TABLE users ADD COLUMN currency TEXT");
+  }
   migrateIntegrations(database);
   migrateIntegrationSetup(database);
 }

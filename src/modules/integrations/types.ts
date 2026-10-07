@@ -12,6 +12,8 @@ export type IntegrationPortfolioPosition = {
   amount: number;
   averageUnitPrice: number | null;
   currentPrice: number | null;
+  currentPriceSource?: string;
+  currentPriceAsOf?: string;
   currency: string;
   totalInput: number | null;
   totalNow: number | null;

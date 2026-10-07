@@ -7,6 +7,7 @@ import { logFetch } from "../../utils/fetch_logging.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
 import { trading212Adapter } from "./trading212/adapter.ts";
+import { enrichPortfolioWithVontobelQuotes } from "../market_data/vontobel.ts";
 import type {
   IntegrationAdapter,
   IntegrationPortfolioPosition,
@@ -191,7 +192,9 @@ export function fetchIntegrationPortfolio(
   const request = Promise.resolve().then(() =>
     logFetch(
       `${integration.kind} portfolio integration=${integration.id}`,
-      () => getAdapter(integration).fetchPortfolio(database, integration),
+      async () => enrichPortfolioWithVontobelQuotes(
+        await getAdapter(integration).fetchPortfolio(database, integration),
+      ),
     )
   ).finally(() => pending.delete(key));
   pending.set(key, request);

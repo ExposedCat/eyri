@@ -37,6 +37,9 @@ export type AllTimeDataset = {
   label: string;
   bucketName: string | null;
   points: AllTimePoint[];
+  // Points remain USD snapshots; only single-chart monetary labels use these.
+  displayCurrency?: string;
+  displayRate?: number;
 };
 type Args = {
   positions: IntegrationPortfolioPosition[];
@@ -526,7 +529,7 @@ export async function renderAllTimeChart(
   datasets: AllTimeDataset[],
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  const key = await hash({ version: 2, datasets });
+  const key = await hash({ version: 3, datasets });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;

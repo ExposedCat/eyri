@@ -78,6 +78,24 @@ const numberPreferences = {
 };
 const renderedAppleIcon = '<tg-emoji emoji-id="apple">🍎</tg-emoji>';
 
+Deno.test("all monetary reports use preferred currency and normalize target prices before native calculations", async () => {
+  const positions = [position({ dailyPnl: 10, dailyPnlPercentage: 2, dailyPnlBaseline: 500 })];
+  const orders = [order("AAPL", 10, 100, "2025-01-01"), order("AAPL", -4, 150, "2025-06-01")];
+  const args = { positions, orders, currency: "EUR", request: fxRequest, formatTicker };
+  for (const report of [buildIntegratedTickerList, buildIntegratedPerformanceList, buildIntegratedAllTimePerformanceList, buildIntegratedSoldPerformanceList, buildIntegratedDailyPerformanceList, buildIntegratedHistory]) {
+    const text = await report(args);
+    match(text, / EUR/);
+    ok(!text.includes("$"), text);
+  }
+  match(await buildIntegratedPerformanceList(args), /\+20.00% \+96.00 EUR/);
+  match(await buildIntegratedPerformanceList({ ...args, showCurrentValue: true, numberOnly: true }), /576.00 EUR/);
+  match(await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true }), /256.00 EUR/);
+  match(await buildIntegratedSoldPerformanceList(args), /\+50.00% \+160.00 EUR/);
+  match(await buildIntegratedDailyPerformanceList(args), /8.00 EUR today/);
+  match(await buildIntegratedHistory(args), /Total 800 EUR/);
+  match(await buildIntegratedTickerList({ ...args, priceOverrides: { AAPL: 120 } }), /\+240.00 EUR \+50.00%/);
+});
+
 Deno.test("options include warrants and preserve their category through bucket allocation", () => {
   const warrant = position({ ticker: "VY8GR5", assetCategory: "WAR" });
   const buy = { ...order("VY8GR5", 6, 100, "2025-01-01"), assetCategory: "WAR" };

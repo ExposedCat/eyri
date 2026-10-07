@@ -4,6 +4,7 @@ import type { Database } from "../database/setup.ts";
 import { findOrCreateUser } from "../database/user.ts";
 import { integrationsComposer } from "../integrations/composer.ts";
 import { startComposer } from "../start/composer.ts";
+import { currencyComposer } from "../start/currency.ts";
 import { tickersComposer } from "../tickers/composer.ts";
 import { chartComposer } from "../tickers/chart_composer.ts";
 import type { Bot, CustomContext } from "./types.ts";
@@ -29,6 +30,7 @@ function extendContext(bot: Bot, database: Database) {
 
 function setupComposers(bot: Bot) {
   bot.use(startComposer);
+  bot.use(currencyComposer);
   bot.use(integrationsComposer);
   bot.use(tickersComposer);
   bot.use(chartComposer);
@@ -51,6 +53,7 @@ export function createBot(database: Database): Bot {
 
 const botCommands = [
   { command: "start", description: "Show help" },
+  { command: "currency", description: "Set your reporting currency" },
   { command: "integrations", description: "Manage integration accounts" },
   { command: "t212", description: "Connect a Trading 212 account" },
   { command: "stocks", description: "Show stock performance" },
@@ -63,7 +66,7 @@ const botCommands = [
   { command: "options", description: "Show option and warrant performance" },
   { command: "perf", description: "Show concise performance" },
   { command: "number", description: "Show ticker icons and current total gain" },
-  { command: "worth", description: "Show current USD value and percentage returns" },
+  { command: "worth", description: "Show current value and percentage returns" },
   { command: "worthnumber", description: "Show ticker icons and current total value" },
   {
     command: "alltime",

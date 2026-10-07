@@ -13,12 +13,13 @@ export function formatMoneyChange(
 	change: number,
 	kind: "%" | "$" = "$",
 	points = 2,
+	currency = "USD",
 ) {
 	const rounded = Number(change.toFixed(points));
 	const sign = rounded > 0 ? "+" : rounded < 0 ? "-" : "";
 	return `${sign}${
 		kind === "$"
-			? formatMoney(Math.abs(rounded), "USD", points)
+			? formatMoney(Math.abs(rounded), currency, points)
 			: `${Math.abs(rounded).toFixed(points)}%`
 	}`;
 }

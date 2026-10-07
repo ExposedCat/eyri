@@ -1,6 +1,7 @@
 import { Composer, InputFile } from "grammy";
+import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts";
-import { portfolioPositionsInUsd } from "../integrations/usd.ts";
+import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { splitMessageLines } from "../bot/message.ts";
 import {
@@ -178,7 +179,7 @@ async function fetchBucketedHistoryOrders(
 async function readTickerDisplayPreferences(userId: number) {
   const [tickerDecorations, tickerLabelPreferences, tickerLabelLinks] =
     await Promise.all([
-      readTickerDecorations(),
+      readTickerDecorations(userId),
       readTickerLabelPreferences(userId),
       readTickerLabelLinks(userId),
     ]);
@@ -235,6 +236,7 @@ async function replyBucketMoveHistory(ctx: CustomContext, bucketName: string) {
     ctx.dbEntities.user.userId,
   );
   const history = await buildIntegratedHistory({
+      currency: ctx.dbEntities.user.currency ?? "USD",
     orders,
     tickerDecorations,
     tickerLabelPreferences,
@@ -663,11 +665,15 @@ tickersComposer.command("decorate", async (ctx) => {
     return;
   }
 
-  await setTickerDecoration(parsed.ticker, parsed.decorations);
+  const scope = await setTickerDecoration(
+    ctx.from.id,
+    parsed.ticker,
+    parsed.decorations,
+  );
   await ctx.reply(
     `${formatTickerDecorations(parsed.decorations)} ${escapeHtml(
       parsed.ticker,
-    )} decorated for everyone (${parsed.decorations.length}).`,
+    )} decorated ${scope === "global" ? "for everyone" : "for you"} (${parsed.decorations.length}).`,
     htmlReplyOptions,
   );
 });
@@ -679,11 +685,15 @@ tickersComposer.command("label", async (ctx) => {
     return;
   }
 
-  await setTickerLabelPreference(ctx.from.id, parsed.ticker, parsed.label);
+  const scope = await setTickerLabelPreference(
+    ctx.from.id,
+    parsed.ticker,
+    parsed.label,
+  );
   const labelStatus =
     parsed.label === false ? "hidden" : `set to ${escapeHtml(parsed.label)}`;
   await ctx.reply(
-    `${escapeHtml(parsed.ticker)} label ${labelStatus}.`,
+    `${escapeHtml(parsed.ticker)} label ${labelStatus} ${scope === "global" ? "for everyone" : "for you"}.`,
     htmlReplyOptions,
   );
 });
@@ -695,11 +705,11 @@ tickersComposer.command("link", async (ctx) => {
     return;
   }
 
-  await setTickerLabelLink(ctx.from.id, parsed.ticker, parsed.tag);
+  const scope = await setTickerLabelLink(ctx.from.id, parsed.ticker, parsed.tag);
   const linkStatus =
     parsed.tag === false ? "removed" : `set to ${escapeHtml(parsed.tag)}`;
   await ctx.reply(
-    `${escapeHtml(parsed.ticker)} link ${linkStatus}.`,
+    `${escapeHtml(parsed.ticker)} link ${linkStatus} ${scope === "global" ? "for everyone" : "for you"}.`,
     htmlReplyOptions,
   );
 });
@@ -851,10 +861,12 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 				);
 			}
 		} else notes.push("Configure /ibkr to fetch current RSU prices.");
-		const groups = buildRsuGroups(view.upcoming, prices, formatTicker, now);
+		const currency = ctx.dbEntities.user.currency ?? "USD";
+		const displayRate = (await fetchConversionRates(["USD"], currency)).get("USD")!;
+		const groups = buildRsuGroups(view.upcoming, prices, formatTicker, now, currency, displayRate);
 		groups.push(...notes.map(escapeHtml));
 		groups.push(
-			buildRsuSummary("Total", view.total, prices, view.start, view.end),
+			buildRsuSummary("Total", view.total, prices, view.start, view.end, currency, displayRate),
 		);
 		if (cutoff) {
 			groups.push(
@@ -864,6 +876,8 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 					prices,
 					cutoff,
 					view.lastVesting,
+					currency,
+					displayRate,
 				),
 			);
 		}
@@ -898,6 +912,8 @@ tickersComposer.command("portfolio", async (ctx) => {
 	try {
 		const chart = await buildPortfolioChart(
 			await fetchBucketedPositions(ctx, bucketName),
+			fetch,
+			ctx.dbEntities.user.currency ?? "USD",
 		);
 		if (!chart) {
 			await ctx.text("no_positions");
@@ -937,6 +953,7 @@ tickersComposer.command("stocks", async (ctx) => {
   try {
     const positions = await fetchBucketedPositions(ctx, bucketName);
     const priceList = await buildIntegratedTickerList({
+      currency: ctx.dbEntities.user.currency ?? "USD",
       positions: positions.filter(isStockPosition),
       separateGainersLosers: true,
       tickerDecorations,
@@ -989,6 +1006,7 @@ tickersComposer.command("options", async (ctx) => {
   try {
     const positions = await fetchBucketedPositions(ctx, bucketName);
     const priceList = await buildIntegratedTickerList({
+      currency: ctx.dbEntities.user.currency ?? "USD",
       positions: positions.filter(isOptionPosition),
       separateGainersLosers: true,
       tickerDecorations,
@@ -1027,7 +1045,7 @@ tickersComposer.command("dump_options", async (ctx) => {
     const positions = await fetchBucketedPositions(ctx, bucketName);
     await replyJsonDump(
       ctx,
-      (await portfolioPositionsInUsd(positions.filter(isOptionPosition))).map(toDumpablePosition),
+      (await portfolioPositionsInCurrency(positions.filter(isOptionPosition), fetch, ctx.dbEntities.user.currency ?? "USD")).map(toDumpablePosition),
     );
   } catch (error) {
     await replyIntegrationError(ctx, error);
@@ -1052,7 +1070,7 @@ tickersComposer.command("dump_tickers", async (ctx) => {
     const positions = await fetchBucketedPositions(ctx, bucketName);
     await replyJsonDump(
       ctx,
-      (await portfolioPositionsInUsd(positions.filter(isStockPosition))).map(toDumpablePosition),
+      (await portfolioPositionsInCurrency(positions.filter(isStockPosition), fetch, ctx.dbEntities.user.currency ?? "USD")).map(toDumpablePosition),
     );
   } catch (error) {
     await replyIntegrationError(ctx, error);
@@ -1090,6 +1108,7 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber", "worth", "wor
   }
 
   try {
+    const currency = ctx.dbEntities.user.currency ?? "USD";
     const isAllTime = ctx.hasCommand(["alltime", "allnumber"]);
     const numberOnly = ctx.hasCommand(["number", "allnumber", "worthnumber"]);
     const showCurrentValue = ctx.hasCommand(["worth", "worthnumber"]);
@@ -1099,6 +1118,7 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber", "worth", "wor
         ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true },
       );
       performanceList = await buildIntegratedAllTimePerformanceList({
+        currency,
         ...view,
         numberOnly,
         ...preferences,
@@ -1107,6 +1127,7 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber", "worth", "wor
     } else {
       const positions = await fetchBucketedPositions(ctx, bucketName);
       performanceList = await buildIntegratedPerformanceList({
+        currency,
         positions,
         numberOnly,
         showCurrentValue,
@@ -1163,6 +1184,7 @@ tickersComposer.command("sold", async (ctx) => {
       ctx.db, ctx.dbEntities.user.userId, bucketName, { positions: false, history: true },
     );
     const performanceList = await buildIntegratedSoldPerformanceList({
+      currency: ctx.dbEntities.user.currency ?? "USD",
       ...view,
       tickerDecorations,
       tickerLabelPreferences,
@@ -1215,6 +1237,7 @@ tickersComposer.command("dpnl", async (ctx) => {
   try {
     const positions = await fetchBucketedPositions(ctx, bucketName);
     const performanceList = await buildIntegratedDailyPerformanceList({
+      currency: ctx.dbEntities.user.currency ?? "USD",
       positions,
       tickerDecorations,
       tickerLabelPreferences,
@@ -1260,6 +1283,7 @@ tickersComposer.command("history", async (ctx) => {
   try {
     const orders = await fetchBucketedHistoryOrders(ctx, bucketName);
     const history = await buildIntegratedHistory({
+      currency: ctx.dbEntities.user.currency ?? "USD",
       orders,
       tickerDecorations,
       tickerLabelPreferences,
@@ -1317,6 +1341,7 @@ tickersComposer.command("when", async (ctx) => {
   try {
     const positions = await fetchBucketedPositions(ctx, null);
     const priceList = await buildIntegratedTickerList({
+      currency: ctx.dbEntities.user.currency ?? "USD",
       positions,
       priceOverrides,
       tickerDecorations,

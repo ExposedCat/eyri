@@ -1,27 +1,28 @@
-import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
+import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import type { IntegrationPortfolioPosition } from "./types.ts";
 
-export function usdFactor(
+export function conversionFactor(
   currency: string,
   rates: ReadonlyMap<string, number>,
 ) {
   const factor = rates.get(currency.trim().toUpperCase());
   if (factor === undefined || !Number.isFinite(factor) || factor <= 0) {
-    throw new Error(`USD conversion unavailable for ${currency}.`);
+    throw new Error(`Currency conversion unavailable for ${currency}.`);
   }
   return factor;
 }
 
-export function portfolioPositionInUsd(
+export function portfolioPositionInCurrency(
   position: IntegrationPortfolioPosition,
   rates: ReadonlyMap<string, number>,
+  currency = "USD",
 ): IntegrationPortfolioPosition {
-  const factor = usdFactor(position.currency, rates);
+  const factor = conversionFactor(position.currency, rates);
   const convert = (value: number | null) =>
     value === null ? null : value * factor;
   return {
     ...position,
-    currency: "USD",
+    currency,
     currentPrice: convert(position.currentPrice),
     averageUnitPrice: convert(position.averageUnitPrice),
     totalInput: convert(position.totalInput),
@@ -36,13 +37,20 @@ export function portfolioPositionInUsd(
   };
 }
 
-export async function portfolioPositionsInUsd(
+export async function portfolioPositionsInCurrency(
   positions: IntegrationPortfolioPosition[],
   request: typeof fetch = fetch,
+  currency = "USD",
 ) {
-  const rates = await fetchUsdConversionRates(
+  const rates = await fetchConversionRates(
     positions.map((p) => p.currency),
+    currency,
     request,
   );
-  return positions.map((p) => portfolioPositionInUsd(p, rates));
+  return positions.map((p) => portfolioPositionInCurrency(p, rates, currency));
 }
+
+// USD helpers remain the canonical conversion path for historical datasets.
+export const usdFactor = conversionFactor;
+export const portfolioPositionInUsd = portfolioPositionInCurrency;
+export const portfolioPositionsInUsd = portfolioPositionsInCurrency;

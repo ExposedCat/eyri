@@ -1,4 +1,5 @@
 import { Composer, InlineKeyboard, InputFile } from "grammy";
+import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import type { CustomContext } from "../bot/types.ts";
 import type { Database } from "../database/setup.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
@@ -67,6 +68,7 @@ type Runtime = {
   dataset: typeof datasetFor;
   render: typeof renderAllTimeChart;
   validateSymbol?: (symbol: string, ticker?: string) => Promise<void>;
+  request?: typeof fetch;
 };
 
 async function validateSymbol(symbol: string, ticker?: string) {
@@ -153,6 +155,12 @@ export function createChartComposer(
     }
     try {
       const dataset = await runtime.dataset(ctx, bucketName);
+      const currency = ctx.dbEntities.user.currency ?? "USD";
+      if (currency !== "USD") {
+        const rates = await fetchConversionRates(["USD"], currency, runtime.request);
+        dataset.displayCurrency = currency;
+        dataset.displayRate = rates.get("USD")!;
+      }
       const image = await runtime.render(ctx.db, [dataset]);
       ensureChartSchema(ctx.db);
       const id = crypto.randomUUID();
@@ -222,7 +230,10 @@ export function createChartComposer(
       ) return;
       // Existing curves are the snapshots their owners chose to publish. Only
       // the clicker's accounts are fetched; another user's credentials are never used here.
-      const next = [...existing, await runtime.dataset(ctx, null)];
+      const next = [...existing, await runtime.dataset(ctx, null)].map((dataset) => {
+        const { displayCurrency: _currency, displayRate: _rate, ...usdDataset } = dataset;
+        return usdDataset;
+      });
       const image = await runtime.render(ctx.db, next);
       await ctx.editMessageMedia({
         type: "photo",

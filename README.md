@@ -72,7 +72,7 @@ Portfolio, History - Orders and History - Transactions read permissions, and lea
 Invest and Stocks & Shares ISA accounts are supported.
 
 Trading 212 holdings and executed trades are stored in instrument currency;
-reports convert money to USD using the latest Frankfurter rates. Reported returns
+reports convert money to your selected currency (default USD) using the latest Frankfurter rates. Reported returns
 exclude historical FX effects and wallet fees/taxes.
 US equity IDs such as `AAPL_US_EQ` display as `AAPL`; other listing IDs are preserved.
 Order history is cached in SQLite and paginated, then refreshed incrementally at
@@ -102,8 +102,13 @@ This is an explicit transfer accounting convention, not live CFD valuation:
 the public API supplies no CFD positions and does not identify the destination
 of an internal transfer. All amounts use current USD conversion rates.
 
-All commands display money and combined totals in USD. GBX is treated as pence
-(100 GBX = 1 GBP) before USD conversion. Long portfolio and bucket messages continue across
+Use `/currency CODE` (for example `/currency EUR`) to save your reporting
+currency across chats and restarts. Any currency accepted by the existing
+Frankfurter conversion service is supported, including GBX pence. `/currency`
+shows your current preference; `/currency USD` resets it to the default.
+All monetary reports, charts, RSU values and diagnostic dumps use your selected
+currency, including shared buckets viewed by you. GBX is treated as pence
+(100 GBX = 1 GBP) before conversion. Long portfolio and bucket messages continue across
 Telegram messages without changing transaction shortcut numbers.
 The published API terms require Trading 212's written consent for applications
 intended for other end-users; this integration is for personal account tracking.
@@ -125,15 +130,22 @@ by an automatic database migration on startup.
 
 `/stocks`, `/options`, `/perf`, `/number`, `/worth`, `/worthnumber`, `/sold`,
 `/alltime`, `/allnumber`, `/dpnl`, `/history`, `/when`, bucket views and diagnostic
-dumps display USD amounts using the latest
-Frankfurter rates. Prices supplied to `/when` are USD. History prices and realized
+dumps display amounts in your selected currency (default USD) using the latest
+Frankfurter rates. Prices supplied to `/when` use your selected currency. History prices and realized
 gains use the same current FX rates as holdings; FIFO matching and bucket shortcuts
 retain their original transaction identity. Price, cost and P&L calculations stay
 in instrument currency (including EUR warrant quotes); completed results are
-converted to USD before reporting totals, sorting and rendering. `/when` USD
+converted to your selected currency before reporting totals, sorting and rendering. `/when`
 targets are normalized to instrument currency before those calculations.
 A required FX failure reports an error
 instead of displaying a partial total.
+
+Recognized Vontobel warrants use the issuer's current EUR bid for live portfolio
+values and returns, instead of IBKR's portfolio mark. Broker purchase costs,
+including commissions, are preserved. Quotes are verified against the issuer,
+product type and holding currency before bucket allocation or report calculations.
+If a required bid cannot be loaded, the report fails instead of using the broker
+mark. Diagnostic dumps include the quote source and timestamp.
 
 Rich integration controls use Telegram Bot API 10.3's `sendRichMessage`, inline
 `RichTextButton` and `InputRichBlockButtons`. A small typed raw API wrapper
@@ -147,11 +159,19 @@ orders supply holding dates when their tickers still match.
 
 ## Ticker icons and labels
 
-`/decorate TICKER EMOJI` sets ticker icons globally for every user, including
-shared bucket views. Generated emoji-pack icons are also global. Existing personal
-icon assignments migrate to one shared set per ticker; if they differ, the most
-recently updated complete set wins. `/label` preferences and `/link` label links
-remain personal. `/yahoo` historical-price mappings are global.
+`/decorate TICKER EMOJI`, `/label TICKER LABEL`, and `/link TICKER TAG` use
+global defaults with personal overrides, including in shared bucket views. The
+first value set for each ticker and command becomes the global default. Once a
+default exists, subsequent changes apply only to the user issuing the command,
+including the user who originally set the default. Other users keep the default.
+`/label TICKER false` hides the label and `/link TICKER false` removes the link
+for that scope, overriding any inherited or automatic link.
+
+Existing global icons remain defaults. Older personal icon assignments migrate
+to one shared set per ticker; if they differ, the most recently updated complete
+set wins. Existing personal labels and links are preserved, with the most recently
+updated value for each ticker also becoming its initial global default. Generated
+emoji-pack icons and `/yahoo` historical-price mappings remain global.
 
 ## Shared buckets
 
@@ -198,9 +218,9 @@ are omitted from the icon line but still count toward the total. Both commands
 accept an optional bucket name.
 
 Use `/worth` for the same layout and percentage returns as `/perf`, with current
-USD holding values and their total replacing dollar gains or losses. `/worthnumber`
+holding values in your selected currency and their total replacing dollar gains or losses. `/worthnumber`
 shows the same ticker icons and separator as `/number`, followed by only the current
-total USD value. Both commands accept an optional bucket name and use the same
+total value in your selected currency. Both commands accept an optional bucket name and use the same
 holdings, including any included buckets.
 
 ## Portfolio chart
@@ -208,10 +228,10 @@ holdings, including any included buckets.
 Use `/portfolio` (or `/portfolio BUCKET`) to chart stock allocation, largest first.
 Bars show each holding's share of stock market value, with losing holdings below
 zero. Below each ticker are its percentage return and monetary gain or loss.
-All holdings are combined into one USD chart using the latest Frankfurter exchange
+All holdings are combined into one chart in your selected currency using the latest Frankfurter exchange
 rates for values, purchase costs, and monetary returns. GBX is converted as pence
-(100 GBX = 1 GBP) using the USD/GBP rate. Matching tickers are merged after conversion;
-allocation weights and the header total are calculated in USD. Large portfolios
+(100 GBX = 1 GBP) before conversion. Matching tickers are merged after conversion;
+allocation weights and the header total use the selected currency. Large portfolios
 use one wider image, sent as an original PNG file to preserve sharp text when zooming.
 If a required exchange rate is unavailable, the command reports an error.
 The container includes Python and Matplotlib for rendering; local runs need
@@ -224,14 +244,17 @@ performance. The percentage is gain divided by the cost of open holdings plus
 FIFO-matched sold lots, as in `/alltime`. The graph starts at the first purchase;
 sales retain their realized gains, weekends carry the last close, and stock splits
 adjust historical quantities and unit costs. Today's endpoint uses broker prices
-and book cost. All amounts use the latest USD exchange rates consistently across
+and book cost. All amounts use the latest exchange rates consistently across
 the series, excluding historical FX effects, dividends and fees.
 
 The chart is sent as a Telegram photo using the portfolio's dark background,
 mint gains and pink losses. Every month has a label and a vertical grid line;
 the plot and participant legend fill the image, with no header or footer.
 **Compare** adds the person clicking the button to that same graph, up to six
-participants. Published curves remain snapshots of what their owners shared;
+participants. A single chart displays monetary gains in the author's selected
+currency. Compare switches all participants to USD, including the original chart;
+percentages and published snapshots are preserved without refetching their accounts.
+Published curves remain snapshots of what their owners shared;
 the button fetches the clicker's accounts and included shared buckets. Buttons are bound to their
 chat and message, survive restarts, and reject duplicate participants.
 

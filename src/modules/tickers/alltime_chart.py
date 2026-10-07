@@ -15,8 +15,9 @@ GREEN = "#63D8AB"
 RED = "#FA8991"
 PALETTE = [GREEN, RED, "#75C7E8", "#B7A0EC", "#E7C678", "#F3F6F9"]
 
-def money(value):
-    return f'{"+" if value > 0 else "-" if value < 0 else ""}${abs(value):,.2f}'
+def money(value, currency="USD"):
+    amount = f'${abs(value):,.2f}' if currency == "USD" else f'{abs(value):,.2f} {currency}'
+    return f'{"+" if value > 0 else "-" if value < 0 else ""}{amount}'
 
 def render(datasets):
     plt.rcParams.update({"font.family": "DejaVu Sans", "text.color": FOREGROUND, "text.parse_math": False, "text.antialiased": True, "text.hinting": "auto"})
@@ -32,7 +33,9 @@ def render(datasets):
         values = [point["percentage"] for point in dataset["points"]]
         last = dataset["points"][-1]
         label = dataset["label"] + (f' / {dataset["bucketName"]}' if dataset.get("bucketName") else "")
-        label += f'  {last["percentage"]:+.2f}%  ({money(last["gain"])})'
+        currency = dataset.get("displayCurrency", "USD") if single else "USD"
+        rate = dataset.get("displayRate", 1) if single else 1
+        label += f'  {last["percentage"]:+.2f}%  ({money(last["gain"] * rate, currency)})'
         color = PALETTE[index % len(PALETTE)]
         if single:
             segments = [[(dates[i], values[i]), (dates[i + 1], values[i + 1])] for i in range(len(dates)-1)]

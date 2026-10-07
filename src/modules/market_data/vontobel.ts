@@ -1,4 +1,5 @@
 import type { Database } from "../database/setup.ts";
+import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { logFetch } from "../../utils/fetch_logging.ts";
 import {
   dayAfter,
@@ -79,16 +80,29 @@ function apiRequest(path: string, request: typeof fetch) {
 }
 
 type Product = { currency: string; lastTrade?: string };
-async function fetchProduct(
-  isin: string,
-  request: typeof fetch,
-): Promise<Product> {
-  const product = await apiRequest(`productdetailpage/${isin}`, request);
+type ProductPayload = {
+  data?: {
+    isin?: string;
+    issuer?: string;
+    productType?: number;
+    currency?: string;
+  };
+  priceFactor?: number;
+  lifeCycle?: { type: number; occurrence?: string }[];
+  price?: {
+    currency?: string;
+    isPercentPrice?: boolean;
+    bid?: number;
+    latestTimestamp?: string;
+  };
+};
+function parseProduct(isin: string, product: ProductPayload): Product {
+  const currency = product.data?.currency;
   if (
     product.data?.isin !== isin ||
     !/\bvontobel\b/i.test(product.data?.issuer ?? "") ||
     product.data?.productType !== 3 || product.priceFactor !== 1 ||
-    !/^[A-Z]{3}$/.test(product.data?.currency ?? "")
+    typeof currency !== "string" || !/^[A-Z]{3}$/.test(currency)
   ) {
     throw new NotVontobelWarrantError("Not a supported Vontobel warrant.");
   }
@@ -102,9 +116,87 @@ async function fetchProduct(
     throw new Error("Invalid Vontobel last trading date.");
   }
   return {
-    currency: product.data.currency,
+    currency,
     ...(lastTrade ? { lastTrade: lastTrade.slice(0, 10) } : {}),
   };
+}
+
+async function fetchProduct(
+  isin: string,
+  request: typeof fetch,
+): Promise<Product> {
+  const product = await apiRequest(`productdetailpage/${isin}`, request);
+  return parseProduct(isin, product);
+}
+
+export async function fetchVontobelQuote(
+  isin: string,
+  request: typeof fetch = fetch,
+) {
+  const payload: ProductPayload = await apiRequest(
+    `productdetailpage/${isin}`,
+    request,
+  );
+  const product = parseProduct(isin, payload);
+  const price = payload.price;
+  if (
+    price?.currency !== product.currency || price.isPercentPrice !== false ||
+    typeof price.bid !== "number" || !Number.isFinite(price.bid) ||
+    price.bid < 0 ||
+    typeof price.latestTimestamp !== "string" ||
+    !Number.isFinite(Date.parse(price.latestTimestamp))
+  ) {
+    throw new Error(`Invalid Vontobel bid quote for ${isin}.`);
+  }
+  return {
+    currency: product.currency,
+    bid: price.bid,
+    timestamp: price.latestTimestamp,
+  };
+}
+
+export async function enrichPortfolioWithVontobelQuotes(
+  positions: IntegrationPortfolioPosition[],
+  request: typeof fetch = fetch,
+) {
+  const quotes = new Map<string, ReturnType<typeof fetchVontobelQuote>>();
+  return await Promise.all(positions.map(async (position) => {
+    if (
+      position.assetCategory?.trim().toUpperCase() !== "WAR" ||
+      position.amount === 0
+    ) {
+      return position;
+    }
+    const isin = vontobelIsin(position);
+    if (!isin) return position;
+    let quote = quotes.get(isin);
+    if (!quote) {
+      quote = fetchVontobelQuote(isin, request);
+      quotes.set(isin, quote);
+    }
+    try {
+      const { bid, currency, timestamp } = await quote;
+      if (currency !== position.currency.trim().toUpperCase()) {
+        throw new Error("Vontobel quote currency does not match the holding.");
+      }
+      const totalNow = position.amount * bid;
+      return {
+        ...position,
+        currentPrice: bid,
+        totalNow,
+        unrealizedPnl: position.totalInput === null
+          ? null
+          : totalNow - position.totalInput,
+        currentPriceSource: "vontobel_bid",
+        currentPriceAsOf: timestamp,
+      };
+    } catch (cause) {
+      throw new Error(
+        `Vontobel bid quote unavailable for ${position.ticker} (${isin}).`,
+        { cause },
+      );
+    }
+  }));
 }
 
 export async function fetchVontobelHistory(

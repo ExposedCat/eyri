@@ -2,6 +2,8 @@ import { deepStrictEqual, equal, ok, rejects } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import {
   fetchVontobelHistory,
+  fetchVontobelQuote,
+  enrichPortfolioWithVontobelQuotes,
   VontobelHistoryCache,
   vontobelIsin,
 } from "./vontobel.ts";
@@ -13,7 +15,8 @@ import {
   instrumentKey,
   loadAllTimeDataset,
 } from "../tickers/alltime_chart.ts";
-import type { IntegrationOrder } from "../integrations/types.ts";
+import type { IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
+import { buildIntegratedPerformanceList, buildIntegratedTickerList } from "../tickers/portfolio.ts";
 
 const isin = "DE000VY8GR55";
 const ticker = "VY8GR5";
@@ -89,6 +92,142 @@ Deno.test("Vontobel WKNs derive checksum ISINs; ticker suffixes, ISINs and curre
   equal(
     vontobelIsin({ ticker, isin: "US5951121038", currency: "EUR" }),
     undefined,
+  );
+});
+
+const latestQuote = (bid = .50) => ({
+  isSuccess: true,
+  payload: {
+    data: {
+      isin,
+      currency: "EUR",
+      issuer: "Vontobel Financial Products GmbH",
+      productType: 3,
+    },
+    priceFactor: 1,
+    price: {
+      bid,
+      ask: .51,
+      latest: .51,
+      currency: "EUR",
+      isPercentPrice: false,
+      latestTimestamp: "2026-10-07T19:56:36Z",
+    },
+  },
+});
+
+Deno.test("live Vontobel bid replaces the lower IBKR mark in native EUR and retains broker cost including fees", async () => {
+  const holding: IntegrationPortfolioPosition = {
+    integrationId: 7,
+    integrationKind: "ibkr",
+    account: "one",
+    ticker,
+    assetCategory: "WAR",
+    currency: "EUR",
+    amount: 1042,
+    currentPrice: .4343,
+    averageUnitPrice: .49383875,
+    totalInput: 514.5799775,
+    totalNow: 452.54,
+    unrealizedPnl: -62.04,
+    realizedPnl: null,
+    dailyPnl: null,
+    dailyPnlPercentage: null,
+    dailyPnlBaseline: null,
+    openedAt: new Date("2026-10-07"),
+  };
+  const source = structuredClone(holding);
+  let requests = 0;
+  const request: typeof fetch = async (input) => {
+    requests++;
+    ok(String(input).includes(`productdetailpage/${isin}`));
+    return Response.json(latestQuote());
+  };
+  const [updated, secondAccount] = await enrichPortfolioWithVontobelQuotes([
+    holding,
+    { ...holding, integrationId: 8 },
+  ], request);
+  equal(requests, 1);
+  equal(updated.currency, "EUR");
+  equal(updated.currentPrice, .50);
+  equal(secondAccount.currentPrice, .50);
+  equal(updated.totalNow, 521);
+  equal(updated.totalInput, 514.5799775);
+  equal(updated.averageUnitPrice, .49383875);
+  ok(Math.abs(updated.unrealizedPnl! - 6.4200225) < 1e-9);
+  equal(updated.currentPriceSource, "vontobel_bid");
+  equal(updated.currentPriceAsOf, "2026-10-07T19:56:36Z");
+  const fx: typeof fetch = async () =>
+    Response.json({ base: "USD", quote: "EUR", rate: .88972 });
+  const report = await buildIntegratedPerformanceList({
+    positions: [updated],
+    request: fx,
+    formatTicker: (t) => t,
+  });
+  ok(report.includes("VY8GR5 +1.25% +$7.22"));
+  const detailed = await buildIntegratedTickerList({
+    positions: [updated],
+    request: fx,
+    formatTicker: (t) => t,
+  });
+  ok(detailed.includes("$0.56 x 1042.00 ($0.56 +$0.01)"));
+  deepStrictEqual(holding, source);
+});
+
+Deno.test("live warrant bids preserve zero and unknown costs, skip other instruments, and reject unavailable or mismatched quotes", async () => {
+  const base = {
+    ticker,
+    assetCategory: "WAR",
+    currency: "EUR",
+    amount: 2,
+    totalInput: null,
+    currentPrice: .4343,
+  } as IntegrationPortfolioPosition;
+  const [zero] = await enrichPortfolioWithVontobelQuotes(
+    [base],
+    async () => Response.json(latestQuote(0)),
+  );
+  equal(zero.currentPrice, 0);
+  equal(zero.totalNow, 0);
+  equal(zero.unrealizedPnl, null);
+  const skipped = [
+    { ...base, assetCategory: "STK" },
+    { ...base, ticker: "+MU.21JAN2028.C2500", assetCategory: "OPT" },
+    { ...base, ticker: "OTHER" },
+    { ...base, amount: 0 },
+  ];
+  deepStrictEqual(
+    await enrichPortfolioWithVontobelQuotes(skipped, () => {
+      throw new Error("No quote request expected");
+    }),
+    skipped,
+  );
+  await rejects(
+    enrichPortfolioWithVontobelQuotes([base], async () =>
+      new Response(null, { status: 503 })),
+    /Vontobel bid quote unavailable/,
+  );
+  for (
+    const change of [
+      { bid: -1 },
+      { bid: null },
+      { currency: "USD" },
+      { latestTimestamp: "invalid" },
+      { isPercentPrice: true },
+    ]
+  ) {
+    const payload = latestQuote();
+    Object.assign(payload.payload.price, change);
+    await rejects(
+      fetchVontobelQuote(isin, async () => Response.json(payload)),
+      /Invalid Vontobel bid quote/,
+    );
+  }
+  const wrongCurrency = { ...base, currency: "USD", isin };
+  await rejects(
+    enrichPortfolioWithVontobelQuotes([wrongCurrency], async () =>
+      Response.json(latestQuote())),
+    /Vontobel bid quote unavailable/,
   );
 });
 
