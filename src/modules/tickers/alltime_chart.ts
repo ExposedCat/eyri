@@ -1,4 +1,10 @@
 import type { Database } from "../database/setup.ts";
+import {
+  type FailedHistory,
+  HistoricalDataError,
+} from "../market_data/errors.ts";
+import { defaultYahooSymbols } from "../market_data/symbols.ts";
+import { readYahooMapping } from "../market_data/mappings.ts";
 import type {
   IntegrationOrder,
   IntegrationPortfolioPosition,
@@ -318,7 +324,8 @@ export async function loadAllTimeDataset(
   const start = dayAfter(relevant.map((o) => dateOf(o.date)).sort()[0], -7);
   const histories = new Map<string, PriceHistory>();
   const entries = [...sources];
-  const failures: string[] = [];
+  const failures: FailedHistory[] = [];
+  const symbols = new Map<string, string>();
   for (let i = 0; i < entries.length; i += 3) {
     const batch = entries.slice(i, i + 3);
     const results = await Promise.allSettled(
@@ -326,7 +333,8 @@ export async function loadAllTimeDataset(
         const firstPurchase = relevant.filter((o) =>
           instrumentKey(o) === key && o.quantity > 0
         ).map((o) => dateOf(o.date)).sort()[0];
-        const symbol = await cache.resolve(source, firstPurchase);
+        const symbol = await cache.resolve(source, firstPurchase, userId);
+        symbols.set(key, symbol);
         const history = await cache.get(symbol, start);
         if (!history.bars.length) {
           throw new Error("No historical closing prices returned.");
@@ -337,19 +345,17 @@ export async function loadAllTimeDataset(
     for (const [index, result] of results.entries()) {
       if (result.status === "rejected") {
         const source = batch[index][1];
-        const reason = result.reason instanceof Error
-          ? result.reason.message
-          : String(result.reason);
-        failures.push(`${source.ticker} (${source.currency}): ${reason}`);
+        failures.push({
+          ticker: source.ticker,
+          symbol: symbols.get(batch[index][0]) ??
+            readYahooMapping(db, userId, source.ticker) ??
+            defaultYahooSymbols(source)[0] ?? source.ticker,
+        });
       }
     }
   }
   if (failures.length) {
-    throw new Error(
-      `Could not build chart. Historical prices failed for:\n${
-        failures.join("\n")
-      }`.slice(0, 3500),
-    );
+    throw new HistoricalDataError(failures);
   }
   const rates = await fetchUsdConversionRates(
     [...sources.values()].map((p) => p.currency).concat(

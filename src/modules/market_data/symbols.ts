@@ -18,6 +18,10 @@ const DEFAULT_PATTERNS = [
   // can have a shorter history, as with Samsung, so prefer .IL.
   { pattern: /^(.+)L_EQ$/, currencies: ["USD"], suffixes: [".IL", ".L"] },
 ];
+const DEFAULT_MAPPINGS: Record<string, string> = {
+  "VUAA:USD": "VUAA.L",
+  "SPYL:USD": "SPYL.L",
+};
 
 export function defaultYahooSymbols(
   instrument: HistoricalInstrument,
@@ -26,6 +30,8 @@ export function defaultYahooSymbols(
   const currency = instrument.currency.trim().toUpperCase();
   const candidates: string[] = [];
   if (ticker.startsWith("+")) return candidates;
+  const mapping = DEFAULT_MAPPINGS[`${ticker}:${currency}`];
+  if (mapping) candidates.push(mapping);
   for (const rule of DEFAULT_PATTERNS) {
     const match = ticker.match(rule.pattern);
     if (match && rule.currencies.includes(currency)) {
@@ -56,4 +62,47 @@ export function defaultYahooSymbols(
     candidates.push(symbol);
   }
   return [...new Set(candidates)];
+}
+
+// Last-resort candidates after broker hints and ISIN lookup. These are checked
+// against Yahoo's quote currency and the first purchase before being accepted.
+const LIKELY_SUFFIXES: Record<string, string[]> = {
+  USD: [".L", ".IL"],
+  EUR: [".DE", ".F", ".PA", ".AS", ".MI", ".MC"],
+  GBP: [".L"],
+  GBX: [".L"],
+  CAD: [".TO", ".V"],
+  CHF: [".SW", ".VX"],
+  HKD: [".HK"],
+  AUD: [".AX"],
+  NZD: [".NZ"],
+  SEK: [".ST"],
+  NOK: [".OL"],
+  DKK: [".CO"],
+  JPY: [".T"],
+  SGD: [".SI"],
+};
+
+export function likelyYahooSymbols(instrument: HistoricalInstrument): string[] {
+  const ticker = instrument.ticker.trim().toUpperCase();
+  const currency = instrument.currency.trim().toUpperCase();
+  if (ticker.startsWith("+")) return [];
+  let base = ticker;
+  if (base.endsWith("_EQ")) {
+    base = base.match(/^(.+)_US_EQ$/)?.[1] ??
+      base.match(/^(.+)[DLP]_EQ$/)?.[1] ?? "";
+  } else {
+    const suffixes = new Set([
+      "US",
+      ...Object.values(LIKELY_SUFFIXES).flat().map((s) => s.slice(1)),
+    ]);
+    const qualified = base.match(/^(.+)\.([A-Z]+)$/);
+    if (qualified && suffixes.has(qualified[2])) base = qualified[1];
+  }
+  base = shareClassSymbol(base, currency);
+  if (!/^[A-Z0-9-]+$/.test(base)) return [];
+  if (currency === "HKD" && /^\d+$/.test(base)) base = base.padStart(4, "0");
+  const known = new Set(defaultYahooSymbols(instrument));
+  return (LIKELY_SUFFIXES[currency] ?? []).map((suffix) => base + suffix)
+    .filter((symbol) => !known.has(symbol)).slice(0, 6);
 }

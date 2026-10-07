@@ -1,6 +1,13 @@
 import { Composer, InlineKeyboard, InputFile } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
 import type { Database } from "../database/setup.ts";
+import { HistoricalDataError } from "../market_data/errors.ts";
+import { dayAfter, fetchYahooHistory } from "../market_data/yahoo.ts";
+import {
+  removeYahooMapping,
+  saveYahooMapping,
+} from "../market_data/mappings.ts";
+import { escapeHtml } from "./decorations.ts";
 import { getUserBucket, readBucketAssignments } from "../database/bucket.ts";
 import { hasUserIntegrations } from "../database/integration.ts";
 import {
@@ -73,11 +80,74 @@ export function readChartSession(
 type Runtime = {
   dataset: typeof datasetFor;
   render: typeof renderAllTimeChart;
+  validateSymbol?: (symbol: string) => Promise<void>;
 };
+
+async function validateSymbol(symbol: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const history = await fetchYahooHistory(
+    symbol,
+    dayAfter(today, -7),
+    dayAfter(today),
+  );
+  if (!history.bars.length) throw new Error("No historical data.");
+}
+
+async function replyChartError(ctx: CustomContext, error: unknown) {
+  if (!(error instanceof HistoricalDataError)) {
+    await ctx.reply(error instanceof Error ? error.message : String(error));
+    return;
+  }
+  let message = "Failed to fetch historical data:";
+  for (const command of error.commands) {
+    const line = `\n- <code>${escapeHtml(command)}</code>`;
+    if (message.length + line.length > 3900) {
+      await ctx.reply(message, { parse_mode: "HTML" });
+      message = "Failed to fetch historical data:";
+    }
+    message += line;
+  }
+  await ctx.reply(message, { parse_mode: "HTML" });
+}
 export function createChartComposer(
   runtime: Runtime = { dataset: datasetFor, render: renderAllTimeChart },
 ) {
   const composer = new Composer<CustomContext>();
+  composer.command("yahoo", async (ctx) => {
+    if (!ctx.dbEntities.user || !ctx.from) return;
+    const parts = typeof ctx.match === "string"
+      ? ctx.match.trim().toUpperCase().split(/\s+/)
+      : [];
+    const [ticker, symbol] = parts;
+    if (
+      parts.length !== 2 || !/^[A-Z0-9][A-Z0-9._^=:+-]{0,63}$/.test(ticker) ||
+      (symbol !== "-" && !/^[A-Z0-9^][A-Z0-9._^=+-]{0,63}$/.test(symbol))
+    ) {
+      await ctx.reply(
+        "Use <code>/yahoo TICKER MAPPING</code> to set a Yahoo symbol, or <code>/yahoo TICKER -</code> to reset it.",
+        { parse_mode: "HTML" },
+      );
+      return;
+    }
+    if (symbol === "-") {
+      removeYahooMapping(ctx.db, ctx.from.id, ticker);
+      await ctx.reply(`Yahoo mapping removed for ${ticker}.`);
+      return;
+    }
+    try {
+      await (runtime.validateSymbol ?? validateSymbol)(symbol);
+    } catch {
+      await replyChartError(ctx, new HistoricalDataError([{ ticker, symbol }]));
+      return;
+    }
+    saveYahooMapping(ctx.db, ctx.from.id, ticker, symbol);
+    await ctx.reply(
+      `Yahoo mapping saved: <code>${escapeHtml(ticker)} → ${
+        escapeHtml(symbol)
+      }</code>. Run /chart to rebuild.`,
+      { parse_mode: "HTML" },
+    );
+  });
   composer.command("chart", async (ctx) => {
     if (!ctx.dbEntities.user || !ctx.from || !ctx.chat) return;
     const bucketName = typeof ctx.match === "string" && ctx.match.trim()
@@ -114,7 +184,7 @@ export function createChartComposer(
         throw error;
       }
     } catch (error) {
-      await ctx.reply(error instanceof Error ? error.message : String(error));
+      await replyChartError(ctx, error);
     }
   });
   composer.callbackQuery(/^chart_compare:([0-9a-f-]{36})$/, async (ctx) => {
@@ -176,7 +246,7 @@ export function createChartComposer(
         "UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?",
       ).run(JSON.stringify(next), id);
     }).catch(async (error) => {
-      await ctx.reply(error instanceof Error ? error.message : String(error));
+      await replyChartError(ctx, error);
     });
     pending.set(id, task);
     try {

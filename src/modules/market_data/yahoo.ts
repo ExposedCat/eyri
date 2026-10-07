@@ -1,5 +1,6 @@
 import type { Database } from "../database/setup.ts";
-import { defaultYahooSymbols } from "./symbols.ts";
+import { defaultYahooSymbols, likelyYahooSymbols } from "./symbols.ts";
+import { readYahooMapping } from "./mappings.ts";
 
 export type PriceBar = { date: string; close: number };
 export type StockSplit = { date: string; ratio: number };
@@ -155,27 +156,38 @@ export class YahooHistoryCache {
   async resolve(
     instrument: HistoricalInstrument,
     requiredDate?: string,
+    userId?: number,
   ): Promise<string> {
+    const userMapping = userId === undefined
+      ? undefined
+      : readYahooMapping(this.db, userId, instrument.ticker);
     const configured = JSON.parse(Deno.env.get("EYRI_YAHOO_SYMBOLS") ?? "{}");
     const overrideKey =
       `${instrument.ticker.trim().toUpperCase()}:${instrument.currency.trim().toUpperCase()}`;
     const override = configured[overrideKey];
     if (
-      override !== undefined &&
+      !userMapping && override !== undefined &&
       (typeof override !== "string" || !override.trim())
     ) {
       throw new Error(
         `Invalid EYRI_YAHOO_SYMBOLS override for ${overrideKey}.`,
       );
     }
-    const explicit = typeof override === "string"
-      ? override.trim().toUpperCase()
-      : undefined;
+    const explicit = userMapping ??
+      (typeof override === "string"
+        ? override.trim().toUpperCase()
+        : undefined);
     const sourceKey = JSON.stringify([
       instrument.ticker.toUpperCase(),
       instrument.currency.toUpperCase(),
       instrument.isin ?? "",
       instrument.yahooSymbol ?? "",
+      // A user's mapping must not change another user's cached resolution.
+      ...(userMapping
+        ? ["user", String(userId), userMapping]
+        : explicit
+        ? ["configured", explicit]
+        : []),
     ]);
     const cached = this.db.prepare(
       "SELECT symbol FROM yahoo_symbols WHERE source_key = ?",
@@ -185,13 +197,20 @@ export class YahooHistoryCache {
       const history = await this.get(symbol, dayAfter(requiredDate, -7));
       return history.bars.some((bar) => bar.date <= requiredDate!);
     };
-    if (
-      cached && (!explicit || cached.symbol === explicit) &&
-      await coversPurchase(cached.symbol)
-    ) return cached.symbol;
+    if (cached && (!explicit || cached.symbol === explicit)) {
+      try {
+        if (await coversPurchase(cached.symbol)) return cached.symbol;
+      } catch {
+        // A stale/unavailable cached listing can still have a usable alternate.
+      }
+    }
     const candidates = explicit ? [explicit] : defaultYahooSymbols(instrument);
     const today = this.now().toISOString().slice(0, 10);
+    const attempted = new Set<string>();
     const accept = async (symbol: string, fromIsin = false) => {
+      const attemptKey = `${fromIsin ? "isin" : "symbol"}:${symbol}`;
+      if (attempted.has(attemptKey)) return false;
+      attempted.add(attemptKey);
       try {
         const history = await fetchYahooHistory(
           symbol,
@@ -231,17 +250,26 @@ export class YahooHistoryCache {
       search.searchParams.set("q", instrument.isin);
       search.searchParams.set("quotesCount", "5");
       search.searchParams.set("newsCount", "0");
-      const data = await jsonRequest(String(search), this.request);
-      for (const item of data.quotes ?? []) {
-        if (
-          typeof item.symbol === "string" &&
-          (item.quoteType === "EQUITY" || item.quoteType === "ETF") &&
-          await accept(item.symbol, true)
-        ) return item.symbol;
+      try {
+        const data = await jsonRequest(String(search), this.request);
+        for (const item of data.quotes ?? []) {
+          if (
+            typeof item.symbol === "string" &&
+            (item.quoteType === "EQUITY" || item.quoteType === "ETF") &&
+            await accept(item.symbol, true)
+          ) return item.symbol;
+        }
+      } catch {
+        // Search availability must not prevent trying the bounded chart candidates.
+      }
+    }
+    if (!explicit) {
+      for (const candidate of likelyYahooSymbols(instrument)) {
+        if (await accept(candidate)) return candidate;
       }
     }
     throw new Error(
-      `Cannot resolve historical prices for ${instrument.ticker} (${instrument.currency}). Set EYRI_YAHOO_SYMBOLS for this listing.`,
+      `Cannot resolve historical prices for ${instrument.ticker}.`,
     );
   }
 

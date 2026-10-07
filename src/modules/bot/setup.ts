@@ -54,6 +54,7 @@ const botCommands = [
   { command: "stocks", description: "Show stock performance" },
   { command: "portfolio", description: "Chart stock allocation" },
   { command: "chart", description: "Chart and compare all-time performance" },
+  { command: "yahoo", description: "Set a Yahoo symbol for historical prices" },
   { command: "rsu", description: "Show or record RSU vesting" },
   { command: "rsu_rm", description: "Remove RSU awards for a ticker" },
   { command: "rsu_at", description: "Show RSUs with a vesting cutoff date" },

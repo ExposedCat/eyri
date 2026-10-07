@@ -348,3 +348,178 @@ Deno.test("Freedom24 and IBKR symbol defaults resolve through Yahoo and reuse pe
     db.close();
   }
 });
+
+Deno.test("user Yahoo mappings beat defaults and isolate resolutions across users and mapping changes", async () => {
+  const { saveYahooMapping, removeYahooMapping } = await import(
+    "./mappings.ts"
+  );
+  const original = Deno.env.get("EYRI_YAHOO_SYMBOLS");
+  const db = new Database(":memory:");
+  const calls: URL[] = [];
+  try {
+    Deno.env.delete("EYRI_YAHOO_SYMBOLS");
+    const cache = new YahooHistoryCache(
+      db,
+      market([], calls),
+      () => new Date("2025-01-10T20:00:00Z"),
+    );
+    const instrument = { ticker: "AAPL", currency: "USD" };
+    equal(await cache.resolve(instrument, "2025-01-02", 1), "AAPL");
+    saveYahooMapping(db, 1, "AAPL", "FIRST");
+    equal(await cache.resolve(instrument, "2025-01-02", 1), "FIRST");
+    equal(await cache.resolve(instrument, "2025-01-02", 2), "AAPL");
+    saveYahooMapping(db, 1, "AAPL", "SECOND");
+    equal(await cache.resolve(instrument, "2025-01-02", 1), "SECOND");
+    Deno.env.set("EYRI_YAHOO_SYMBOLS", JSON.stringify({ "AAPL:USD": "ADMIN" }));
+    equal(await cache.resolve(instrument, "2025-01-02", 1), "SECOND");
+    equal(await cache.resolve(instrument, "2025-01-02", 2), "ADMIN");
+    removeYahooMapping(db, 1, "AAPL");
+    Deno.env.delete("EYRI_YAHOO_SYMBOLS");
+    const restart = new YahooHistoryCache(
+      db,
+      market([], calls),
+      () => new Date("2025-01-10T20:00:00Z"),
+    );
+    equal(await restart.resolve(instrument, "2025-01-02", 1), "AAPL");
+  } finally {
+    if (original === undefined) Deno.env.delete("EYRI_YAHOO_SYMBOLS");
+    else Deno.env.set("EYRI_YAHOO_SYMBOLS", original);
+    db.close();
+  }
+});
+
+Deno.test("missing symbols try likely alternatives, reject wrong currencies and persist the successful choice", async () => {
+  const db = new Database(":memory:");
+  const attempted: string[] = [];
+  const request: typeof fetch = async (input, init) => {
+    const symbol = decodeURIComponent(
+      new URL(String(input)).pathname.split("/").at(-1)!,
+    );
+    attempted.push(symbol);
+    if (!["CSPX.L", "VWCE.DE", "VWCE.F"].includes(symbol)) {
+      return new Response(null, { status: 404 });
+    }
+    const data = await (await market()(input, init)).json();
+    // A found ticker with the wrong currency must not become the chosen listing.
+    data.chart.result[0].meta.currency = symbol === "VWCE.F" ? "EUR" : "USD";
+    return Response.json(data);
+  };
+  try {
+    const clock = () => new Date("2025-01-10T20:00:00Z");
+    let cache = new YahooHistoryCache(db, request, clock);
+    equal(
+      await cache.resolve({ ticker: "CSPX", currency: "USD" }, "2025-01-02"),
+      "CSPX.L",
+    );
+    equal(
+      await cache.resolve({ ticker: "VWCE", currency: "EUR" }, "2025-01-02"),
+      "VWCE.F",
+    );
+    deepStrictEqual(attempted, [
+      "CSPX",
+      "CSPX.L",
+      "CSPX.L",
+      "VWCE",
+      "VWCE.DE",
+      "VWCE.F",
+      "VWCE.F",
+    ]);
+    const count = attempted.length;
+    cache = new YahooHistoryCache(db, request, clock);
+    equal(
+      await cache.resolve({ ticker: "CSPX", currency: "USD" }, "2025-01-02"),
+      "CSPX.L",
+    );
+    equal(
+      await cache.resolve({ ticker: "VWCE", currency: "EUR" }, "2025-01-02"),
+      "VWCE.F",
+    );
+    equal(attempted.length, count);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("an unavailable ISIN search still permits likely candidates, but recent listings cannot cover older purchases", async () => {
+  const db = new Database(":memory:");
+  const calls: string[] = [];
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const symbol = url.pathname.split("/").at(-1)!;
+    calls.push(symbol);
+    if (symbol === "search" || symbol === "TEST") {
+      return new Response(null, { status: 503 });
+    }
+    const data = await (await market()(input, init)).json();
+    if (symbol === "TEST.L") {
+      const result = data.chart.result[0];
+      result.timestamp = result.timestamp.filter((t: number) =>
+        t >= Date.parse("2025-01-08") / 1000
+      );
+      result.indicators.quote[0].close = result.timestamp.map(() => 100);
+    }
+    return Response.json(data);
+  };
+  try {
+    const cache = new YahooHistoryCache(
+      db,
+      request,
+      () => new Date("2025-01-10T20:00:00Z"),
+    );
+    equal(
+      await cache.resolve({
+        ticker: "TEST",
+        currency: "USD",
+        isin: "TEST-ISIN",
+      }, "2025-01-02"),
+      "TEST.IL",
+    );
+    deepStrictEqual(calls, [
+      "TEST",
+      "search",
+      "TEST.L",
+      "TEST.L",
+      "TEST.IL",
+      "TEST.IL",
+    ]);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("resolution rejects only after exhausting bounded alternatives without caching a false success", async () => {
+  const db = new Database(":memory:");
+  const symbols: string[] = [];
+  const request: typeof fetch = (input) => {
+    symbols.push(new URL(String(input)).pathname.split("/").at(-1)!);
+    return Promise.resolve(new Response(null, { status: 404 }));
+  };
+  try {
+    const cache = new YahooHistoryCache(
+      db,
+      request,
+      () => new Date("2025-01-10T20:00:00Z"),
+    );
+    await rejects(
+      cache.resolve({ ticker: "MISSING", currency: "EUR" }),
+      /Cannot resolve historical prices/,
+    );
+    deepStrictEqual(symbols, [
+      "MISSING",
+      "MISSING.DE",
+      "MISSING.F",
+      "MISSING.PA",
+      "MISSING.AS",
+      "MISSING.MI",
+      "MISSING.MC",
+    ]);
+    equal(
+      (db.prepare("SELECT COUNT(*) AS count FROM yahoo_symbols").get() as {
+        count: number;
+      }).count,
+      0,
+    );
+  } finally {
+    db.close();
+  }
+});

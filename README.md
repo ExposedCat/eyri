@@ -147,20 +147,40 @@ ISIN is absent. Patterns are scoped to the instrument currency:
 | `*l_EQ` | USD | `.IL`, then `.L` |
 | IBKR bare symbol | USD | Same symbol (`BRK B` / `BRK.B` → `BRK-B`) |
 | Bare symbol | GBP / GBX | `.L`, then the original symbol |
+| `VUAA`, `SPYL` | USD | `VUAA.L`, `SPYL.L` |
 
-Existing Yahoo exchange suffixes remain intact. Other bare IBKR symbols may need
-an explicit mapping, particularly when the currency is shared across exchanges;
-the resolver does not guess which European listing a bare EUR symbol belongs to.
+Existing Yahoo exchange suffixes remain intact. When normal candidates and ISIN
+lookup fail, the resolver tries up to six likely exchange variants based on the
+broker currency. USD symbols try `.L` and `.IL`; EUR symbols try `.DE`, `.F`,
+`.PA`, `.AS`, `.MI` and `.MC`. Other supported currencies have their local Yahoo
+suffixes (for example CAD `.TO` / `.V` and HKD `.HK`). Broker suffixes are stripped
+before these attempts, and numeric Hong Kong symbols are padded to four digits.
+Candidates must match the quote currency (GBP and GBX are interchangeable) and
+cover the first purchase. Successful resolutions persist for future commands;
+failed ISIN search does not prevent trying the chart candidates. Explicit
+`/yahoo` mappings stay authoritative and are never silently replaced by guesses.
 Patterns also accept the normalized uppercase broker tickers. Exchange hints and
 ISIN search provide additional candidates. Resolution checks that
 the selected listing covers the first purchase (for example, Samsung's full London
-history is `SMSN.IL`, while `SMSN.L` only begins in July 2026). For an otherwise
-unresolvable listing, configure an explicit mapping, for example:
-`EYRI_YAHOO_SYMBOLS='{"2DGD_EQ:EUR":"2DG.F"}'`. Explicit mappings take priority over
-cached resolutions and defaults; a failed override produces an error.
+history is `SMSN.IL`, while `SMSN.L` only begins in July 2026).
+
+Use `/yahoo TICKER MAPPING` to save your Yahoo symbol, for example
+`/yahoo VUAA VUAA.L` or `/yahoo 2DGD_EQ 2DG.F`. The command validates the Yahoo
+symbol before saving. Mappings are personal, persist across restarts, and take
+priority over defaults and administrator environment overrides. Updating a
+mapping selects its corresponding cached history on the next `/chart`.
+Use `/yahoo TICKER -` to remove your override.
 
 If any symbol cannot resolve or fetch prices, `/chart` reports the affected
-instruments and sends no image. Successful fetches remain cached for a retry.
+instruments once, with copyable mapping commands, and sends no image:
+
+```text
+Failed to fetch historical data:
+- /yahoo VUAA VUAA.L
+- /yahoo SPYL SPYL.L
+```
+
+Successful fetches remain cached for a retry.
 A failed Compare leaves the existing chart and participants unchanged.
 Unsupported or missing historical prices, unmatched sales and quantities that
 disagree with the live broker also cause an error rather than a partial graph.

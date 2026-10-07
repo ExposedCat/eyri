@@ -1,5 +1,5 @@
 import { deepStrictEqual } from "node:assert/strict";
-import { defaultYahooSymbols } from "./symbols.ts";
+import { defaultYahooSymbols, likelyYahooSymbols } from "./symbols.ts";
 
 Deno.test("default Yahoo patterns cover broker suffixes without metadata and remain currency scoped", () => {
   for (
@@ -17,6 +17,8 @@ Deno.test("default Yahoo patterns cover broker suffixes without metadata and rem
       ["CRDO.US", "USD", ["CRDO", "CRDO.US"]],
       ["BRK.B.US", "USD", ["BRK-B", "BRK.B.US"]],
       ["AAPL", "USD", ["AAPL"]],
+      ["VUAA", "USD", ["VUAA.L", "VUAA"]],
+      ["SPYL", "USD", ["SPYL.L", "SPYL"]],
       ["VOD", "GBP", ["VOD.L", "VOD"]],
       ["VOD", "GBX", ["VOD.L", "VOD"]],
       ["VOD.L", "GBX", ["VOD.L"]],
@@ -44,4 +46,29 @@ Deno.test("default Yahoo patterns cover broker suffixes without metadata and rem
     }),
     ["SMSN.IL", "SMSN.L"],
   );
+});
+
+Deno.test("likely Yahoo candidates are bounded, currency scoped, normalized and exclude already tried defaults", () => {
+  for (
+    const [ticker, currency, expected] of [
+      ["CSPX", "USD", ["CSPX.L", "CSPX.IL"]],
+      ["VWCE", "EUR", [
+        "VWCE.DE",
+        "VWCE.F",
+        "VWCE.PA",
+        "VWCE.AS",
+        "VWCE.MI",
+        "VWCE.MC",
+      ]],
+      ["CSPX.US", "USD", ["CSPX.L", "CSPX.IL"]],
+      ["ABC_US_EQ", "USD", ["ABC.L", "ABC.IL"]],
+      ["2DGD_EQ", "EUR", ["2DG.PA", "2DG.AS", "2DG.MI", "2DG.MC"]],
+      ["ABC", "CAD", ["ABC.TO", "ABC.V"]],
+      ["700", "HKD", ["0700.HK"]],
+      ["VOD", "GBP", []],
+      ["VUAA", "USD", ["VUAA.IL"]],
+      ["UNKNOWN_EQ", "EUR", []],
+      ["+APH.15JAN2027.C200", "USD", []],
+    ] as const
+  ) deepStrictEqual(likelyYahooSymbols({ ticker, currency }), expected);
 });

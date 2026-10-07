@@ -5,12 +5,16 @@ import type { CustomContext } from "../bot/types.ts";
 import { ensureSchema } from "../database/setup.ts";
 import { createChartComposer, readChartSession } from "./chart_composer.ts";
 import type { AllTimeDataset } from "./alltime_chart.ts";
+import { HistoricalDataError } from "../market_data/errors.ts";
+import { readYahooMapping } from "../market_data/mappings.ts";
 
 function harness(db: Database) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const fetched: number[] = [];
   const rendered: number[][] = [];
   const failures = new Set<number>();
+  const invalidSymbols = new Set<string>();
+  const validatedSymbols: string[] = [];
   const bot = new Bot<CustomContext>("123:test", {
     botInfo: {
       id: 123,
@@ -52,9 +56,11 @@ function harness(db: Database) {
       fetched.push(ctx.from!.id);
       if (failures.has(ctx.from!.id)) {
         return Promise.reject(
-          new Error(
-            "Could not build chart. Historical prices failed for: IQEL_EQ (GBX).",
-          ),
+          new HistoricalDataError([
+            { ticker: "VUAA", symbol: "VUAA.L" },
+            { ticker: "SPYL", symbol: "SPYL.L" },
+            { ticker: "VUAA", symbol: "VUAA.L" },
+          ]),
         );
       }
       return Promise.resolve({
@@ -72,6 +78,12 @@ function harness(db: Database) {
       rendered.push(datasets.map((d) => d.userId));
       return Promise.resolve(new Uint8Array([1, 2, 3]));
     },
+    validateSymbol: (symbol) => {
+      validatedSymbols.push(symbol);
+      return invalidSymbols.has(symbol)
+        ? Promise.reject(new Error("HTTP 404"))
+        : Promise.resolve();
+    },
   });
   bot.use(composer);
   let updateId = 0;
@@ -85,6 +97,8 @@ function harness(db: Database) {
     fetched,
     rendered,
     failures,
+    invalidSymbols,
+    validatedSymbols,
     command: (text = "/chart", userId = 1, chatId = -1001) =>
       bot.handleUpdate({
         update_id: ++updateId,
@@ -224,10 +238,12 @@ Deno.test("/chart reports historical failure without rendering or sending a part
     await h.command();
     deepStrictEqual(h.rendered, []);
     equal(h.calls.filter((c) => c.method === "sendDocument").length, 0);
-    match(
-      String(h.calls.find((c) => c.method === "sendMessage")!.payload.text),
-      /Historical prices failed.*IQEL_EQ/,
+    const reply = h.calls.find((c) => c.method === "sendMessage")!;
+    equal(
+      reply.payload.text,
+      "Failed to fetch historical data:\n- <code>/yahoo VUAA VUAA.L</code>\n- <code>/yahoo SPYL SPYL.L</code>",
     );
+    equal(reply.payload.parse_mode, "HTML");
   } finally {
     db.close();
   }
@@ -250,10 +266,58 @@ Deno.test("failed Compare sends an error and preserves the complete existing ima
       readChartSession(db, data.split(":")[1], -1001, 100)!.datasets,
       before,
     );
-    match(String(h.calls.at(-1)!.payload.text), /Historical prices failed/);
+    match(
+      String(h.calls.at(-1)!.payload.text),
+      /Failed to fetch historical data:/,
+    );
     h.failures.delete(2);
     await h.compare(data, 2);
     equal(h.calls.filter((c) => c.method === "editMessageMedia").length, 1);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("/yahoo validates, saves per-user mappings, survives restarts, and resets to defaults", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command("/yahoo vuaa vuaa.l", 1);
+    equal(readYahooMapping(db, 1, "VUAA"), "VUAA.L");
+    equal(readYahooMapping(db, 2, "VUAA"), undefined);
+    deepStrictEqual(h.validatedSymbols, ["VUAA.L"]);
+    const restart = harness(db);
+    await restart.command("/yahoo VUAA VUAA.DE", 2);
+    equal(readYahooMapping(db, 2, "VUAA"), "VUAA.DE");
+    equal(readYahooMapping(db, 1, "VUAA"), "VUAA.L");
+    restart.invalidSymbols.add("BROKEN");
+    await restart.command("/yahoo VUAA BROKEN", 1);
+    equal(readYahooMapping(db, 1, "VUAA"), "VUAA.L");
+    equal(
+      restart.calls.at(-1)!.payload.text,
+      "Failed to fetch historical data:\n- <code>/yahoo VUAA BROKEN</code>",
+    );
+    await restart.command("/yahoo VUAA -", 1);
+    equal(readYahooMapping(db, 1, "VUAA"), undefined);
+    equal(readYahooMapping(db, 2, "VUAA"), "VUAA.DE");
+    for (
+      const text of [
+        "/yahoo",
+        "/yahoo VUAA",
+        "/yahoo VUAA TOO MANY",
+        "/yahoo VUAA <script>",
+      ]
+    ) {
+      await restart.command(text);
+      match(
+        String(restart.calls.at(-1)!.payload.text),
+        /Use <code>\/yahoo TICKER MAPPING<\/code>/,
+      );
+    }
+    deepStrictEqual(h.rendered, []);
+    deepStrictEqual(restart.rendered, []);
+    equal(restart.calls.filter((c) => c.method === "sendDocument").length, 0);
   } finally {
     db.close();
   }

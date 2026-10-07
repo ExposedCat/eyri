@@ -366,9 +366,10 @@ Deno.test("any failed or empty historical fetch rejects the entire chart and rep
       ),
       (error: unknown) => {
         ok(error instanceof Error);
-        match(error.message, /BAD1 \(USD\).*No matching listing/);
-        match(error.message, /BAD2 \(USD\).*429/);
-        match(error.message, /EMPTY \(USD\).*No historical closing prices/);
+        equal(
+          error.message,
+          "Failed to fetch historical data:\n- /yahoo BAD1 BAD1\n- /yahoo BAD2 BAD2\n- /yahoo EMPTY EMPTY",
+        );
         return true;
       },
     );
