@@ -20,6 +20,7 @@ import { logFetch } from "../../../utils/fetch_logging.ts";
 const EXECUTION_SYNC_INTERVAL_MS = 15 * 1000;
 const EXECUTION_CLIENT_ID_OFFSET = 1000;
 const EXECUTION_SYNC_REQUEST_ID = 90_000;
+const DAILY_PNL_TIMEOUT_MS = 10_000;
 
 type IbkrConnectionConfig = {
   host: string;
@@ -564,7 +565,6 @@ async function readDailyPnl(
   api: IBApi,
   positions: IbkrPortfolioPosition[],
   accountId: string,
-  config: IbkrConnectionConfig,
 ) {
   const requestIdByConId = new Map<number, number>();
   const dailyPnlByConId = new Map<
@@ -631,7 +631,7 @@ async function readDailyPnl(
     timeoutId = setTimeout(() => {
       cleanup();
       resolve();
-    }, config.timeoutMs);
+    }, DAILY_PNL_TIMEOUT_MS);
   });
 
   return dailyPnlByConId;
@@ -641,9 +641,8 @@ async function enrichPortfolioWithDailyPnl(
   api: IBApi,
   positions: IbkrPortfolioPosition[],
   accountId: string,
-  config: IbkrConnectionConfig,
 ): Promise<IbkrPortfolioPosition[]> {
-  const dailyPnlByConId = await readDailyPnl(api, positions, accountId, config);
+  const dailyPnlByConId = await readDailyPnl(api, positions, accountId);
 
   return positions.map((position) => {
     const dailyPnl = position.conId
@@ -887,7 +886,6 @@ export const ibkrAdapter: IntegrationAdapter = {
         api,
         positions,
         accountId,
-        config,
       );
       return enrichPortfolioWithOrders(
         positionsWithDailyPnl,
