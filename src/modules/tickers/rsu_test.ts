@@ -84,6 +84,10 @@ Deno.test("RSUs group by vesting date and ticker with weighted award cost and ex
 		groups[1],
 		`26.09.2026 (2d)\n${formatter("MSFT")} $100.00 (-$100.00 -50.00%)`,
 	);
+	const eur = buildRsuGroups(vestings, new Map([["AAPL", 180], ["MSFT", 50]]), formatter, now, "EUR", .8);
+	equal(eur[0], `24.09.2026 (today)\n${formatter("AAPL")} 2,880.00 EUR (+480.00 EUR +20.00%)`);
+	equal(eur[1], `26.09.2026 (2d)\n${formatter("MSFT")} 80.00 EUR (-80.00 EUR -50.00%)`);
+	equal(buildRsuSummary("Total", vestings, new Map([["AAPL", 180], ["MSFT", 50]]), "2025-01-01", "2026-09-26", "EUR", .8).includes(" EUR"), true);
 	const unavailable = buildRsuGroups(vestings, new Map(), formatter, now);
 	equal(unavailable[0], `24.09.2026 (today)\n${formatter("AAPL")} ? (? ?)`);
 	const flat = buildRsuGroups(

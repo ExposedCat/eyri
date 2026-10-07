@@ -333,6 +333,14 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
       1,
     );
     await Deno.writeFile("/tmp/eyri-alltime-test.png", png);
+    const eur = { ...first, displayCurrency: "EUR", displayRate: .8 };
+    const eurPng = await renderAllTimeChart(db, [eur]);
+    ok(eurPng.length > 0);
+    ok(!eurPng.every((byte, index) => byte === png[index]));
+    deepStrictEqual(await renderAllTimeChart(db, [eur]), eurPng);
+    deepStrictEqual(eur.points, first.points);
+    await Deno.writeFile("/tmp/eyri-alltime-eur-test.png", eurPng);
+
     const other: AllTimeDataset = {
       ...first,
       userId: 2,

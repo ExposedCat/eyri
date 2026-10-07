@@ -10,11 +10,17 @@ export function createCurrencyComposer(request: typeof fetch = fetch) {
     if (!user) return;
     const input = ctx.match.trim().toUpperCase();
     if (!input) {
-      await ctx.reply(`Your currency: ${user.currency ?? "USD"}.\nUse /currency CODE to set any supported currency, or /currency USD to reset.`);
+      await ctx.reply(
+        `Your currency: ${
+          user.currency ?? "USD"
+        }.\nUse /currency CODE to set any supported currency, or /currency USD to reset.`,
+      );
       return;
     }
     if (!/^[A-Z]{3}$/.test(input)) {
-      await ctx.reply("Use /currency CODE, for example /currency EUR or /currency USD.");
+      await ctx.reply(
+        "Use /currency CODE, for example /currency EUR or /currency USD.",
+      );
       return;
     }
     try {
@@ -22,9 +28,15 @@ export function createCurrencyComposer(request: typeof fetch = fetch) {
       await fetchUsdConversionRates([input], request);
       setUserCurrency(ctx.db, user.userId, input === "USD" ? null : input);
       user.currency = input === "USD" ? null : input;
-      await ctx.reply(`Your currency is now ${input}. Chart comparisons always use USD.`);
+      await ctx.reply(
+        `Your currency is now ${input}. Chart comparisons always use USD.`,
+      );
     } catch (error) {
-      await ctx.reply(`Could not set currency ${input}: ${error instanceof Error ? error.message : String(error)}`);
+      await ctx.reply(
+        `Could not set currency ${input}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   });
   return composer;

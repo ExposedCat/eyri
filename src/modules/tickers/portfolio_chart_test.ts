@@ -41,7 +41,7 @@ Deno.test("portfolio chart uses preferred currency for values and gains with unc
   equal(eur.total, "160.00 EUR");
   deepStrictEqual(eur.holdings.map((h) => [h.weight, h.returnLabel]), usd.holdings.map((h) => [h.weight, h.returnLabel]));
   equal(eur.holdings[0].value, "80 EUR");
-  equal(eur.holdings[0].changeLabel, "+16.00 EUR");
+  equal(eur.holdings.find((holding) => holding.ticker === "US")!.changeLabel, "+16.00 EUR");
 });
 
 Deno.test("portfolio chart sorts by share and measures gain or loss against purchase cost", async () => {

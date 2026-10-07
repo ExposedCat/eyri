@@ -4,6 +4,7 @@ import { Bot } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
 import { createReplyWithTextFunc } from "../bot/utils.ts";
 import { ensureSchema } from "../database/setup.ts";
+import { findOrCreateUser, setUserCurrency } from "../database/user.ts";
 import { getUserBucket, readBucketAssignments } from "../database/bucket.ts";
 import { createIntegration } from "../database/integration.ts";
 import { tickersComposer } from "./composer.ts";
@@ -42,7 +43,7 @@ function harness(db: Database) {
       ctx.from!.id,
     );
     ctx.db = db;
-    ctx.dbEntities = { user: { userId: ctx.from!.id } };
+    ctx.dbEntities = { user: await findOrCreateUser(db, ctx.from!.id) };
     ctx.text = createReplyWithTextFunc(ctx);
     await next();
   });
@@ -150,6 +151,9 @@ Deno.test("shared reporting commands work without a recipient integration and ne
   const db = new Database(":memory:");
   const requestedKeys: string[] = [];
   globalThis.fetch = (input, init) => {
+    if (String(input).startsWith("https://api.frankfurter.dev/")) {
+      return Promise.resolve(Response.json({ base: "USD", quote: "EUR", rate: .8 }));
+    }
     const params = new URLSearchParams(String(init?.body));
     requestedKeys.push(params.get("apiKey") ?? "");
     const cmd = params.get("cmd");
@@ -255,6 +259,20 @@ Deno.test("shared reporting commands work without a recipient integration and ne
       if (command === "/worth") match(h.lastText(), /Total: \+100\.00% \$800\.00/);
       if (command === "/worthnumber") match(h.lastText(), /\n\$800\.00$/);
     }
+    setUserCurrency(db, recipient, "EUR");
+    await h.command("/worth Core", recipient);
+    match(h.lastText(), /Total: \+100\.00% 640\.00 EUR/);
+    for (const command of ["/perf", "/alltime", "/allnumber", "/number", "/worth", "/worthnumber", "/history", "/stocks", "/when AAPL.US=200"]) {
+      await h.command(command, recipient);
+      match(h.lastText(), / EUR/, command);
+      equal(h.lastText().includes("$"), false, command);
+      equal(h.lastText().includes("PRIVATE"), false, command);
+    }
+    match(h.lastText(), /\+480\.00 EUR \+150\.00%/);
+    await h.command("/dump_tickers", recipient);
+    match(h.lastText(), /"currency": "EUR"/);
+    await h.command("/worth Core", owner);
+    match(h.lastText(), /Total: \+100\.00% \$800\.00/);
     ok(requestedKeys.length > 0);
     equal(requestedKeys.every((key) => key === "owner-key"), true);
   } finally {

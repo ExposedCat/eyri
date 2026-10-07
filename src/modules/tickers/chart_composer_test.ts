@@ -9,10 +9,11 @@ import { HistoricalDataError } from "../market_data/errors.ts";
 import { readYahooMapping } from "../market_data/mappings.ts";
 import { createBucket, transferBucketAccess } from "../database/bucket.ts";
 
-function harness(db: Database) {
+function harness(db: Database, currencies = new Map<number, string>()) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const fetched: number[] = [];
   const rendered: number[][] = [];
+  const renderedDatasets: AllTimeDataset[][] = [];
   const failures = new Set<number>();
   const invalidSymbols = new Set<string>();
   const validatedSymbols: string[] = [];
@@ -54,10 +55,11 @@ function harness(db: Database) {
   });
   bot.use(async (ctx, next) => {
     ctx.db = db;
-    ctx.dbEntities = { user: { userId: ctx.from!.id } };
+    ctx.dbEntities = { user: { userId: ctx.from!.id, currency: currencies.get(ctx.from!.id) } };
     await next();
   });
   const composer = createChartComposer({
+    request: async () => Response.json({ base: "USD", quote: "EUR", rate: .8 }),
     dataset: (ctx, bucketName) => {
       fetched.push(ctx.from!.id);
       if (failures.has(ctx.from!.id)) {
@@ -82,6 +84,7 @@ function harness(db: Database) {
     },
     render: (_db, datasets) => {
       rendered.push(datasets.map((d) => d.userId));
+      renderedDatasets.push(structuredClone(datasets));
       return Promise.resolve(new Uint8Array([1, 2, 3]));
     },
     validateSymbol: (symbol) => {
@@ -102,6 +105,7 @@ function harness(db: Database) {
     calls,
     fetched,
     rendered,
+    renderedDatasets,
     failures,
     invalidSymbols,
     validatedSymbols,
@@ -348,6 +352,37 @@ Deno.test("/yahoo validates global mappings, shares updates and resets across us
     deepStrictEqual(h.rendered, []);
     deepStrictEqual(restart.rendered, []);
     equal(restart.calls.filter((c) => c.method === "sendPhoto").length, 0);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("Compare changes a preferred-currency chart to USD while preserving original snapshots, including after restart", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const currencies = new Map([[1, "EUR"], [2, "GBP"]]);
+    const first = harness(db, currencies);
+    await first.command();
+    const data = callback(first.calls);
+    const initial = first.renderedDatasets[0][0];
+    equal(initial.displayCurrency, "EUR");
+    equal(initial.displayRate, .8);
+    equal(initial.points.at(-1)!.gain, 100);
+    const resumed = harness(db, currencies);
+    resumed.failures.add(2);
+    await resumed.compare(data);
+    let session = readChartSession(db, data.split(":")[1], -1001, 100)!;
+    deepStrictEqual(JSON.parse(session.datasets), [initial]);
+    resumed.failures.delete(2);
+    await resumed.compare(data);
+    deepStrictEqual(resumed.fetched, [2, 2]);
+    const compared = resumed.renderedDatasets[0];
+    deepStrictEqual(compared.map((d) => d.displayCurrency ?? "USD"), ["USD", "USD"]);
+    deepStrictEqual(compared[0].points, initial.points);
+    equal(compared[1].points.at(-1)!.gain, 100);
+    session = readChartSession(db, data.split(":")[1], -1001, 100)!;
+    deepStrictEqual(JSON.parse(session.datasets), compared);
   } finally {
     db.close();
   }
