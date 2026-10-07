@@ -1,13 +1,15 @@
 import { getAllIntegrations } from "./modules/database/integration.ts";
-import { connectToDb } from "./modules/database/setup.ts";
+import { connectToDb, type Database } from "./modules/database/setup.ts";
 import { fetchIntegrationPortfolio } from "./modules/integrations/service.ts";
 
-async function main() {
-  const database = await connectToDb();
-  const integrations = getAllIntegrations(database);
+export async function checkIntegrations(database: Database) {
+  // IB Gateway requires user 2FA; its availability is not app health.
+  const integrations = getAllIntegrations(database).filter(
+    (integration) => integration.kind !== "ibkr",
+  );
 
   if (integrations.length === 0) {
-    console.log("No integrations configured.");
+    console.log("No non-IBKR integrations configured.");
     return;
   }
 
@@ -18,9 +20,11 @@ async function main() {
   console.log(`Checked ${integrations.length} integration(s).`);
 }
 
-try {
-  await main();
-} catch (error) {
-  console.error("Integration healthcheck failed:", error);
-  Deno.exit(1);
+if (import.meta.main) {
+  try {
+    await checkIntegrations(await connectToDb());
+  } catch (error) {
+    console.error("Integration healthcheck failed:", error);
+    Deno.exit(1);
+  }
 }

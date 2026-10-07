@@ -237,6 +237,10 @@ to view a bucket.
 
 ## Restarting IB Gateway
 
+The app health check verifies the database and non-IBKR integrations. IBKR
+integrations are excluded so a gateway waiting for user 2FA does not make the
+app unhealthy.
+
 Gateway automatically restarts daily at 23:59 in the `TIME_ZONE` configured in
 `.env-ibkr-1` (currently UTC), replacing its scheduled logoff. This normally
 preserves authentication during the week; weekly 2FA is still required.
