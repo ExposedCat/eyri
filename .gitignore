@@ -6,4 +6,5 @@ node_modules
 
 # Sensitive data
 .env*
+!.env-ibkr-2.example
 data/

@@ -16,6 +16,27 @@ services:
     volumes:
       - ib-gateway-settings:/home/ibgateway/Jts
 
+  ib_gateway_2:
+    container_name: ib_gateway_2
+    image: ghcr.io/code-hustler-ft3d/ibg-controller:0.15.0@sha256:a62023992fd1d705a9cb8d23c3fb449204cfc24ef0c3a4e25f7baa51311d7070
+    restart: on-failure
+    stop_grace_period: 90s
+    env_file:
+      - .env-ibkr-2
+    environment:
+      USE_IBG_CONTROLLER: "yes"
+      TRADING_MODE: live
+      READ_ONLY_API: "yes"
+      TWS_SETTINGS_PATH: /home/ibgateway/Jts
+      AUTO_RESTART_TIME: "11:59 PM"
+      TWOFA_TIMEOUT_ACTION: none
+      TIME_ZONE: Etc/UTC
+      TZ: Etc/UTC
+    ports:
+      - "127.0.0.1:9082:8080"
+    volumes:
+      - ib-gateway-2-settings:/home/ibgateway/Jts
+
   eyri_app:
     build:
       context: .
@@ -45,4 +66,5 @@ services:
 
 volumes:
   ib-gateway-settings:
+  ib-gateway-2-settings:
   eyri-data:

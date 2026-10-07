@@ -19,6 +19,49 @@ The selected provider is saved per user and chat, including across bot restarts.
 Use `/ibkr [instance_url] [flex_token] [flex_query_id]` in Telegram to persist
 an Interactive Brokers integration for the current user.
 
+### Second IBKR Gateway with TOTP
+
+`/ibkr` registers an existing Gateway; it does not install or start a container.
+`compose.yaml` includes a second live, read-only Gateway with
+[ibg-controller](https://github.com/code-hustler-ft3d/ibg-controller)'s automatic
+TOTP login. It uses its own settings volume and the same private network as
+Eyri. Both Gateway instances are managed by the existing PM3 project.
+
+On the server, in `/home/kitkat/apps/eyri`, create `.env-ibkr-2` from
+`.env-ibkr-2.example` and fill `TWS_USERID`, `TWS_PASSWORD`, and `TWOFACTOR_CODE`.
+The last value is the Base32 Mobile Authenticator **setup key**, not a rotating
+six-digit code. Keep the credentials file permissions at `600`. The controller
+requires Mobile Authenticator
+to be available for this IBKR username; test its activation before changing other
+authentication methods. The controller documents that a single TOTP method is
+needed for reliable unattended login.
+
+Run `pm3 restart eyri -d` after filling the file. This installs or restarts both
+Gateway instances and Eyri. Check IBKR2 readiness with
+`curl -fsS http://127.0.0.1:9082/health`. Login can take a few minutes. If the
+account's default connection server is incorrect, set `TWS_SERVER` in the env
+file to its actual Gateway server and restart the PM3 project; see the controller's
+[bootstrap guide](https://github.com/code-hustler-ft3d/ibg-controller/blob/main/docs/BOOTSTRAP.md).
+
+The new user must configure an XML Activity Flex Query with Trades at Executions
+level only, including Symbol, Trade Date, Buy/Sell, Quantity, Trade Price,
+Currency, and Asset Category. Select only the account served by this Gateway,
+leave symbol filters empty, and choose date format `yyyyMMdd`. Enable Flex Web
+Service and obtain its token and the query ID. Then, from their own private
+Telegram chat with Eyri, send:
+
+```text
+/ibkr tcp://ib_gateway_2:4003 FLEX_TOKEN QUERY_ID
+```
+
+The integration belongs to the command sender. `/portfolio` uses the live Gateway;
+historical commands need the initial Flex imports to finish. Flex imports one
+annual batch every five minutes and defaults to five batches per integration.
+The API stays on the private container network; only the health endpoint is
+published on the server's loopback interface. VNC is not published.
+
+### Other integrations
+
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
 
