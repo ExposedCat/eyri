@@ -11,6 +11,8 @@ const reportCommands = [
   "alltime",
   "number",
   "allnumber",
+  "worth",
+  "worthnumber",
   "sold",
   "dpnl",
   "history",

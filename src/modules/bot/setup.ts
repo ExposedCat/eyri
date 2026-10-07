@@ -63,6 +63,8 @@ const botCommands = [
   { command: "options", description: "Show option and warrant performance" },
   { command: "perf", description: "Show concise performance" },
   { command: "number", description: "Show ticker icons and current total gain" },
+  { command: "worth", description: "Show current USD value and percentage returns" },
+  { command: "worthnumber", description: "Show ticker icons and current total value" },
   {
     command: "alltime",
     description: "Show combined current and sold performance",

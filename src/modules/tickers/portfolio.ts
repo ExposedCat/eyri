@@ -167,7 +167,7 @@ function formatOptionStrike(strike: string) {
 
 function buildNumberSummary(
   tickers: string[],
-  change: number | null,
+  summary: string,
   tickerDecorations?: TickerDecorations,
   tickerEmojiMappings?: TickerEmojiMappings,
 ) {
@@ -187,7 +187,7 @@ function buildNumberSummary(
   return [
     ...(icons.size > 0 ? [[...icons].join("")] : []),
     GAINER_LOSER_SEPARATOR,
-    change === null ? "?" : formatMoneyChange(change),
+    summary,
   ].join("\n");
 }
 
@@ -850,7 +850,8 @@ export async function buildIntegratedPerformanceList({
   tickerEmojiMappings,
   formatTicker,
   numberOnly = false,
-}: BuildIntegratedTickerListArgs): Promise<string> {
+  showCurrentValue = false,
+}: BuildIntegratedTickerListArgs & { showCurrentValue?: boolean }): Promise<string> {
   if (positions.length === 0) {
     return "";
   }
@@ -864,10 +865,28 @@ export async function buildIntegratedPerformanceList({
   );
 
   const totals = buildIntegratedPortfolioTotals(performances, now);
+  const getValue = (performance: IntegratedPositionPerformance) => {
+    if (!showCurrentValue) return performance.totalChange;
+    const price = getPriceOverride(priceOverrides, performance.position.ticker) ??
+      performance.position.currentPrice;
+    return price === null
+      ? performance.position.totalNow
+      : performance.position.amount * price;
+  };
+  const totalValue = showCurrentValue
+    ? performances.reduce<number | null>((total, performance) => {
+      const value = getValue(performance);
+      return total === null || value === null ? null : total + value;
+    }, 0)
+    : totals.totalChange;
+  const formatValue = (value: number | null) =>
+    value === null
+      ? "?"
+      : showCurrentValue ? formatMoney(value) : formatMoneyChange(value);
   if (numberOnly) {
     return buildNumberSummary(
       performances.map((p) => p.position.ticker),
-      totals.totalChange,
+      formatValue(totalValue),
       tickerDecorations,
       tickerEmojiMappings,
     );
@@ -886,36 +905,21 @@ export async function buildIntegratedPerformanceList({
         tickerEmojiMappings,
         formatTicker,
       );
-      if (
-        performance.totalChange === null ||
-        performance.totalPercentageChange === null
-      ) {
-        return `${tickerName} ? ? (${performance.elapsedPeriod.label})`;
-      }
-
-      return `${tickerName} ${
-        formatMoneyChange(
-          performance.totalPercentageChange,
-          "%",
-        )
-      } ${
-        formatCurrencyChange(
-          performance.totalChange,
-          position.currency,
-        )
+      const percentage = performance.totalPercentageChange === null
+        ? "?"
+        : formatMoneyChange(performance.totalPercentageChange, "%");
+      return `${tickerName} ${percentage} ${
+        formatValue(getValue(performance))
       } (${performance.elapsedPeriod.label})`;
     },
   );
 
-  const totalLine =
-    totals.totalChange === null || totals.totalPercentageChange === null
-      ? `Total: ? ? (${totals.elapsedPeriod.label})`
-      : `Total: ${formatMoneyChange(totals.totalPercentageChange, "%")} ${
-        formatCurrencyChange(
-          totals.totalChange,
-          positions[0].currency,
-        )
-      } (${totals.elapsedPeriod.label})`;
+  const totalPercentage = totals.totalPercentageChange === null
+    ? "?"
+    : formatMoneyChange(totals.totalPercentageChange, "%");
+  const totalLine = `Total: ${totalPercentage} ${
+    formatValue(totalValue)
+  } (${totals.elapsedPeriod.label})`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -1102,7 +1106,7 @@ export async function buildIntegratedAllTimePerformanceList({
   if (numberOnly) {
     return buildNumberSummary(
       performances.map((p) => p.ticker),
-      total.change,
+      total.change === null ? "?" : formatMoneyChange(total.change),
       tickerDecorations,
       tickerEmojiMappings,
     );

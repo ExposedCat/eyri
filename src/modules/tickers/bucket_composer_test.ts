@@ -227,6 +227,11 @@ Deno.test("shared reporting commands work without a recipient integration and ne
     await h.command("/perf Core", recipient);
     match(h.lastText(), /AAPL/);
     equal(h.lastText().includes("PRIVATE"), false);
+    await h.command("/worth Core", recipient);
+    match(h.lastText(), /Total: \+100\.00% \$800\.00/);
+    equal(h.lastText().includes("PRIVATE"), false);
+    await h.command("/worthnumber Core", recipient);
+    match(h.lastText(), /\n\$800\.00$/);
     await h.command("/bucket include Core", recipient);
     for (
       const command of [
@@ -234,6 +239,8 @@ Deno.test("shared reporting commands work without a recipient integration and ne
         "/alltime",
         "/allnumber",
         "/number",
+        "/worth",
+        "/worthnumber",
         "/dpnl",
         "/history",
         "/stocks",
@@ -245,6 +252,8 @@ Deno.test("shared reporting commands work without a recipient integration and ne
       equal(h.lastText().includes("PRIVATE"), false, command);
       equal(h.lastText().includes("No integrations"), false, command);
       equal(h.lastText().includes("Failed to fetch"), false, command);
+      if (command === "/worth") match(h.lastText(), /Total: \+100\.00% \$800\.00/);
+      if (command === "/worthnumber") match(h.lastText(), /\n\$800\.00$/);
     }
     ok(requestedKeys.length > 0);
     equal(requestedKeys.every((key) => key === "owner-key"), true);

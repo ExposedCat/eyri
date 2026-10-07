@@ -115,6 +115,89 @@ Deno.test("number renders unique available icons including option underlyings an
   equal(output, `${renderedAppleIcon}🪟\n${numberSeparator}\n+$480.00`);
 });
 
+Deno.test("worth preserves perf layout and percentages while displaying current USD values", async () => {
+  const positions = [
+    position(),
+    position({ ticker: "MSFT", amount: 2, totalInput: 200, currentPrice: 50 }),
+    position({ ticker: "+AAPL.19DEC2025.C150", amount: 1, totalInput: 100 }),
+  ];
+  const perf = await buildIntegratedPerformanceList({ positions, formatTicker });
+  const worth = await buildIntegratedPerformanceList({
+    positions,
+    formatTicker,
+    showCurrentValue: true,
+  });
+  equal(worth, perf.replace("+$120.00", "$720.00")
+    .replace("+$20.00", "$120.00")
+    .replace("-$100.00", "$100.00")
+    .replace("+$40.00", "$940.00"));
+  match(worth, /Total: \+4\.44% \$940\.00/);
+
+  equal(await buildIntegratedPerformanceList({
+    positions,
+    numberOnly: true,
+    showCurrentValue: true,
+    ...numberPreferences,
+    formatTicker: () => {
+      throw new Error("Labels must not render");
+    },
+  }), `${renderedAppleIcon}🪟\n${numberSeparator}\n$940.00`);
+});
+
+Deno.test("worth converts values to USD and honors USD price overrides", async () => {
+  const args = {
+    positions: [position({ currency: "EUR" })],
+    request: fxRequest,
+    showCurrentValue: true,
+    formatTicker,
+  };
+  match(await buildIntegratedPerformanceList(args), /AAPL \+20\.00% \$900\.00/);
+  match(await buildIntegratedPerformanceList({
+    ...args,
+    priceOverrides: { AAPL: 200 },
+  }), /Total: \+60\.00% \$1,200\.00/);
+  await rejects(buildIntegratedPerformanceList({
+    ...args,
+    request: async () => new Response(null, { status: 503 }),
+  }), /Could not load USD exchange rate for EUR/);
+});
+
+Deno.test("worth preserves unknown and zero values and can show value without purchase cost", async () => {
+  const args = { showCurrentValue: true, formatTicker };
+  equal(await buildIntegratedPerformanceList({ ...args, positions: [] }), "");
+  const unknown = position({ currentPrice: null, totalNow: null });
+  const output = await buildIntegratedPerformanceList({
+    ...args,
+    positions: [position(), unknown],
+  });
+  match(output, /AAPL \? \?/);
+  match(output, /Total: \? \?/);
+  equal(await buildIntegratedPerformanceList({
+    ...args,
+    positions: [position(), unknown],
+    numberOnly: true,
+  }), `${numberSeparator}\n?`);
+  for (const holding of [
+    position({ totalInput: null, averageUnitPrice: null }),
+    position({ currentPrice: null }),
+  ]) {
+    match(await buildIntegratedPerformanceList({
+      ...args,
+      positions: [holding],
+    }), /Total: \? \$720\.00/);
+    equal(await buildIntegratedPerformanceList({
+      ...args,
+      positions: [holding],
+      numberOnly: true,
+    }), `${numberSeparator}\n$720.00`);
+  }
+  equal(await buildIntegratedPerformanceList({
+    ...args,
+    positions: [position({ currentPrice: 0 })],
+    numberOnly: true,
+  }), `${numberSeparator}\n$0.00`);
+});
+
 Deno.test("allnumber combines current and FIFO sold gains with a single icon per ticker", async () => {
   const output = await buildIntegratedAllTimePerformanceList({
     positions: [position()],

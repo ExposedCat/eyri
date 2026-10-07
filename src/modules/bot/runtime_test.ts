@@ -82,17 +82,19 @@ Deno.test("slow portfolio reports do not block same-chat commands in the runner"
   const responsive = deferred();
   const completed = deferred();
   const started: string[] = [];
-  let remaining = 5;
+  let remaining = 7;
   const bot = harness([
     command(1, "/portfolio"),
     command(2, "/options"),
     command(3, "/chart"),
     command(4, "/number"),
     command(5, "/allnumber"),
-    command(6, "/start"),
+    command(6, "/worth"),
+    command(7, "/worthnumber"),
+    command(8, "/start"),
   ]);
   bot.command(
-    ["portfolio", "options", "chart", "number", "allnumber"],
+    ["portfolio", "options", "chart", "number", "allnumber", "worth", "worthnumber"],
     async (ctx) => {
       ok(ctx.message?.text);
       started.push(ctx.message.text);
@@ -110,6 +112,8 @@ Deno.test("slow portfolio reports do not block same-chat commands in the runner"
       "/chart",
       "/number",
       "/allnumber",
+      "/worth",
+      "/worthnumber",
     ]);
   } finally {
     release.resolve();

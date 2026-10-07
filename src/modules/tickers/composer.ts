@@ -1059,7 +1059,7 @@ tickersComposer.command("dump_tickers", async (ctx) => {
   }
 });
 
-tickersComposer.command(["perf", "alltime", "number", "allnumber"], async (ctx) => {
+tickersComposer.command(["perf", "alltime", "number", "allnumber", "worth", "worthnumber"], async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
@@ -1091,7 +1091,8 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber"], async (ctx) 
 
   try {
     const isAllTime = ctx.hasCommand(["alltime", "allnumber"]);
-    const numberOnly = ctx.hasCommand(["number", "allnumber"]);
+    const numberOnly = ctx.hasCommand(["number", "allnumber", "worthnumber"]);
+    const showCurrentValue = ctx.hasCommand(["worth", "worthnumber"]);
     let performanceList: string;
     if (isAllTime) {
       const view = await fetchPortfolioView(
@@ -1108,6 +1109,7 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber"], async (ctx) 
       performanceList = await buildIntegratedPerformanceList({
         positions,
         numberOnly,
+        showCurrentValue,
         ...preferences,
         formatTicker,
       });

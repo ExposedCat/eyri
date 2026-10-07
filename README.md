@@ -112,8 +112,9 @@ preserved. If any account fails, the command identifies it instead of displaying
 an incomplete total. Existing accounts and cached broker history are preserved
 by an automatic database migration on startup.
 
-`/stocks`, `/options`, `/perf`, `/number`, `/sold`, `/alltime`, `/allnumber`, `/dpnl`, `/history`,
-`/when`, bucket views and diagnostic dumps display USD amounts using the latest
+`/stocks`, `/options`, `/perf`, `/number`, `/worth`, `/worthnumber`, `/sold`,
+`/alltime`, `/allnumber`, `/dpnl`, `/history`, `/when`, bucket views and diagnostic
+dumps display USD amounts using the latest
 Frankfurter rates. Prices supplied to `/when` are USD. History prices and realized
 gains use the same current FX rates as holdings; FIFO matching and bucket shortcuts
 retain their original transaction identity. A required FX failure reports an error
@@ -140,13 +141,15 @@ Ownership and broker credentials remain with the original owner; recipients
 cannot change the bucket's trades or grant someone else access.
 
 Shared buckets appear in `/buckets` and work with named views such as
-`/perf NAME`, `/options NAME`, `/alltime NAME`, `/history NAME`, and `/chart NAME`.
+`/perf NAME`, `/worth NAME`, `/worthnumber NAME`, `/options NAME`, `/alltime NAME`,
+`/history NAME`, and `/chart NAME`.
 The owner's integrations provide the holdings and purchase/sale history. The
 recipient does not need an integration of their own to view a shared bucket.
 
 Use `/bucket include NAME` to merge an accessible bucket into your default
 portfolio reports, including `/portfolio`, `/stocks`, `/options`, `/perf`,
-`/alltime`, `/sold`, `/dpnl`, `/history`, `/number`, `/when`, and `/chart`.
+`/alltime`, `/sold`, `/dpnl`, `/history`, `/number`, `/worth`, `/worthnumber`,
+`/when`, and `/chart`.
 Repeated inclusion does not duplicate holdings. Matching holdings are combined;
 FIFO remains independent for each broker account, and realized gains follow the
 bucket of the original purchase. `/bucket exclude NAME` undoes inclusion without
@@ -170,6 +173,12 @@ in a compact format: available ticker icons on one line, a separator, and only
 the total dollar gain or loss. Icons are deduplicated; tickers without an icon
 are omitted from the icon line but still count toward the total. Both commands
 accept an optional bucket name.
+
+Use `/worth` for the same layout and percentage returns as `/perf`, with current
+USD holding values and their total replacing dollar gains or losses. `/worthnumber`
+shows the same ticker icons and separator as `/number`, followed by only the current
+total USD value. Both commands accept an optional bucket name and use the same
+holdings, including any included buckets.
 
 ## Portfolio chart
 
@@ -354,9 +363,11 @@ numbers, and underscores, and must start with a letter.
 
 Use `/bucket move NAME` to render order history with `/move_NAME_IDX` and
 `/remove_NAME_IDX` shortcuts. Moving a transaction puts it in that bucket and
-removes it from any other bucket. Unbucketed `/perf`, `/number`, `/alltime`, `/allnumber`, `/stocks`, `/options`,
-`/dpnl`, and `/history` views exclude bucketed transactions; pass `NAME` to
-`/perf NAME`, `/number NAME`, `/alltime NAME`, `/allnumber NAME`, `/stocks NAME`, `/options NAME`, `/dpnl NAME`, or `/history NAME`
+removes it from any other bucket. Unbucketed `/perf`, `/number`, `/worth`,
+`/worthnumber`, `/alltime`, `/allnumber`, `/stocks`, `/options`, `/dpnl`, and
+`/history` views exclude bucketed transactions; pass `NAME` to
+`/perf NAME`, `/number NAME`, `/worth NAME`, `/worthnumber NAME`, `/alltime NAME`,
+`/allnumber NAME`, `/stocks NAME`, `/options NAME`, `/dpnl NAME`, or `/history NAME`
 to view a bucket.
 
 ## Restarting IB Gateway
