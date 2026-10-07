@@ -25,7 +25,7 @@ Deno.test("default Yahoo patterns cover broker suffixes without metadata and rem
       ["SAP.F", "EUR", ["SAP.F"]],
       ["SMSN.L", "USD", ["SMSN.L"]],
       ["SAP", "EUR", ["SAP"]],
-      ["+APH.15JAN2027.C200", "USD", []],
+      ["+APH.15JAN2027.C200", "USD", ["APH270115C00200000"]],
     ] as const
   ) {
     deepStrictEqual(defaultYahooSymbols({ ticker, currency }), expected);

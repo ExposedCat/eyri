@@ -15,6 +15,7 @@ import {
   makeTradernetApiRequest,
 } from "./api.ts";
 import { parseFreedom24Credentials } from "./credentials.ts";
+import { yahooOptionContract } from "../../market_data/options.ts";
 
 const COMPLETED_ORDER_STATUS = 21;
 const BUY_OPERATION = 1;
@@ -136,6 +137,7 @@ function toPortfolioPosition(
     dailyPnlBaseline,
     dailyPnlTotalBaseline: totalNow,
     openedAt: null,
+    ...(yahooOptionContract(ticker) ? { historicalPriceMultiplier: multiplier } : {}),
   };
 }
 

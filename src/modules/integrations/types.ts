@@ -22,6 +22,7 @@ export type IntegrationPortfolioPosition = {
   openedAt: Date | null;
   yahooSymbol?: string;
   isin?: string;
+  historicalPriceMultiplier?: number;
 };
 
 export type IntegrationOrder = {
@@ -38,6 +39,7 @@ export type IntegrationOrder = {
   assetCategory: string | null;
   yahooSymbol?: string;
   isin?: string;
+  historicalPriceMultiplier?: number;
 };
 
 export type IntegrationAdapter = {

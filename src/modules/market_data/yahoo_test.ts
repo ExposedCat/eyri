@@ -523,3 +523,88 @@ Deno.test("resolution rejects only after exhausting bounded alternatives without
     db.close();
   }
 });
+
+Deno.test("option resolution accepts option metadata, caches premiums, and never substitutes the underlying stock", async () => {
+  const db = new Database(":memory:");
+  const calls: URL[] = [];
+  const request: typeof fetch = async (input, init) => {
+    const data = await (await market([], calls)(input, init)).json();
+    data.chart.result[0].meta.instrumentType = "OPTION";
+    return Response.json(data);
+  };
+  try {
+    let cache = new YahooHistoryCache(
+      db,
+      request,
+      () => new Date("2025-01-10T20:00:00Z"),
+    );
+    const instrument = { ticker: "+AMD.15JAN2027.C280", currency: "USD" };
+    equal(await cache.resolve(instrument, "2025-01-02"), "AMD270115C00280000");
+    const count = calls.length;
+    cache = new YahooHistoryCache(
+      db,
+      request,
+      () => new Date("2025-01-10T20:00:00Z"),
+    );
+    equal(await cache.resolve(instrument, "2025-01-02"), "AMD270115C00280000");
+    equal(calls.length, count);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("expired option histories fetch only through expiry, retain zero premiums and remain cached after expiry", async () => {
+  const db = new Database(":memory:");
+  const calls: URL[] = [];
+  const request: typeof fetch = async (input, init) => {
+    const data = await (await market([], calls)(input, init)).json();
+    data.chart.result[0].meta.instrumentType = "OPTION";
+    data.chart.result[0].indicators.quote[0].close.fill(0);
+    return Response.json(data);
+  };
+  try {
+    const cache = new YahooHistoryCache(
+      db,
+      request,
+      () => new Date("2025-01-20T20:00:00Z"),
+    );
+    equal(
+      await cache.resolve(
+        { ticker: "+BOTZ.17JAN2025.C40", currency: "USD" },
+        "2025-01-02",
+      ),
+      "BOTZ250117C00040000",
+    );
+    equal(calls.length, 1);
+    equal(
+      calls[0].searchParams.get("period2"),
+      String(Date.parse("2025-01-18") / 1000),
+    );
+    const bars = await cache.get("BOTZ250117C00040000", "2025-01-01");
+    equal(bars.bars.at(-1)!.date, "2025-01-17");
+    equal(bars.bars[0].close, 0);
+    equal(calls.length, 1);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("an option cannot resolve to stock prices even via an explicit override", async () => {
+  const { saveYahooMapping } = await import("./mappings.ts");
+  const db = new Database(":memory:");
+  try {
+    const ticker = "+AMD.15JAN2027.C280";
+    saveYahooMapping(db, 1, ticker, "AMD");
+    const cache = new YahooHistoryCache(
+      db,
+      market(),
+      () => new Date("2025-01-10T20:00:00Z"),
+    );
+    await rejects(
+      cache.resolve({ ticker, currency: "USD" }, "2025-01-02", 1),
+      /Cannot resolve/,
+    );
+  } finally {
+    db.close();
+  }
+});

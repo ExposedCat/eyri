@@ -1,29 +1,34 @@
 import type { Database } from "../database/setup.ts";
 import { defaultYahooSymbols, likelyYahooSymbols } from "./symbols.ts";
 import { readYahooMapping } from "./mappings.ts";
+import { yahooOptionContract } from "./options.ts";
+import { DATABENTO_PREFIX, DatabentoHistoryCache } from "./databento.ts";
 
-export type PriceBar = { date: string; close: number };
-export type StockSplit = { date: string; ratio: number };
-export type PriceHistory = {
-  symbol: string;
-  currency: string;
-  bars: PriceBar[];
-  splits: StockSplit[];
-};
+import {
+  dayAfter,
+  missingRanges,
+  type PriceBar,
+  type PriceHistory,
+  type Range,
+  type StockSplit,
+} from "./history.ts";
+export {
+  dayAfter,
+  missingRanges,
+  type PriceBar,
+  type PriceHistory,
+  type StockSplit,
+} from "./history.ts";
 export type HistoricalInstrument = {
   ticker: string;
   currency: string;
   yahooSymbol?: string;
   isin?: string;
 };
-type Range = { start: string; end: string };
-const DAY = 86_400_000;
 const headers = {
   "User-Agent": "Mozilla/5.0 Eyri/1.0",
   Accept: "application/json",
 };
-export const dayAfter = (date: string, days = 1) =>
-  new Date(Date.parse(date) + days * DAY).toISOString().slice(0, 10);
 export const quoteCurrency = (currency: string) =>
   currency === "GBp" ? "GBX" : currency.toUpperCase();
 
@@ -35,29 +40,6 @@ export function ensureMarketDataSchema(db: Database) {
     CREATE TABLE IF NOT EXISTS yahoo_coverage (symbol TEXT NOT NULL, start TEXT NOT NULL, end TEXT NOT NULL, PRIMARY KEY(symbol,start,end));
     CREATE TABLE IF NOT EXISTS yahoo_recent (symbol TEXT PRIMARY KEY, fetched_at REAL NOT NULL, payload TEXT NOT NULL);
   `);
-}
-
-export function missingRanges(
-  start: string,
-  end: string,
-  covered: Range[],
-): Range[] {
-  let cursor = start;
-  const missing: Range[] = [];
-  for (
-    const range of [...covered].sort((a, b) => a.start.localeCompare(b.start))
-  ) {
-    if (range.end <= cursor || range.start >= end) continue;
-    if (range.start > cursor) {
-      missing.push({
-        start: cursor,
-        end: range.start < end ? range.start : end,
-      });
-    }
-    if (range.end > cursor) cursor = range.end;
-  }
-  if (cursor < end) missing.push({ start: cursor, end });
-  return missing;
 }
 
 async function jsonRequest(url: string, request: typeof fetch) {
@@ -115,7 +97,8 @@ export async function fetchYahooHistory(
     if (closes[i] === null) continue;
     if (
       !Number.isFinite(timestamps[i]) || typeof closes[i] !== "number" ||
-      !Number.isFinite(closes[i]) || closes[i] <= 0
+      !Number.isFinite(closes[i]) || closes[i] < 0 ||
+      (closes[i] === 0 && result.meta.instrumentType !== "OPTION")
     ) throw new Error(`Invalid historical price for ${symbol}.`);
     const date = tradingDate(timestamps[i], timezone);
     if (date >= start && date < end) bars.push({ date, close: closes[i] });
@@ -139,6 +122,7 @@ export async function fetchYahooHistory(
     currency: quoteCurrency(result.meta.currency),
     bars,
     splits,
+    instrumentType: result.meta.instrumentType,
   };
 }
 
@@ -149,6 +133,7 @@ export class YahooHistoryCache {
     private db: Database,
     private request: typeof fetch = fetch,
     private now: () => Date = () => new Date(),
+    private optionHistory = new DatabentoHistoryCache(db, request, now),
   ) {
     ensureMarketDataSchema(db);
   }
@@ -157,7 +142,9 @@ export class YahooHistoryCache {
     instrument: HistoricalInstrument,
     requiredDate?: string,
     userId?: number,
+    requiredEnd?: string,
   ): Promise<string> {
+    const sourceOption = yahooOptionContract(instrument.ticker);
     const userMapping = userId === undefined
       ? undefined
       : readYahooMapping(this.db, userId, instrument.ticker);
@@ -194,10 +181,21 @@ export class YahooHistoryCache {
     ).get(sourceKey) as { symbol: string } | undefined;
     const coversPurchase = async (symbol: string) => {
       if (!requiredDate) return true;
-      const history = await this.get(symbol, dayAfter(requiredDate, -7));
+      const history = await this.get(
+        symbol,
+        dayAfter(requiredDate, -7),
+        requiredEnd,
+      );
       return history.bars.some((bar) => bar.date <= requiredDate!);
     };
-    if (cached && (!explicit || cached.symbol === explicit)) {
+    if (
+      cached &&
+      (sourceOption ||
+        (!cached.symbol.startsWith(DATABENTO_PREFIX) &&
+          !yahooOptionContract(cached.symbol))) &&
+      (!explicit || cached.symbol === explicit ||
+        cached.symbol === DATABENTO_PREFIX + explicit)
+    ) {
       try {
         if (await coversPurchase(cached.symbol)) return cached.symbol;
       } catch {
@@ -212,12 +210,22 @@ export class YahooHistoryCache {
       if (attempted.has(attemptKey)) return false;
       attempted.add(attemptKey);
       try {
-        const history = await fetchYahooHistory(
-          symbol,
-          dayAfter(today, -7),
-          dayAfter(today),
-          this.request,
-        );
+        const option = yahooOptionContract(symbol);
+        if (option && !sourceOption) return false;
+        const expired = option && option.expiry < today;
+        const history = expired
+          ? await this.get(
+            symbol,
+            requiredDate ? dayAfter(requiredDate, -7) : "1970-01-01",
+            requiredEnd,
+          )
+          : await fetchYahooHistory(
+            symbol,
+            dayAfter(today, -7),
+            dayAfter(today),
+            this.request,
+          );
+        if (sourceOption && history.instrumentType !== "OPTION") return false;
         if (!requiredDate && !history.bars.length) return false;
         const currency = instrument.currency.trim().toUpperCase();
         if (
@@ -228,9 +236,11 @@ export class YahooHistoryCache {
             ))
         ) return false;
         // Resolution data also serves the initial recent-price request.
-        this.db.prepare(
-          "INSERT OR REPLACE INTO yahoo_recent(symbol,fetched_at,payload) VALUES (?,?,?)",
-        ).run(symbol, +this.now(), JSON.stringify(history));
+        if (!expired && !history.symbol.startsWith(DATABENTO_PREFIX)) {
+          this.db.prepare(
+            "INSERT OR REPLACE INTO yahoo_recent(symbol,fetched_at,payload) VALUES (?,?,?)",
+          ).run(symbol, +this.now(), JSON.stringify(history));
+        }
         if (!await coversPurchase(symbol)) return false;
         this.db.prepare(
           "INSERT OR REPLACE INTO yahoo_symbols(source_key,symbol) VALUES (?,?)",
@@ -268,18 +278,44 @@ export class YahooHistoryCache {
         if (await accept(candidate)) return candidate;
       }
     }
+    // Only recognized option contracts may reach the paid archive. An explicit
+    // stock mapping must still fail instead of silently replacing that mapping.
+    const fallbackOption = sourceOption &&
+      (explicit ? yahooOptionContract(explicit) : sourceOption);
+    if (
+      fallbackOption &&
+      (this.optionHistory.configured ||
+        this.optionHistory.has(fallbackOption.symbol))
+    ) {
+      const history = await this.optionHistory.get(
+        fallbackOption.symbol,
+        requiredDate ? dayAfter(requiredDate, -7) : "2013-04-01",
+        requiredEnd,
+      );
+      if (
+        history.bars.length &&
+        (!requiredDate || history.bars.some((bar) => bar.date <= requiredDate))
+      ) {
+        this.db.prepare(
+          "INSERT OR REPLACE INTO yahoo_symbols(source_key,symbol) VALUES (?,?)",
+        ).run(sourceKey, history.symbol);
+        return history.symbol;
+      }
+    }
     throw new Error(
       `Cannot resolve historical prices for ${instrument.ticker}.`,
     );
   }
 
-  get(symbol: string, start: string): Promise<PriceHistory> {
+  get(symbol: string, start: string, end?: string): Promise<PriceHistory> {
     // A single instance is shared by commands. Concurrent readers reuse the fetch.
-    const key = `${symbol}:${start}`;
+    const key = JSON.stringify([symbol, start, end]);
     const existing = this.pending.get(key);
     if (existing) return existing;
     const previous = this.queues.get(symbol) ?? Promise.resolve();
-    const result = previous.catch(() => {}).then(() => this.load(symbol, start))
+    const result = previous.catch(() => {}).then(() =>
+      this.load(symbol, start, end)
+    )
       .finally(() => {
         this.pending.delete(key);
         if (this.queues.get(symbol) === result) this.queues.delete(symbol);
@@ -289,8 +325,47 @@ export class YahooHistoryCache {
     return result;
   }
 
-  private async load(symbol: string, start: string): Promise<PriceHistory> {
+  private async load(
+    symbol: string,
+    start: string,
+    end?: string,
+  ): Promise<PriceHistory> {
+    if (symbol.startsWith(DATABENTO_PREFIX)) {
+      return this.optionHistory.get(
+        symbol.slice(DATABENTO_PREFIX.length),
+        start,
+        end,
+      );
+    }
+    const option = yahooOptionContract(symbol);
+    // A persisted fallback has already been tried after Yahoo failed; reuse it
+    // across restarts without repeating failed Yahoo requests or paid backfills.
+    if (option && this.optionHistory.has(option.symbol)) {
+      return this.optionHistory.get(option.symbol, start, end);
+    }
+    try {
+      const history = await this.loadYahoo(symbol, start);
+      if (
+        option && (history.instrumentType !== "OPTION" || !history.bars.length)
+      ) {
+        throw new Error(`Historical option prices unavailable for ${symbol}.`);
+      }
+      return history;
+    } catch (error) {
+      if (!option || !this.optionHistory.configured) throw error;
+      return this.optionHistory.get(option.symbol, start, end);
+    }
+  }
+
+  private async loadYahoo(
+    symbol: string,
+    start: string,
+  ): Promise<PriceHistory> {
     const today = this.now().toISOString().slice(0, 10);
+    const option = yahooOptionContract(symbol);
+    if (option && option.expiry < today) {
+      return this.loadExpiredOption(symbol, start, dayAfter(option.expiry));
+    }
     const stableEnd = dayAfter(today, -2); // Two UTC days allow every exchange to finalize its close.
     const recent = this.db.prepare(
       "SELECT fetched_at,payload FROM yahoo_recent WHERE symbol = ?",
@@ -350,6 +425,39 @@ export class YahooHistoryCache {
       currency: tail.currency,
       bars: [...bars.values()].sort((a, b) => a.date.localeCompare(b.date)),
       splits,
+      instrumentType: tail.instrumentType,
+    };
+  }
+
+  private async loadExpiredOption(
+    symbol: string,
+    start: string,
+    end: string,
+  ): Promise<PriceHistory> {
+    const coverage = this.db.prepare(
+      "SELECT start,end FROM yahoo_coverage WHERE symbol = ?",
+    ).all(symbol) as Range[];
+    for (const range of missingRanges(start, end, coverage)) {
+      const history = await fetchYahooHistory(
+        symbol,
+        range.start,
+        range.end,
+        this.request,
+      );
+      if (history.instrumentType !== "OPTION") {
+        throw new Error(`Invalid option history for ${symbol}.`);
+      }
+      this.persist(history, range);
+    }
+    const rows = this.db.prepare(
+      "SELECT date,close,currency FROM yahoo_prices WHERE symbol = ? AND date >= ? AND date < ? ORDER BY date",
+    ).all(symbol, start, end) as (PriceBar & { currency: string })[];
+    return {
+      symbol,
+      currency: rows[0]?.currency ?? "USD",
+      bars: rows.map(({ date, close }) => ({ date, close })),
+      splits: [],
+      instrumentType: "OPTION",
     };
   }
 

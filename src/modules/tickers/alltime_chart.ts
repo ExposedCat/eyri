@@ -1,4 +1,6 @@
 import type { Database } from "../database/setup.ts";
+import { historicalQuoteMultiplier } from "../market_data/options.ts";
+import { DATABENTO_PREFIX } from "../market_data/databento.ts";
 import {
   type FailedHistory,
   HistoricalDataError,
@@ -92,6 +94,7 @@ export function buildAllTimeSeries(
     price: number;
     selected: boolean;
     currency: string;
+    quoteMultiplier: number;
   };
   const lots = new Map<string, Lot[]>();
   const prices = new Map<string, number>();
@@ -151,6 +154,12 @@ export function buildAllTimeSeries(
             (args.transactionBuckets.get(getOrderTransactionKey(order)) ??
               null) === args.bucketName,
           currency: order.currency,
+          quoteMultiplier: historicalQuoteMultiplier(
+            args.positions.find((p) =>
+              p.integrationId === order.integrationId &&
+              p.account === order.account && instrumentKey(p) === key
+            ) ?? order,
+          ),
         });
       } else {
         let remaining = -order.quantity;
@@ -189,7 +198,8 @@ export function buildAllTimeSeries(
         }
         const basis = lot.quantity * lot.price * usdFactor(lot.currency, rates);
         cost += basis;
-        gain += lot.quantity * close * usdFactor(history.currency, rates) -
+        gain += lot.quantity * close * lot.quoteMultiplier *
+            usdFactor(history.currency, rates) -
           basis;
       }
     }
@@ -321,7 +331,6 @@ export async function loadAllTimeDataset(
   const relevant = args.orders.filter(isDisplayableOrder).filter((o) =>
     sources.has(instrumentKey(o))
   );
-  const start = dayAfter(relevant.map((o) => dateOf(o.date)).sort()[0], -7);
   const histories = new Map<string, PriceHistory>();
   const entries = [...sources];
   const failures: FailedHistory[] = [];
@@ -333,9 +342,22 @@ export async function loadAllTimeDataset(
         const firstPurchase = relevant.filter((o) =>
           instrumentKey(o) === key && o.quantity > 0
         ).map((o) => dateOf(o.date)).sort()[0];
-        const symbol = await cache.resolve(source, firstPurchase, userId);
+        const instrumentOrders = relevant.filter((o) =>
+          instrumentKey(o) === key
+        );
+        const held = args.positions.some((p) =>
+          instrumentKey(p) === key && p.amount !== 0
+        );
+        const end = held ? undefined : dayAfter(
+          instrumentOrders.map((o) => dateOf(o.date)).sort().at(-1)!,
+        );
+        const symbol = await cache.resolve(source, firstPurchase, userId, end);
         symbols.set(key, symbol);
-        const history = await cache.get(symbol, start);
+        const history = await cache.get(
+          symbol,
+          dayAfter(firstPurchase, -7),
+          end,
+        );
         if (!history.bars.length) {
           throw new Error("No historical closing prices returned.");
         }
@@ -345,11 +367,14 @@ export async function loadAllTimeDataset(
     for (const [index, result] of results.entries()) {
       if (result.status === "rejected") {
         const source = batch[index][1];
+        const symbol = symbols.get(batch[index][0]) ??
+          readYahooMapping(db, userId, source.ticker) ??
+          defaultYahooSymbols(source)[0] ?? source.ticker;
         failures.push({
           ticker: source.ticker,
-          symbol: symbols.get(batch[index][0]) ??
-            readYahooMapping(db, userId, source.ticker) ??
-            defaultYahooSymbols(source)[0] ?? source.ticker,
+          symbol: symbol.startsWith(DATABENTO_PREFIX)
+            ? symbol.slice(DATABENTO_PREFIX.length)
+            : symbol,
         });
       }
     }
@@ -364,7 +389,7 @@ export async function loadAllTimeDataset(
     request,
   );
   const fingerprint = await hash({
-    version: 1,
+    version: 2,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],
@@ -395,7 +420,7 @@ export async function renderAllTimeChart(
   datasets: AllTimeDataset[],
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  const key = await hash({ version: 1, datasets });
+  const key = await hash({ version: 2, datasets });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;

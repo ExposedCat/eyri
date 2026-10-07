@@ -119,7 +119,9 @@ adjust historical quantities and unit costs. Today's endpoint uses broker prices
 and book cost. All amounts use the latest USD exchange rates consistently across
 the series, excluding historical FX effects, dividends and fees.
 
-The original PNG uses the portfolio's dark background, mint gains and pink losses.
+The chart is sent as a Telegram photo using the portfolio's dark background,
+mint gains and pink losses. Every month has a label and a vertical grid line;
+the plot and participant legend fill the image, with no header or footer.
 **Compare** adds the person clicking the button to that same graph, up to six
 participants. Published curves remain snapshots of what their owners shared;
 the button fetches only the clicker's own accounts. Buttons are bound to their
@@ -170,6 +172,44 @@ symbol before saving. Mappings are personal, persist across restarts, and take
 priority over defaults and administrator environment overrides. Updating a
 mapping selects its corresponding cached history on the next `/chart`.
 Use `/yahoo TICKER -` to remove your override.
+
+Freedom24 option names convert automatically to Yahoo/OCC contract symbols:
+`+AMD.15JAN2027.C280` becomes `AMD270115C00280000`. IBKR compact or padded OCC
+symbols are also accepted. Expiry dates and fractional strikes are validated;
+options never fall back to the underlying stock or another exchange ticker.
+Yahoo must identify the result as an option. Freedom24 historical premiums are
+scaled to the broker's per-contract price units using its live contract metadata,
+or the standard 100 multiplier for sold contracts (1 for NANOS).
+Zero option premiums are valid. Expired histories fetch only through expiry and
+remain cached permanently, without requesting unavailable current quotes.
+
+If Yahoo cannot resolve an option or supply its purchase-date history, `/chart`
+can fall back to Databento's `OPRA.PILLAR` archive. Set `DATABENTO_API_KEY` (or
+`EYRI_DATABENTO_API_KEY`) in the bot environment to enable it. Stocks and ETFs
+never use this fallback; successful Yahoo option histories continue using Yahoo.
+An explicit `/yahoo` mapping to a stock does not bypass option validation.
+
+Databento's daily OHLCV bars are separate for each exchange. The fallback instead
+streams timestamped trades across all exchanges and retains the last traded
+premium per New York session. Prices remain per underlying unit; the same broker
+contract multipliers and USD conversion apply. Missing trading sessions carry
+the previous close, as with Yahoo. No trade-derived daily mark is invented.
+
+Only missing ranges are fetched, in requests of at most 31 days, starting seven
+days before the first purchase and ending at the last sale for closed positions,
+or at the earlier of expiry and the provider's finalized data boundary. Daily
+prices and successful range coverage (including empty sessions) persist in
+separate SQLite tables. Failed requests never mark coverage complete. Concurrent
+readers share backfills; cached expired histories work after restart even without
+an API key. Once selected, cached fallback data is reused without retrying Yahoo.
+Live contracts extend their cache as the archive publishes finalized sessions;
+availability metadata is free and cached for five minutes. Intraday prices still
+come from the broker for the chart's `/alltime` endpoint.
+
+A live probe on 2026-10-07 recovered the expired `+BOTZ.15MAR2024.C33` contract
+from Databento after Yahoo failed. If neither source supplies the required option
+history, the entire chart still fails; purchase/sale prices or the underlying
+stock are not used as invented daily marks.
 
 If any symbol cannot resolve or fetch prices, `/chart` reports the affected
 instruments once, with copyable mapping commands, and sends no image:

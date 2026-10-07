@@ -1,6 +1,6 @@
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -20,14 +20,13 @@ def money(value):
 
 def render(datasets):
     plt.rcParams.update({"font.family": "DejaVu Sans", "text.color": FOREGROUND, "text.parse_math": False, "text.antialiased": True, "text.hinting": "auto"})
-    figure = plt.figure(figsize=(12, 7), dpi=200, facecolor=BACKGROUND)
-    figure.text(.075, .94, "ALL-TIME PERFORMANCE", fontsize=11, fontweight="bold", color=MUTED)
+    first = min(datetime.fromisoformat(dataset["points"][0]["date"]) for dataset in datasets)
+    last_date = max(datetime.fromisoformat(dataset["points"][-1]["date"]) for dataset in datasets)
+    months = (last_date.year - first.year) * 12 + last_date.month - first.month + 1
+    width = max(12, min(32, months * .6 + 1.4))
+    figure = plt.figure(figsize=(width, 7), dpi=200, facecolor=BACKGROUND)
     single = len(datasets) == 1
-    final = datasets[0]["points"][-1]
-    title = f'{final["percentage"]:+.2f}%  ·  {money(final["gain"])}' if single else f'{len(datasets)} portfolios compared'
-    figure.text(.075, .88, title, fontsize=27, fontweight="bold")
-    figure.text(.075, .833, "Current + realized return  ·  USD  ·  Daily closing prices", fontsize=11, color=MUTED)
-    axis = figure.add_axes([.075, .23, .88, .53], facecolor=BACKGROUND)
+    axis = figure.add_axes([.075, .19, .90, .76], facecolor=BACKGROUND)
     for index, dataset in enumerate(datasets):
         dates = [mdates.date2num(datetime.fromisoformat(point["date"])) for point in dataset["points"]]
         values = [point["percentage"] for point in dataset["points"]]
@@ -47,18 +46,24 @@ def render(datasets):
             axis.plot(dates, values, color=color, linewidth=2.2, solid_capstyle="round", label=label)
         axis.scatter(dates[-1], values[-1], s=20, color=color, zorder=4)
     axis.autoscale_view()
-    axis.margins(x=.025, y=.15)
+    axis.margins(y=.15)
+    axis.set_xlim(first.replace(day=1), last_date + timedelta(days=3))
     axis.axhline(0, color="#8494A6", linewidth=1)
-    axis.grid(axis="y", color="#24313F", linewidth=.75)
+    axis.grid(axis="both", color="#24313F", linewidth=.75)
     axis.set_axisbelow(True)
-    locator = mdates.AutoDateLocator(minticks=4, maxticks=7)
+    locator = mdates.MonthLocator(interval=1)
     axis.xaxis.set_major_locator(locator)
-    axis.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    def month_label(value, _):
+        date = mdates.num2date(value)
+        show_year = date.month == 1 or (date.year, date.month) == (first.year, first.month)
+        return date.strftime("%b\n%Y" if show_year else "%b")
+    axis.xaxis.set_major_formatter(FuncFormatter(month_label))
     axis.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f'{value:g}%'))
     axis.tick_params(axis="both", colors=MUTED, labelsize=11, length=0, pad=12)
+    if months > 60:
+        axis.tick_params(axis="x", labelsize=8, labelrotation=90)
     for spine in axis.spines.values(): spine.set_visible(False)
-    axis.legend(loc="upper left", bbox_to_anchor=(0, -.15), frameon=False, fontsize=10, labelcolor=FOREGROUND, ncol=1 if single else 2, handlelength=2.3, borderaxespad=0)
-    figure.text(.075, .035, "Yahoo Finance daily closes · Latest FX applied consistently · Live endpoint uses broker values", fontsize=9, color=MUTED)
+    axis.legend(loc="upper left", bbox_to_anchor=(0, -.13), frameon=False, fontsize=10, labelcolor=FOREGROUND, ncol=1 if single else 2, handlelength=2.3, borderaxespad=0)
     figure.savefig(sys.stdout.buffer, format="png", dpi=200, facecolor=BACKGROUND)
     plt.close(figure)
 

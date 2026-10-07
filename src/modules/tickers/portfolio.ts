@@ -1451,6 +1451,7 @@ export function buildBucketedPortfolioPositions({
             ? livePosition?.dailyPnlTotalBaseline
             : livePosition.dailyPnlTotalBaseline * liveShare,
         openedAt: draft.openedAt,
+        ...(livePosition.historicalPriceMultiplier !== undefined ? { historicalPriceMultiplier: livePosition.historicalPriceMultiplier } : {}),
       },
     ];
   });

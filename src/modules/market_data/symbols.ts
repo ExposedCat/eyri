@@ -1,4 +1,5 @@
 import type { HistoricalInstrument } from "./yahoo.ts";
+import { yahooOptionContract } from "./options.ts";
 
 // A dotted exchange suffix must remain intact (VOD.L, SAP.F). US share classes
 // use a hyphen on Yahoo; IBKR can provide either a space or a dot.
@@ -29,6 +30,8 @@ export function defaultYahooSymbols(
   const ticker = instrument.ticker.trim().toUpperCase();
   const currency = instrument.currency.trim().toUpperCase();
   const candidates: string[] = [];
+  const option = yahooOptionContract(ticker);
+  if (option) return [instrument.yahooSymbol ?? option.symbol];
   if (ticker.startsWith("+")) return candidates;
   const mapping = DEFAULT_MAPPINGS[`${ticker}:${currency}`];
   if (mapping) candidates.push(mapping);
@@ -86,7 +89,7 @@ const LIKELY_SUFFIXES: Record<string, string[]> = {
 export function likelyYahooSymbols(instrument: HistoricalInstrument): string[] {
   const ticker = instrument.ticker.trim().toUpperCase();
   const currency = instrument.currency.trim().toUpperCase();
-  if (ticker.startsWith("+")) return [];
+  if (ticker.startsWith("+") || yahooOptionContract(ticker)) return [];
   let base = ticker;
   if (base.endsWith("_EQ")) {
     base = base.match(/^(.+)_US_EQ$/)?.[1] ??

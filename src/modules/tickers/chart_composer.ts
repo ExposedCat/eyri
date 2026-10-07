@@ -2,6 +2,7 @@ import { Composer, InlineKeyboard, InputFile } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
 import type { Database } from "../database/setup.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
+import { yahooOptionContract } from "../market_data/options.ts";
 import { dayAfter, fetchYahooHistory } from "../market_data/yahoo.ts";
 import {
   removeYahooMapping,
@@ -80,16 +81,20 @@ export function readChartSession(
 type Runtime = {
   dataset: typeof datasetFor;
   render: typeof renderAllTimeChart;
-  validateSymbol?: (symbol: string) => Promise<void>;
+  validateSymbol?: (symbol: string, ticker?: string) => Promise<void>;
 };
 
-async function validateSymbol(symbol: string) {
+async function validateSymbol(symbol: string, ticker?: string) {
   const today = new Date().toISOString().slice(0, 10);
+  const option = yahooOptionContract(symbol);
   const history = await fetchYahooHistory(
     symbol,
-    dayAfter(today, -7),
-    dayAfter(today),
+    option ? "1970-01-01" : dayAfter(today, -7),
+    option && option.expiry < today ? dayAfter(option.expiry) : dayAfter(today),
   );
+  if (
+    yahooOptionContract(ticker ?? symbol) && history.instrumentType !== "OPTION"
+  ) throw new Error("Not an option contract.");
   if (!history.bars.length) throw new Error("No historical data.");
 }
 
@@ -120,7 +125,7 @@ export function createChartComposer(
       : [];
     const [ticker, symbol] = parts;
     if (
-      parts.length !== 2 || !/^[A-Z0-9][A-Z0-9._^=:+-]{0,63}$/.test(ticker) ||
+      parts.length !== 2 || !/^[+A-Z0-9][A-Z0-9._^=:+-]{0,63}$/.test(ticker) ||
       (symbol !== "-" && !/^[A-Z0-9^][A-Z0-9._^=+-]{0,63}$/.test(symbol))
     ) {
       await ctx.reply(
@@ -135,7 +140,7 @@ export function createChartComposer(
       return;
     }
     try {
-      await (runtime.validateSymbol ?? validateSymbol)(symbol);
+      await (runtime.validateSymbol ?? validateSymbol)(symbol, ticker);
     } catch {
       await replyChartError(ctx, new HistoricalDataError([{ ticker, symbol }]));
       return;
@@ -170,7 +175,7 @@ export function createChartComposer(
         "INSERT INTO alltime_chart_sessions(id,chat_id,datasets) VALUES (?,?,?)",
       ).run(id, String(ctx.chat.id), JSON.stringify([dataset]));
       try {
-        const message = await ctx.replyWithDocument(
+        const message = await ctx.replyWithPhoto(
           new InputFile(image, "alltime.png"),
           { reply_markup: button(id) },
         );
@@ -235,7 +240,7 @@ export function createChartComposer(
       const next = [...existing, await runtime.dataset(ctx, null)];
       const image = await runtime.render(ctx.db, next);
       await ctx.editMessageMedia({
-        type: "document",
+        type: "photo",
         media: new InputFile(image, "alltime.png"),
       }, {
         reply_markup: next.length < MAX_PARTICIPANTS

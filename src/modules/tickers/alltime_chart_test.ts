@@ -383,3 +383,87 @@ Deno.test("any failed or empty historical fetch rejects the entire chart and rep
     db.close();
   }
 });
+
+Deno.test("Freedom24 option series uses per-contract premiums, retains sold gains and ends at alltime", async () => {
+  const ticker = "+AMD.15JAN2027.C280";
+  const orders = [trade(2, 100, "2025-01-02"), trade(-1, 150, "2025-01-03")]
+    .map((o) => ({ ...o, ticker, integrationKind: "f24" }));
+  const positions = [{
+    ...holding(1, 100, 130),
+    ticker,
+    integrationKind: "f24",
+    historicalPriceMultiplier: 100,
+  }];
+  const args = {
+    positions,
+    orders,
+    transactionBuckets: new Map<string, string>(),
+    bucketName: null,
+    now,
+  };
+  const premiums = history("USD", [{ date: "2025-01-02", close: 1 }, {
+    date: "2025-01-03",
+    close: 1.4,
+  }, { date: "2025-01-06", close: 1.3 }]);
+  const points = buildAllTimeSeries(
+    args,
+    new Map([[instrumentKey(orders[0]), premiums]]),
+    new Map([["USD", 1]]),
+  );
+  equal(points[2].gain, 90);
+  equal(points.at(-1)!.gain, 80);
+  equal(points.at(-1)!.percentage, 40);
+  match(
+    await buildIntegratedAllTimePerformanceList({
+      ...args,
+      formatTicker: (t) => t,
+    }),
+    /Total: \+40.00% \+\$80.00/,
+  );
+});
+
+Deno.test("failed option archive histories reject the complete chart and keep mapping commands usable", async () => {
+  const db = new Database(":memory:");
+  const ticker = "+BOTZ.15MAR2024.C33";
+  try {
+    await rejects(
+      loadAllTimeDataset(
+        db,
+        {
+          positions: [],
+          orders: [{
+            ...trade(1, 10, "2024-02-08"),
+            ticker,
+            integrationKind: "f24",
+            assetCategory: "OPT",
+          }],
+          transactionBuckets: new Map(),
+          bucketName: null,
+          now,
+        },
+        1,
+        "Daniel",
+        {
+          resolve: () => Promise.resolve("DATABENTO:BOTZ240315C00033000"),
+          get: () => Promise.reject(new Error("Databento returned HTTP 503.")),
+        } as never,
+      ),
+      (error: unknown) => {
+        ok(error instanceof Error);
+        equal(
+          error.message,
+          "Failed to fetch historical data:\n- /yahoo +BOTZ.15MAR2024.C33 BOTZ240315C00033000",
+        );
+        return true;
+      },
+    );
+    equal(
+      (db.prepare("SELECT COUNT(*) AS n FROM alltime_series_cache").get() as {
+        n: number;
+      }).n,
+      0,
+    );
+  } finally {
+    db.close();
+  }
+});

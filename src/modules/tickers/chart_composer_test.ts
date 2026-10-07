@@ -42,7 +42,12 @@ function harness(db: Database) {
           id: (payload as { chat_id?: number }).chat_id ?? -1001,
           type: "supergroup",
         },
-        document: { file_id: "file", file_unique_id: "unique" },
+        photo: [{
+          file_id: "file",
+          file_unique_id: "unique",
+          width: 2400,
+          height: 1400,
+        }],
       },
     }) as never;
   });
@@ -132,7 +137,12 @@ function harness(db: Database) {
             message_id: messageId,
             date: 1,
             chat: { id: chatId, type: "supergroup", title: "Investing" },
-            document: { file_id: "file", file_unique_id: "unique" },
+            photo: [{
+              file_id: "file",
+              file_unique_id: "unique",
+              width: 2400,
+              height: 1400,
+            }],
           },
         },
       }),
@@ -141,27 +151,28 @@ function harness(db: Database) {
 function callback(
   calls: { method: string; payload: Record<string, unknown> }[],
 ) {
-  const send = calls.find((c) => c.method === "sendDocument")!;
+  const send = calls.find((c) => c.method === "sendPhoto")!;
   const data = (send.payload.reply_markup as {
     inline_keyboard: { callback_data: string }[][];
   }).inline_keyboard[0][0].callback_data;
   return data;
 }
 
-Deno.test("/chart sends one PNG with Compare and compares only clickers' own accounts", async () => {
+Deno.test("/chart sends one photo with Compare and compares only clickers' own accounts", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
     const h = harness(db);
     await h.command();
     const data = callback(h.calls);
-    equal(h.calls.filter((c) => c.method === "sendDocument").length, 1);
+    equal(h.calls.filter((c) => c.method === "sendPhoto").length, 1);
+    equal(h.calls.filter((c) => c.method === "sendDocument").length, 0);
     ok(new TextEncoder().encode(data).length <= 64);
     await h.compare(data);
     deepStrictEqual(h.fetched, [1, 2]);
     deepStrictEqual(h.rendered, [[1], [1, 2]]);
     const edit = h.calls.find((c) => c.method === "editMessageMedia")!;
-    equal((edit.payload.media as { type: string }).type, "document");
+    equal((edit.payload.media as { type: string }).type, "photo");
     const session = readChartSession(db, data.split(":")[1], -1001, 100)!;
     deepStrictEqual(
       (JSON.parse(session.datasets) as AllTimeDataset[]).map((d) => d.userId),
@@ -223,7 +234,7 @@ Deno.test("invalid bucket names cannot start a chart or fetch account data", asy
     await h.command("/chart Missing");
     await h.command("/chart invalid-name");
     equal(h.fetched.length, 0);
-    equal(h.calls.filter((c) => c.method === "sendDocument").length, 0);
+    equal(h.calls.filter((c) => c.method === "sendPhoto").length, 0);
   } finally {
     db.close();
   }
@@ -237,7 +248,7 @@ Deno.test("/chart reports historical failure without rendering or sending a part
     h.failures.add(1);
     await h.command();
     deepStrictEqual(h.rendered, []);
-    equal(h.calls.filter((c) => c.method === "sendDocument").length, 0);
+    equal(h.calls.filter((c) => c.method === "sendPhoto").length, 0);
     const reply = h.calls.find((c) => c.method === "sendMessage")!;
     equal(
       reply.payload.text,
@@ -298,6 +309,8 @@ Deno.test("/yahoo validates, saves per-user mappings, survives restarts, and res
       restart.calls.at(-1)!.payload.text,
       "Failed to fetch historical data:\n- <code>/yahoo VUAA BROKEN</code>",
     );
+    await restart.command("/yahoo +AMD.15JAN2027.C280 AMD270115C00280000", 1);
+    equal(readYahooMapping(db, 1, "+AMD.15JAN2027.C280"), "AMD270115C00280000");
     await restart.command("/yahoo VUAA -", 1);
     equal(readYahooMapping(db, 1, "VUAA"), undefined);
     equal(readYahooMapping(db, 2, "VUAA"), "VUAA.DE");
@@ -317,7 +330,7 @@ Deno.test("/yahoo validates, saves per-user mappings, survives restarts, and res
     }
     deepStrictEqual(h.rendered, []);
     deepStrictEqual(restart.rendered, []);
-    equal(restart.calls.filter((c) => c.method === "sendDocument").length, 0);
+    equal(restart.calls.filter((c) => c.method === "sendPhoto").length, 0);
   } finally {
     db.close();
   }
