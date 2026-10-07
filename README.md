@@ -234,8 +234,8 @@ rates for values, purchase costs, and monetary returns. GBX is converted as penc
 allocation weights and the header total use the selected currency. Large portfolios
 use one wider image, sent as an original PNG file to preserve sharp text when zooming.
 If a required exchange rate is unavailable, the command reports an error.
-The container includes Python and Matplotlib for rendering; local runs need
-`python3` with `matplotlib==3.11.2` installed.
+Charts render directly in Deno using Chart.js and `@napi-rs/canvas` from npm.
+The container includes DejaVu Sans fonts; local runs use installed system fonts.
 
 ## All-time chart
 

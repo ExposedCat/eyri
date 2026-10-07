@@ -14,7 +14,9 @@
     "jsr:@std/path@1.1.2": "1.1.2",
     "jsr:@std/path@^1.1.4": "1.1.4",
     "npm:@biomejs/biome@^2.1.3": "2.3.1",
-    "npm:@stoqey/ib@1.5.5": "1.5.5"
+    "npm:@napi-rs/canvas@1.0.10": "1.0.10",
+    "npm:@stoqey/ib@1.5.5": "1.5.5",
+    "npm:chart.js@4.5.1": "4.5.1"
   },
   "jsr": {
     "@db/sqlite@0.13.0": {
@@ -120,6 +122,80 @@
       "os": ["win32"],
       "cpu": ["x64"]
     },
+    "@kurkle/color@0.3.4": {
+      "integrity": "sha512-M5UknZPHRu3DEDWoipU6sE8PdkZ6Z/S+v4dD+Ke8IaNlpdSQah50lz1KtcFBa2vsdOnwbbnxJwVM4wty6udA5w=="
+    },
+    "@napi-rs/canvas-android-arm64@1.0.10": {
+      "integrity": "sha512-0sDMvme+7fj6bHERUaBs5SvEyWaORc91VUkaB4RrtG7p6dBrBNGy1of8cyEKDxygd1FlHtW+Thunj8lSixzY7A==",
+      "os": ["android"],
+      "cpu": ["arm64"]
+    },
+    "@napi-rs/canvas-darwin-arm64@1.0.10": {
+      "integrity": "sha512-pdHL1TEfFMrnchRYqmPWXKN7hR4XtOYmzJqnh4XhpfWD4/eeSokOGVzrdFP/iQ3sfr2rf0939gOGq9uCp8BGmg==",
+      "os": ["darwin"],
+      "cpu": ["arm64"]
+    },
+    "@napi-rs/canvas-darwin-x64@1.0.10": {
+      "integrity": "sha512-iuuk5plGxAcxurxv2ycF2yR20y5zvaBZ4heQdhPpg3EMFD21PhlY1V+YwSRmYRWzbvKL474UYdw3WIg2qfafyw==",
+      "os": ["darwin"],
+      "cpu": ["x64"]
+    },
+    "@napi-rs/canvas-linux-arm-gnueabihf@1.0.10": {
+      "integrity": "sha512-kH7GFR5Unpm77pKSEsmkqvzeQCRD7/MQ7upmeLLjg4XpQ62dX/R6THFsp6vkF1Pkco2aKUq9KhoLM4W5twdk7g==",
+      "os": ["linux"],
+      "cpu": ["arm"]
+    },
+    "@napi-rs/canvas-linux-arm64-gnu@1.0.10": {
+      "integrity": "sha512-0/Hj7IwM9pmzdwxiqkp4YLJ8dKqASBrWQ3Y7dWUSU/4dgvCL9O6YNvX7xVUJjonQvdD3IE9ESS/nXa5srQqoVw==",
+      "os": ["linux"],
+      "cpu": ["arm64"]
+    },
+    "@napi-rs/canvas-linux-arm64-musl@1.0.10": {
+      "integrity": "sha512-fmjKM0P2MLF9O6XzCQsRjhB+jlLzaf6tFQU36hMPMsYup+VThYvpjjhqNLOc/Ee3tHUE3r13H2BSJx/yXz4pFA==",
+      "os": ["linux"],
+      "cpu": ["arm64"]
+    },
+    "@napi-rs/canvas-linux-riscv64-gnu@1.0.10": {
+      "integrity": "sha512-O/BUrGwrs3pVP9PpD/3++ZiOpjHMJlmiB7aBgswP8rbe4egPfiFkFxmcCczoLvZa72TaQX5lJ8Udedb6rc/Hvg==",
+      "os": ["linux"],
+      "cpu": ["riscv64"]
+    },
+    "@napi-rs/canvas-linux-x64-gnu@1.0.10": {
+      "integrity": "sha512-48HkZPQeAN/R+9NPpY64tceoyCUW5xYYtHKZnC+BG11qiihXJCbH+xfbgGU+OdYp1Q4s84HDl9ILU0KBK6SBOQ==",
+      "os": ["linux"],
+      "cpu": ["x64"]
+    },
+    "@napi-rs/canvas-linux-x64-musl@1.0.10": {
+      "integrity": "sha512-QYHVi7WZ9v+Wm9OQyHLMTnJ8QiBPVX94BgbCHFJC/4bCFMfvX7fRzo4FJPgkRP0ISz3ulYNow/FCbQOPjzhYjg==",
+      "os": ["linux"],
+      "cpu": ["x64"]
+    },
+    "@napi-rs/canvas-win32-arm64-msvc@1.0.10": {
+      "integrity": "sha512-bWK+YajM/8sL0mMgLtug2s063FVBPzFV4QAn987CQomMKlmzrBY6Trz43KY+24hq7IOa3qNhUAgP/XMEF50ZEQ==",
+      "os": ["win32"],
+      "cpu": ["arm64"]
+    },
+    "@napi-rs/canvas-win32-x64-msvc@1.0.10": {
+      "integrity": "sha512-9WtzW85PaIhtB27iXaR/9RrLCqHLbqD3Z8Q+kh17NjFxwQXFXU5vWbYH4vEH+drM307TTyK3hidZgpt09G5T3g==",
+      "os": ["win32"],
+      "cpu": ["x64"]
+    },
+    "@napi-rs/canvas@1.0.10": {
+      "integrity": "sha512-V+qptzsGnPMFxEbhwc6eDNMe5eDrfiBIp8qGpuRjAVIX4Kn2zxvwQ1Xco6Fwe+3tYIe3iLW8LM9D+SvjyJhqbQ==",
+      "optionalDependencies": [
+        "@napi-rs/canvas-android-arm64",
+        "@napi-rs/canvas-darwin-arm64",
+        "@napi-rs/canvas-darwin-x64",
+        "@napi-rs/canvas-linux-arm-gnueabihf",
+        "@napi-rs/canvas-linux-arm64-gnu",
+        "@napi-rs/canvas-linux-arm64-musl",
+        "@napi-rs/canvas-linux-riscv64-gnu",
+        "@napi-rs/canvas-linux-x64-gnu",
+        "@napi-rs/canvas-linux-x64-musl",
+        "@napi-rs/canvas-win32-arm64-msvc",
+        "@napi-rs/canvas-win32-x64-msvc"
+      ]
+    },
     "@stoqey/ib@1.5.5": {
       "integrity": "sha512-JzuaVMNVV1BQEMExqQrj7Y9jH024iDugxaiYyJNwaPURaxbmSa6rkmYUGVGtQJmG0D65VM0YyU1N6OiJuZWLIQ==",
       "dependencies": [
@@ -129,6 +205,12 @@
         "eventemitter3",
         "function-rate-limit",
         "rxjs"
+      ]
+    },
+    "chart.js@4.5.1": {
+      "integrity": "sha512-GIjfiT9dbmHRiYi6Nl2yFCq7kkwdkp1W/lp2J99rX0yo9tgJGn3lKQATztIjb5tVtevcBtIdICNWqlq5+E8/Pw==",
+      "dependencies": [
+        "@kurkle/color"
       ]
     },
     "colors@1.4.0": {
@@ -212,7 +294,9 @@
     "dependencies": [
       "jsr:@db/sqlite@0.13",
       "npm:@biomejs/biome@^2.1.3",
-      "npm:@stoqey/ib@1.5.5"
+      "npm:@napi-rs/canvas@1.0.10",
+      "npm:@stoqey/ib@1.5.5",
+      "npm:chart.js@4.5.1"
     ]
   }
 }

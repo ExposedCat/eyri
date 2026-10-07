@@ -2,6 +2,7 @@ import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { isStockPosition } from "./portfolio.ts";
+import { renderPortfolioAllocation } from "./portfolio_chart_renderer.ts";
 
 export type PortfolioChart = {
 	total: string;
@@ -108,33 +109,5 @@ export async function buildPortfolioChart(
 }
 
 export async function renderPortfolioChart(chart: PortfolioChart) {
-	const process = new Deno.Command("python3", {
-		args: [
-			decodeURIComponent(
-				new URL("./portfolio_chart.py", import.meta.url).pathname,
-			),
-		],
-		stdin: "piped",
-		stdout: "piped",
-		stderr: "piped",
-		signal: AbortSignal.timeout(30_000),
-	}).spawn();
-	const output = process.output();
-	try {
-		const writer = process.stdin.getWriter();
-		await writer.write(new TextEncoder().encode(JSON.stringify(chart)));
-		await writer.close();
-		const result = await output;
-		if (!result.success) {
-			console.error(
-				"Portfolio chart renderer failed:",
-				new TextDecoder().decode(result.stderr),
-			);
-			throw new Error("Could not render the portfolio chart.");
-		}
-		return result.stdout;
-	} catch (error) {
-		await output.catch(() => undefined);
-		throw error;
-	}
+	return renderPortfolioAllocation(chart);
 }

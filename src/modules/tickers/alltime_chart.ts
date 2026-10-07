@@ -1,4 +1,5 @@
 import type { Database } from "../database/setup.ts";
+import { renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
 import { historicalQuoteMultiplier } from "../market_data/options.ts";
 import { DATABENTO_PREFIX } from "../market_data/databento.ts";
 import { VONTOBEL_PREFIX, VontobelHistoryError } from "../market_data/vontobel.ts";
@@ -529,36 +530,17 @@ export async function renderAllTimeChart(
   datasets: AllTimeDataset[],
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  const key = await hash({ version: 3, datasets });
+  const key = await hash({ version: 5, datasets });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;
   if (stored) return stored.png;
-  const process = new Deno.Command("python3", {
-    args: [
-      decodeURIComponent(
-        new URL("./alltime_chart.py", import.meta.url).pathname,
-      ),
-    ],
-    stdin: "piped",
-    stdout: "piped",
-    stderr: "piped",
-    signal: AbortSignal.timeout(30_000),
-  }).spawn();
-  const output = process.output();
-  const writer = process.stdin.getWriter();
-  await writer.write(new TextEncoder().encode(JSON.stringify(datasets)));
-  await writer.close();
-  const result = await output;
-  if (!result.success) {
-    console.error(new TextDecoder().decode(result.stderr));
-    throw new Error("Could not render the all-time chart.");
-  }
+  const png = renderAllTimeDatasets(datasets);
   db.prepare(
     "INSERT OR REPLACE INTO alltime_render_cache(cache_key,png,created_at) VALUES (?,?,?)",
-  ).run(key, result.stdout, Date.now());
+  ).run(key, png, Date.now());
   db.exec(
     "DELETE FROM alltime_render_cache WHERE cache_key IN (SELECT cache_key FROM alltime_render_cache ORDER BY created_at DESC LIMIT -1 OFFSET 128)",
   );
-  return result.stdout;
+  return png;
 }

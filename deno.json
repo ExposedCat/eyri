@@ -7,6 +7,8 @@
     "lib": ["deno.ns", "dom", "dom.iterable"]
   },
   "imports": {
+    "chart.js": "npm:chart.js@4.5.1",
+    "@napi-rs/canvas": "npm:@napi-rs/canvas@1.0.10",
     "@biomejs/biome": "npm:@biomejs/biome@^2.1.3",
     "@db/sqlite": "jsr:@db/sqlite@^0.13.0",
     "@stoqey/ib": "npm:@stoqey/ib@1.5.5",
