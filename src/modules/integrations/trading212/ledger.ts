@@ -55,17 +55,22 @@ export function parseTrading212Csv(csv: string): Row[] {
   ) {
     throw new Error("Invalid Trading 212 CSV headers");
   }
-  // An export with no activity omits optional columns, including ID. It is a
-  // valid empty interval; event identity remains mandatory for nonempty data.
+  // Empty and dividend-only exports omit optional columns, including ID.
+  // Trades and funding transfers still require IDs to reconcile them safely.
   if (!records.length) return [];
-  if (!headers.includes("ID")) {
-    throw new Error("Trading 212 CSV events are missing IDs");
-  }
   return records.map((r) => {
     if (r.length !== headers.length) {
       throw new Error("Invalid Trading 212 CSV row");
     }
-    return Object.fromEntries(headers.map((h, i) => [h, r[i]]));
+    const row = Object.fromEntries(headers.map((h, i) => [h, r[i]]));
+    if (
+      (!row.ID) &&
+      (/ (buy|sell)$/.test(row.Action) ||
+        ["Deposit", "Withdrawal"].includes(row.Action))
+    ) {
+      throw new Error("Trading 212 CSV events are missing IDs");
+    }
+    return row;
   });
 }
 
@@ -107,11 +112,16 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
     // Chunk boundaries can repeat rows; duplicates must agree rather than count twice.
     const key = JSON.stringify([
       row.Action,
-      row.ID,
+      row.ID ?? "",
       row["Time (UTC)"],
       row.ISIN,
     ]);
-    const serialized = JSON.stringify(row);
+    // Export columns depend on the actions present in each interval. Missing
+    // optional columns and empty values must compare equally across overlaps.
+    const serialized = JSON.stringify(
+      Object.entries(row).filter(([, value]) => value !== "")
+        .sort(([a], [b]) => a.localeCompare(b)),
+    );
     if (seen.has(key)) {
       if (seen.get(key) !== serialized) {
         throw new Error("Conflicting Trading 212 CSV rows");

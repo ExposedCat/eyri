@@ -90,6 +90,31 @@ function csv(rows: Record<string, string>[]) {
     ...rows.map((r) => headers.map((h) => escape(r[h])).join(",")),
   ].join("\r\n");
 }
+
+Deno.test("dividend-only exports omit IDs and deduplicate against full-history exports with extra empty columns", () => {
+  const full = row("Dividend (Dividend)", "", "3", {
+    ISIN: "TEST",
+    "Net Total": "2",
+    "Currency (Net Total)": "EUR",
+  });
+  const narrow =
+    "Action,Time (UTC),ISIN,Gross Total,Currency (Gross Total),Net Total,Currency (Net Total)\nDividend (Dividend),2026-01-01 12:00:00,TEST,3,EUR,2,EUR";
+  const rows = [
+    ...parseTrading212Csv(csv([full])),
+    ...parseTrading212Csv(narrow),
+  ];
+  const ledger = buildTrading212Ledger(rows, new Set());
+  deepStrictEqual(ledger.cash, { EUR: 2 });
+  deepStrictEqual(ledger.deposits, {});
+  throws(
+    () =>
+      buildTrading212Ledger(
+        [...rows, { ...rows[1], "Net Total": "1" }],
+        new Set(),
+      ),
+    /Conflicting/,
+  );
+});
 const entries = [
   row("Deposit", "external", "100"),
   row("Market buy", "EOF1", "50", {
