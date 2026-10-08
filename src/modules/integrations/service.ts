@@ -12,6 +12,7 @@ import { portfolioValuations } from "./usd.ts";
 import type {
   IntegrationAdapter,
   IntegrationPortfolioPosition,
+  IntegrationOrder,
 } from "./types.ts";
 
 const adapters: Record<Integration["kind"], IntegrationAdapter> = {
@@ -165,6 +166,7 @@ async function mapIntegrationData<T>(
 export async function fetchIntegratedPortfolio(
   database: Database,
   userId: number,
+  merge = true,
 ) {
   const integrations = getUserIntegrations(database, userId);
   const positions = await mapIntegrationData(
@@ -173,7 +175,19 @@ export async function fetchIntegratedPortfolio(
     (_adapter, db, integration) => fetchIntegrationPortfolio(db, integration),
   );
 
-  return mergePositions(positions);
+  return merge ? mergePositions(positions) : positions;
+}
+
+export function fetchIntegratedAccountPerformances(
+  database: Database, userId: number,
+  positions: IntegrationPortfolioPosition[], orders: IntegrationOrder[],
+) {
+  return mapIntegrationData(database, getUserIntegrations(database, userId), async (adapter, db, integration) => {
+    if (!adapter.fetchAccountPerformance) return [];
+    return [await adapter.fetchAccountPerformance(db, integration,
+      positions.filter(p => p.integrationId === integration.id),
+      orders.filter(o => o.integrationId === integration.id))];
+  });
 }
 
 export function fetchIntegrationPortfolio(

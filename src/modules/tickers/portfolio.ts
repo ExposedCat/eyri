@@ -9,6 +9,7 @@ import {
 import type {
   IntegrationOrder,
   IntegrationPortfolioPosition,
+  IntegrationAccountPerformance,
 } from "../integrations/types.ts";
 import {
   adjustOrderForCorporateActions,
@@ -59,6 +60,7 @@ type BuildIntegratedSoldPerformanceArgs = BuildIntegratedHistoryArgs & {
 };
 
 type BuildIntegratedAllTimePerformanceArgs = BuildIntegratedTickerListArgs & {
+  accountPerformances?: IntegrationAccountPerformance[];
   orders: IntegrationOrder[];
   transactionBuckets?: Map<string, string>;
   bucketName?: string | null;
@@ -645,16 +647,24 @@ export function buildIntegratedSoldPerformances(
         }
         continue;
       }
-      const cost = quantity * lot.price;
-      const proceeds = quantity * (order.price ?? 0);
-      const realizedPnl = proceeds - cost;
+      const wallet = order.walletImpact;
+      const fraction = quantity / Math.abs(order.quantity);
+      const charges = wallet?.taxes.filter((tax) => tax.currency === wallet.currency)
+        .reduce((sum, tax) => sum + tax.quantity, 0) ?? 0;
+      const proceeds = wallet
+        ? (wallet.netValue - charges) * fraction
+        : quantity * (order.price ?? 0);
+      const realizedPnl = wallet ? wallet.realisedProfitLoss! * fraction
+        : proceeds - quantity * lot.price;
+      const cost = wallet ? proceeds - realizedPnl : quantity * lot.price;
+      const soldCurrency = wallet?.currency ?? order.currency;
       const displayKey = [
         order.ticker.trim().toUpperCase(),
-        order.currency.trim().toUpperCase(),
+        soldCurrency.trim().toUpperCase(),
       ].join(":");
       const sold = soldByDisplayKey.get(displayKey) ?? {
         ticker: order.ticker,
-        currency: order.currency,
+        currency: soldCurrency,
         cost: 0,
         proceeds: 0,
         realizedPnl: 0,
@@ -685,6 +695,9 @@ export function buildIntegratedSoldPerformances(
     }
 
     lotsByKey.set(orderKey, lots);
+    if (order.walletImpact && remainingSellQuantity > FLOAT_EPSILON) {
+      throw new Error(`Missing purchase history for Trading 212 sale ${order.ticker}.`);
+    }
   }
 
   return [...soldByDisplayKey.values()].sort(
@@ -1081,6 +1094,7 @@ export async function buildIntegratedAllTimeReport({
   priceOverrides,
   transactionBuckets,
   bucketName = null,
+  accountPerformances = [],
 }: BuildIntegratedAllTimePerformanceArgs) {
   const now = new Date();
   const through = now.toISOString().slice(0, 10);
@@ -1100,6 +1114,8 @@ export async function buildIntegratedAllTimeReport({
     [
       ...positions.flatMap(portfolioPositionCurrencies),
       ...nativeSold.map((p) => p.currency),
+      ...accountPerformances.map(a => a.currency),
+      ...accountPerformances.flatMap(a => a.reportedComponents?.map(c => c.currency) ?? []),
     ],
     currency,
     request,
@@ -1112,6 +1128,7 @@ export async function buildIntegratedAllTimeReport({
     change: number | null;
     openedAt: Date | null;
     endedAt: Date;
+    accountAdjustment?: boolean;
   };
   const merged = new Map<string, Performance>();
   const merge = (
@@ -1171,7 +1188,7 @@ export async function buildIntegratedAllTimeReport({
       endedAt: sold.closedAt ?? now,
     });
   }
-  if (merged.size === 0) {
+  if (merged.size === 0 && accountPerformances.length === 0) {
     return null;
   }
 
@@ -1192,6 +1209,31 @@ export async function buildIntegratedAllTimeReport({
       }),
     );
   }
+  let fundingCostAdjustment = 0;
+  if (bucketName !== null && accountPerformances.length) {
+    throw new Error("Account funding cannot be assigned to an individual bucket");
+  }
+  const ids = new Set<number>();
+  for (const account of accountPerformances) {
+    if (ids.has(account.integrationId)) throw new Error("Duplicate account reconciliation");
+    ids.add(account.integrationId);
+    if (!account.reportedComponents) {
+      throw new Error("Account reconciliation requires the matching position/trade snapshot");
+    }
+    const factor = account.currency === currency ? 1 : conversionFactor(account.currency, rates);
+    const reported = account.reportedComponents.reduce((sum, c) => {
+      const rate = c.currency === currency ? 1 : conversionFactor(c.currency, rates);
+      return { cost: sum.cost + c.cost * rate, pnl: sum.pnl + c.pnl * rate };
+    }, { cost: 0, pnl: 0 });
+    const key = "__account_adjustments";
+    display.set(key, merge(display.get(key), {
+      ticker: "Account adjustments", currency, cost: 0,
+      change: account.pnl * factor - reported.pnl,
+      openedAt: account.openedAt, endedAt: now, accountAdjustment: true,
+    }));
+    // Reinvesting sales must not multiply the percentage denominator.
+    fundingCostAdjustment += account.netContributions * factor - reported.cost;
+  }
   const performances = [...display.values()].sort(
     (a, b) =>
       (b.change ?? Number.NEGATIVE_INFINITY) -
@@ -1206,7 +1248,8 @@ export async function buildIntegratedAllTimeReport({
     openedAt: null,
     endedAt: new Date(0),
   } as Performance);
-  return { performances, total };
+  if (total.cost !== null) total.cost += fundingCostAdjustment;
+  return { performances, total, accounts: accountPerformances };
 }
 
 export async function buildIntegratedAllTimePerformanceList({
@@ -1223,9 +1266,10 @@ export async function buildIntegratedAllTimePerformanceList({
   transactionBuckets,
   bucketName = null,
   numberOnly = false,
+  accountPerformances,
 }: BuildIntegratedAllTimePerformanceArgs): Promise<string> {
   const report = await buildIntegratedAllTimeReport({
-    positions, request, currency, orders, priceOverrides, transactionBuckets, bucketName,
+    positions, request, currency, orders, priceOverrides, transactionBuckets, bucketName, accountPerformances,
   });
   if (!report) return "";
   const { performances, total } = report;
@@ -1240,6 +1284,9 @@ export async function buildIntegratedAllTimePerformanceList({
   }
   const render = (name: string, performance: Performance) => {
     const elapsed = getElapsedPeriod(performance.openedAt, performance.endedAt);
+    if (performance.accountAdjustment) {
+      return `${name} ${performance.change === null ? "?" : formatCurrencyChange(performance.change, performance.currency)}`;
+    }
     if (performance.cost === null || performance.change === null) {
       return `${name} ? ? (${elapsed.label})`;
     }
@@ -1459,6 +1506,7 @@ export function buildBucketedPortfolioPositions({
           {
             ...position,
             amount,
+            brokerValuations: undefined,
             averageUnitPrice: totalInput === null ? null : totalInput / amount,
             ...(isCfdAllocation(position)
               ? { currentPrice: totalInput === null ? null : totalInput / amount }

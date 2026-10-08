@@ -1115,7 +1115,7 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber", "worth", "wor
     let performanceList: string;
     if (isAllTime) {
       const view = await fetchPortfolioView(
-        ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true },
+        ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true, accountPerformance: true },
       );
       performanceList = await buildIntegratedAllTimePerformanceList({
         currency,

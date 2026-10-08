@@ -2,6 +2,52 @@ import { deepStrictEqual, equal, rejects } from "node:assert/strict";
 import { Trading212Client } from "./api.ts";
 import { parseTrading212Credentials } from "./credentials.ts";
 
+Deno.test("account reads and export generation stay on dedicated endpoints with independent pacing", async () => {
+  let now = 100_000;
+  const sleeps: number[] = [], methods: string[] = [];
+  const client = new Trading212Client({
+    apiKey: "export-rate",
+    secretKey: "secret",
+  }, {
+    now: () => now,
+    sleep: (ms) => {
+      sleeps.push(ms);
+      now += ms;
+      return Promise.resolve();
+    },
+    fetch: (input, init) => {
+      const url = new URL(String(input));
+      methods.push(init!.method!);
+      if (init?.method === "POST") {
+        equal(url.pathname, "/api/v0/equity/history/exports");
+        equal(
+          new Headers(init.headers).get("Content-Type"),
+          "application/json",
+        );
+        return Promise.resolve(Response.json({ reportId: 1 }));
+      }
+      return Promise.resolve(Response.json([]));
+    },
+  });
+  const body = {
+    timeFrom: "2025-01-01T00:00:00Z",
+    timeTo: "2026-01-01T00:00:00Z",
+    dataIncluded: {
+      includeDividends: true,
+      includeInterest: true,
+      includeOrders: true,
+      includeTransactions: true,
+    },
+  };
+  await client.requestReport(body);
+  deepStrictEqual(sleeps, []);
+  await client.get("/api/v0/equity/account/summary");
+  await client.get("/api/v0/equity/history/exports");
+  await client.requestReport(body);
+  deepStrictEqual(sleeps, [30_100]);
+  deepStrictEqual(methods, ["POST", "GET", "GET", "POST"]);
+});
+
 Deno.test("Trading 212 client uses Basic authentication and live-only read endpoints", async () => {
   const calls: string[] = [];
   const client = new Trading212Client(

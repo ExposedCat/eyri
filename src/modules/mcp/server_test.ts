@@ -347,6 +347,7 @@ Deno.test("MCP preserves empty/unknown values, masked integration details and RS
       historyOrders: [],
       transactionBuckets: new Map(),
       bucketName: null,
+      accountPerformances: [],
     });
     equal((await call(h, "number")).total, null);
     const daily = await call(h, "dpnl");

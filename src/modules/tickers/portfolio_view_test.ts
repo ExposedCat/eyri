@@ -9,11 +9,13 @@ import {
   transferBucketAccess,
 } from "../database/bucket.ts";
 import type {
+  IntegrationAccountPerformance,
   IntegrationOrder,
   IntegrationPortfolioPosition,
 } from "../integrations/types.ts";
 import {
   buildIntegratedAllTimePerformanceList,
+  buildIntegratedAllTimeReport,
   buildIntegratedSoldPerformances,
   getOrderTransactionKey,
 } from "./portfolio.ts";
@@ -22,6 +24,97 @@ import {
   fetchPortfolioView,
   hasPortfolioViewIntegrations,
 } from "./portfolio_view.ts";
+
+Deno.test("whole included accounts retain wallet holdings and funding; partial buckets never inherit account cash", async () => {
+  const db = new Database(":memory:");
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    createIntegration({
+      database: db,
+      userId: 1,
+      kind: "t212",
+      credentials: {},
+    });
+    await createBucket({ database: db, userId: 1, name: "Included" });
+    const sourceOrders = [
+      order(1, 1, 100, "2025-01-01"),
+      order(1, 1, 100, "2025-01-02"),
+    ];
+    await moveTransactionToBucket({
+      database: db,
+      userId: 1,
+      bucketName: "Included",
+      transactionKey: getOrderTransactionKey(sourceOrders[1]),
+    });
+    const live = {
+      ...position(1, 2),
+      brokerValuations: [{
+        currency: "USD",
+        totalInput: 180,
+        totalNow: 400,
+        unrealizedPnl: 220,
+      }],
+    };
+    let calls = 0;
+    const fetchers = {
+      portfolio: () => Promise.resolve([live]),
+      orders: () => Promise.resolve(sourceOrders),
+      history: () => Promise.resolve(sourceOrders),
+      accounts: () => {
+        calls++;
+        return Promise.resolve([
+          {
+            integrationId: 1,
+            currency: "USD",
+            totalValue: 405,
+            netContributions: 300,
+            pnl: 105,
+            deposits: 300,
+            withdrawals: 0,
+            cash: 5,
+            ledgerCash: { USD: 5 },
+            openedAt: new Date("2025-01-01"),
+            historyThrough: new Date(),
+            positionValue: 400,
+            investmentValue: 400,
+          } satisfies IntegrationAccountPerformance,
+        ]);
+      },
+    };
+    let view = await fetchPortfolioView(db, 1, null, {
+      history: true,
+      accountPerformance: true,
+    }, fetchers);
+    equal(calls, 0);
+    equal(view.accountPerformances.length, 0);
+    equal(view.positions[0].amount, 1);
+    ok(!view.positions[0].brokerValuations);
+    setBucketIncluded({
+      database: db,
+      userId: 1,
+      name: "Included",
+      included: true,
+    });
+    view = await fetchPortfolioView(db, 1, null, {
+      history: true,
+      accountPerformance: true,
+    }, fetchers);
+    equal(calls, 1);
+    equal(view.positions[0].amount, 2);
+    deepStrictEqual(view.positions[0].brokerValuations, live.brokerValuations);
+    const report = await buildIntegratedAllTimeReport(view);
+    equal(report?.total.change, 105);
+    equal(report?.total.cost, 300);
+    await fetchPortfolioView(db, 1, "Included", {
+      history: true,
+      accountPerformance: true,
+    }, fetchers);
+    equal(calls, 1);
+  } finally {
+    db.close();
+  }
+});
 
 function order(
   owner: number,

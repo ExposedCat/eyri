@@ -132,7 +132,9 @@ integration. `history_years` is optional and defaults to 10.
 Use `/t212 [api_key] [secret_key]` to persist a read-only Trading 212
 integration. It always uses the live API. Generate a key and secret in your live
 account under Settings → API (Beta), with
-Portfolio, History - Orders and History - Transactions read permissions, and leave trading permissions off.
+Portfolio, Account summary, History - Orders, History - Transactions and history
+exports permissions, and leave trading permissions off. Generating a CSV export
+uses the dedicated export endpoint; it never places a trade.
 Invest and Stocks & Shares ISA accounts are supported.
 
 Trading 212 native prices and executed trades are stored in instrument currency.
@@ -140,9 +142,38 @@ Current whole-position reports use the API's account-currency wallet cost, value
 and unrealized return, including its FX impact and any costs reflected by the
 broker. Reports in that account currency match the supplied valuation exactly;
 other reporting currencies convert that valuation using the latest Frankfurter
-rates. Sold history, historical chart points and partial FIFO bucket holdings
-still use native trade costs and exclude historical FX effects and wallet fees/taxes.
-The live chart endpoint uses the same FX-inclusive open-position return as `/perf`.
+rates. Sold history preserves each execution's `walletImpact`, including its
+currency, realized result, historical FX rate, net cash and taxes. `/sold` uses
+the broker's supplied realized P/L; this metric is distinct from net account
+return. Partial bucket sales allocate a fill's broker result proportionally to
+the selected FIFO quantity. This cannot reconstruct exact tax-lot FX results.
+Historical chart points and partial open FIFO holdings still use native trade
+costs; historical chart points are estimates, not a historical cash ledger.
+
+For whole Trading 212 accounts, `/alltime` and `/allnumber` use current broker
+account value minus external net contributions. The percentage denominator is
+net contributions, not cumulative purchase turnover. Complete CSV exports
+distinguish true deposits/withdrawals from internal transfers, conversions and
+tax adjustments that the cash API labels as deposits. Cash and share quantities
+must reconcile with fresh broker data, and imported execution IDs must match the
+export. Execution net/gross totals already contain fees and taxes; these are
+never deducted twice. An explicit **Account adjustments** row reconciles the
+holding and sold-trade rows with account return, including cash FX, dividends,
+fees, tax adjustments and differences in broker valuation endpoints. MCP reports
+also expose the account value, funding and separate position/summary values.
+The live chart endpoint uses the same reconciled total as `/alltime`; earlier
+chart points retain the estimate described above.
+
+Exports are cached while event history is unchanged and cash/share checks pass.
+On first use or after new activity, T212 may need a minute to prepare an export;
+the command requests it and asks for a retry instead of displaying an incomplete
+total. A pending export is reused on retry. Account reconciliation applies only
+when the complete account is included. Individual/excluded/shared bucket subsets
+continue to show selected investment results. External funding in other
+currencies, non-account-currency cash without a broker breakdown, unsupported
+cash actions and outstanding CFD funding cause explicit errors rather than an
+invented consolidated balance. In particular, a current CFD account value is
+required before outstanding transfer funding can be treated as wealth.
 US equity IDs such as `AAPL_US_EQ` display as `AAPL`; other listing IDs are preserved.
 Order history is cached in SQLite and paginated, then refreshed incrementally at
 most once per minute. A large first import can take time because of API rate limits.
@@ -162,7 +193,9 @@ bucket, performance and chart paths as ordinary purchases and sales. `/history`
 shows the $500 purchase, as it does for other purchased instruments.
 Outstanding allocations appear in `/stocks`, `/portfolio`, `/perf`, `/worth`
 and their bucket views at funding cost until a return closes them. `/sold`,
-`/alltime`, `/allnumber` and `/chart` include realized CFD results. Chart values
+`/alltime`, `/allnumber` and `/chart` include realized CFD results. Whole-account
+reconciliation includes returned CFD cash through the actual cash ledger rather
+than relying on today's conversion of the synthetic trade result. Historical chart values
 stay at funding cost between transfers and never request market prices for CFD.
 A return without outstanding funding is additional zero-basis proceeds; it
 does not create a short position. Existing CFD bucket assignments migrate to

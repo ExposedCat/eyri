@@ -17,6 +17,7 @@ import { readYahooMapping } from "../market_data/mappings.ts";
 import type {
   IntegrationOrder,
   IntegrationPortfolioPosition,
+  IntegrationAccountPerformance,
 } from "../integrations/types.ts";
 import { usdFactor } from "../integrations/usd.ts";
 import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
@@ -49,6 +50,7 @@ type Args = {
   transactionBuckets: Map<string, string>;
   bucketName: string | null;
   now?: Date;
+  accountPerformances?: IntegrationAccountPerformance[];
 };
 const EPSILON = 1e-7;
 export const instrumentKey = (item: { ticker: string; currency: string }) =>
@@ -134,6 +136,7 @@ export function buildAllTimeSeries(
     return { date, percentage: cost === 0 ? 0 : gain / cost * 100, gain };
   };
   const realized = new Map<string, Totals>();
+  const nativeWalletRealized = new Map<string, Totals>();
   let orderIndex = 0;
   const points: AllTimePoint[] = [{
     date: dayAfter(first, -1),
@@ -208,6 +211,8 @@ export function buildAllTimeSeries(
               quantity * lot.price,
               quantity * (order.price - lot.price),
             );
+            if (order.walletImpact) addTotals(nativeWalletRealized, lot.currency,
+              quantity * lot.price, quantity * (order.price - lot.price));
           }
           remaining -= quantity;
           lot.quantity -= quantity;
@@ -314,6 +319,13 @@ export function buildAllTimeSeries(
     for (const [currency, native] of realized) {
       addTotals(totals, currency, native.cost, native.gain);
     }
+    // Broker wallet results remain canonical even when chart history contains
+    // splits. Replace only those fills, retaining split-aware native results
+    // for other brokers.
+    for (const [currency, native] of nativeWalletRealized) addTotals(totals, currency, -native.cost, -native.gain);
+    for (const p of buildIntegratedSoldPerformances(args.orders.filter(o => o.quantity > 0 || o.walletImpact), args.transactionBuckets, args.bucketName)) {
+      addTotals(totals, p.currency, p.cost, p.realizedPnl);
+    }
   } else {
     for (
       const p of buildIntegratedSoldPerformances(
@@ -324,6 +336,11 @@ export function buildAllTimeSeries(
     ) {
       addTotals(totals, p.currency, p.cost, p.realizedPnl);
     }
+  }
+  for (const account of args.accountPerformances ?? []) {
+    if (!account.reportedComponents) throw new Error("Account reconciliation snapshot is missing");
+    for (const c of account.reportedComponents) addTotals(totals, c.currency, -c.cost, -c.pnl);
+    addTotals(totals, account.currency, account.netContributions, account.pnl);
   }
   points[points.length - 1] = pointInUsd(last, totals);
   return points;
@@ -505,6 +522,7 @@ export async function loadAllTimeDataset(
   const rates = await fetchUsdConversionRates(
     [...sources.values()].flatMap(portfolioPositionCurrencies).concat(
       [...histories.values()].map((h) => h.currency),
+      (args.accountPerformances ?? []).flatMap(a => [a.currency, ...(a.reportedComponents?.map(c => c.currency) ?? [])]),
     ),
     request,
   );

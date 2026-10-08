@@ -33,6 +33,13 @@ export type Trading212HistoricalOrder = {
     quantity: number;
     price: number;
     type: string;
+    walletImpact?: {
+      currency: string;
+      netValue: number;
+      fxRate: number;
+      realisedProfitLoss?: number;
+      taxes: { name: string; quantity: number; currency: string }[];
+    };
   };
 };
 
@@ -66,6 +73,8 @@ const intervals: Record<string, number> = {
   "/api/v0/equity/positions": 1_000,
   "/api/v0/equity/history/orders": 3_100,
   "/api/v0/equity/history/transactions": 10_100,
+  "/api/v0/equity/account/summary": 5_100,
+  "/api/v0/equity/history/exports": 60_100,
 };
 
 export class Trading212Client {
@@ -116,9 +125,34 @@ export class Trading212Client {
     return request;
   }
 
-  private async request<T>(url: URL): Promise<T> {
+  requestReport(body: {
+    timeFrom: string;
+    timeTo: string;
+    dataIncluded: {
+      includeDividends: boolean;
+      includeInterest: boolean;
+      includeOrders: boolean;
+      includeTransactions: boolean;
+    };
+  }): Promise<{ reportId: number }> {
+    // This is an export request, never a trading endpoint. Share the queue across
+    // report requests, while GET status checks retain their own rate limit.
+    const key = "POST /api/v0/equity/history/exports";
+    const previous = this.queues.get(key) ?? Promise.resolve();
+    const request = previous.catch(() => {}).then(async () => {
+      return this.request<{ reportId: number }>(
+        new URL("/api/v0/equity/history/exports", this.origin),
+        JSON.stringify(body),
+      );
+    });
+    this.queues.set(key, request);
+    return request;
+  }
+
+  private async request<T>(url: URL, body?: string): Promise<T> {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const delay = (this.nextAllowed.get(url.pathname) ?? 0) -
+      const key = body === undefined ? url.pathname : `POST ${url.pathname}`;
+      const delay = (this.nextAllowed.get(key) ?? 0) -
         this.runtime.now();
       if (delay > 60_000) {
         throw new Error("Trading 212 rate limit reached; try again later");
@@ -130,14 +164,21 @@ export class Trading212Client {
         await this.runtime.sleep(delay);
       }
       this.nextAllowed.set(
-        url.pathname,
-        this.runtime.now() + intervals[url.pathname],
+        key,
+        this.runtime.now() +
+          (body === undefined ? intervals[url.pathname] : 30_100),
       );
       let response: Response;
       try {
         response = await this.runtime.fetch(url, {
-          method: "GET",
-          headers: { Authorization: this.authorization },
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            Authorization: this.authorization,
+            ...(body === undefined
+              ? {}
+              : { "Content-Type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body }),
           redirect: "error",
           signal: AbortSignal.timeout(20_000),
         });
@@ -157,9 +198,9 @@ export class Trading212Client {
             ? retryAfter
             : (response.status === 429 ? 60_000 : 0));
         this.nextAllowed.set(
-          url.pathname,
+          key,
           Math.max(
-            this.nextAllowed.get(url.pathname) ?? 0,
+            this.nextAllowed.get(key) ?? 0,
             Number.isFinite(retryAt) ? retryAt : now + 60_000,
           ),
         );

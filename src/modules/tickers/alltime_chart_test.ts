@@ -8,6 +8,7 @@ import {
 } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import type {
+  IntegrationAccountPerformance,
   IntegrationOrder,
   IntegrationPortfolioPosition,
 } from "../integrations/types.ts";
@@ -79,6 +80,65 @@ function history(
   return { symbol: "AAPL", currency, bars, splits: [] };
 }
 
+Deno.test("chart endpoint uses funding-based account return, including broker wallet sales across splits", async () => {
+  const buy = trade(1, 100, "2025-01-02");
+  const sell = {
+    ...trade(-1, 60, "2025-01-03"),
+    walletImpact: {
+      currency: "EUR",
+      netValue: 54,
+      fxRate: 1.1,
+      realisedProfitLoss: 14,
+      taxes: [],
+    },
+  };
+  const positions = [{
+    ...holding(1, 50, 70),
+    brokerValuations: [{
+      currency: "EUR",
+      totalInput: 40,
+      totalNow: 63,
+      unrealizedPnl: 23,
+    }],
+  }];
+  const account: IntegrationAccountPerformance = {
+    integrationId: 1,
+    currency: "EUR",
+    totalValue: 90,
+    netContributions: 100,
+    pnl: -10,
+    deposits: 100,
+    withdrawals: 0,
+    cash: 27,
+    ledgerCash: { EUR: 27 },
+    openedAt: new Date("2025-01-01"),
+    historyThrough: now,
+    positionValue: 63,
+    investmentValue: 63,
+    reportedComponents: [{ currency: "EUR", cost: 40, pnl: 23 }, {
+      currency: "EUR",
+      cost: 40,
+      pnl: 14,
+    }],
+  };
+  const args = {
+    positions,
+    orders: [buy, sell],
+    transactionBuckets: new Map<string, string>(),
+    bucketName: null,
+    now,
+    accountPerformances: [account],
+  };
+  const h = { ...history(), splits: [{ date: "2025-01-03", ratio: 2 }] };
+  const points = buildAllTimeSeries(
+    args,
+    new Map([[instrumentKey(buy), h]]),
+    new Map([["USD", 1], ["EUR", 1.1]]),
+  );
+  equal(points.at(-1)?.gain, -11);
+  equal(points.at(-1)?.percentage, -10);
+});
+
 Deno.test("all-time series replays purchases and FIFO sales, carries weekends, and ends at /alltime", async () => {
   const orders = [trade(10, 100, "2025-01-02"), trade(-4, 120, "2025-01-03")];
   const positions = [holding(6, 600, 130)];
@@ -139,10 +199,25 @@ Deno.test("live chart endpoint uses FX-inclusive broker valuation and agrees wit
   const orders = [trade(2, 100, "2025-01-02")];
   const positions = [{
     ...holding(2, 200, 110),
-    brokerValuations: [{ currency: "EUR", totalInput: 170, totalNow: 198, unrealizedPnl: 27.99 }],
+    brokerValuations: [{
+      currency: "EUR",
+      totalInput: 170,
+      totalNow: 198,
+      unrealizedPnl: 27.99,
+    }],
   }];
-  const args = { positions, orders, transactionBuckets: new Map<string, string>(), bucketName: null, now };
-  const points = buildAllTimeSeries(args, new Map([[instrumentKey(orders[0]), history()]]), new Map([["USD", 1], ["EUR", 1.25]]));
+  const args = {
+    positions,
+    orders,
+    transactionBuckets: new Map<string, string>(),
+    bucketName: null,
+    now,
+  };
+  const points = buildAllTimeSeries(
+    args,
+    new Map([[instrumentKey(orders[0]), history()]]),
+    new Map([["USD", 1], ["EUR", 1.25]]),
+  );
   equal(points.at(-1)!.gain, 27.99 * 1.25);
   equal(points.at(-1)!.percentage, 27.99 / 170 * 100);
   const text = await buildIntegratedAllTimePerformanceList({
@@ -222,15 +297,31 @@ Deno.test("EUR warrant history and live endpoints compare native bids to native 
     trade(1142, .49, "2025-01-02", "EUR"),
     trade(-100, .52, "2025-01-03", "EUR"),
   ].map((o) => ({ ...o, ticker: "WARRANT", assetCategory: "WAR" }));
-  const positions = [{ ...holding(1042, 1042 * .49, .50, "EUR"), ticker: "WARRANT" }];
+  const positions = [{
+    ...holding(1042, 1042 * .49, .50, "EUR"),
+    ticker: "WARRANT",
+  }];
   const original = structuredClone({ orders, positions });
-  const histories = new Map([[instrumentKey(orders[0]), history("EUR", [
-    { date: "2025-01-02", close: .49 },
-    { date: "2025-01-03", close: .50 },
-  ])]]);
-  const args = { positions, orders, transactionBuckets: new Map<string, string>(), bucketName: null, now };
+  const histories = new Map([[
+    instrumentKey(orders[0]),
+    history("EUR", [
+      { date: "2025-01-02", close: .49 },
+      { date: "2025-01-03", close: .50 },
+    ]),
+  ]]);
+  const args = {
+    positions,
+    orders,
+    transactionBuckets: new Map<string, string>(),
+    bucketName: null,
+    now,
+  };
   for (const factor of [1, 1.12, 2]) {
-    const points = buildAllTimeSeries(args, histories, new Map([["EUR", factor]]));
+    const points = buildAllTimeSeries(
+      args,
+      histories,
+      new Map([["EUR", factor]]),
+    );
     equal(points[1].gain, 0);
     const nativeGain = 1042 * .50 - 1042 * .49 + 100 * (.52 - .49);
     for (const point of points.slice(2)) {

@@ -6,6 +6,7 @@ import {
 } from "../database/bucket.ts";
 import { hasUserIntegrations } from "../database/integration.ts";
 import {
+  fetchIntegratedAccountPerformances,
   fetchIntegratedHistoryOrders,
   fetchIntegratedOrderHistory,
   fetchIntegratedPortfolio,
@@ -13,9 +14,12 @@ import {
 } from "../integrations/service.ts";
 import {
   buildBucketedPortfolioPositions,
+  buildIntegratedSoldPerformances,
   filterHistoryOrdersByBucket,
   getOrderTransactionKey,
 } from "./portfolio.ts";
+import { portfolioValuations } from "../integrations/usd.ts";
+import { adjustOrderForCorporateActions } from "../market_data/corporate_actions.ts";
 
 function portfolioSources(
   db: Database,
@@ -55,16 +59,19 @@ type Options = {
   positions?: boolean;
   history?: boolean;
   displayHistory?: boolean;
+  accountPerformance?: boolean;
 };
 type Runtime = {
   portfolio: typeof fetchIntegratedPortfolio;
   orders: typeof fetchIntegratedOrderHistory;
   history: typeof fetchIntegratedHistoryOrders;
+  accounts?: typeof fetchIntegratedAccountPerformances;
 };
 const runtime: Runtime = {
   portfolio: fetchIntegratedPortfolio,
   orders: fetchIntegratedOrderHistory,
   history: fetchIntegratedHistoryOrders,
+  accounts: fetchIntegratedAccountPerformances,
 };
 
 export async function fetchPortfolioView(
@@ -88,7 +95,9 @@ export async function fetchPortfolioView(
         const needsOrders = options.history || options.displayHistory ||
           assignments.size > 0 || !names.has(null);
         const [livePositions, sourceOrders] = await Promise.all([
-          options.positions === false ? [] : fetchers.portfolio(db, ownerId),
+          options.positions === false
+            ? []
+            : fetchers.portfolio(db, ownerId, false),
           needsOrders
             ? (options.displayHistory ? fetchers.history : fetchers.orders)(
               db,
@@ -98,14 +107,16 @@ export async function fetchPortfolioView(
         ]);
         // Broker imports can migrate legacy CFD assignments to purchase keys.
         assignments = readBucketAssignments(db, ownerId);
+        const wholeAccount = bucketName === null && names.has(null) &&
+          [...assignments.values()].every((name) => names.has(name));
         const positions = options.positions === false
           ? []
-          : assignments.size === 0 && names.has(null)
+          : wholeAccount
           ? livePositions
           : [...names].flatMap((name) =>
             buildBucketedPortfolioPositions({
               orders: sourceOrders,
-              livePositions,
+              livePositions: mergePositions(livePositions),
               transactionBuckets: assignments,
               bucketName: name,
             })
@@ -123,7 +134,49 @@ export async function fetchPortfolioView(
           }
           return { ...order, transactionKey };
         });
-        return { positions, orders, transactionBuckets };
+        // A bucket does not own an account's cash or external contributions.
+        // Apply the funding reconciliation only when the complete owner's
+        // account is included, never to an excluded or transferred subset.
+        const accountPerformances =
+          options.accountPerformance && wholeAccount && fetchers.accounts
+            ? await fetchers.accounts(db, ownerId, livePositions, sourceOrders)
+            : [];
+        for (const account of accountPerformances) {
+          const valuations = livePositions.filter((p) =>
+            p.integrationId === account.integrationId
+          ).flatMap(portfolioValuations);
+          account.reportedComponents = valuations.map((v) => {
+            if (v.totalInput === null || v.unrealizedPnl === null) {
+              throw new Error(
+                "Cannot reconcile incomplete position valuations",
+              );
+            }
+            return {
+              currency: v.currency,
+              cost: v.totalInput,
+              pnl: v.unrealizedPnl,
+            };
+          });
+          const sold = buildIntegratedSoldPerformances(
+            sourceOrders.filter((o) =>
+              o.integrationId === account.integrationId
+            )
+              .map((o) =>
+                adjustOrderForCorporateActions(
+                  o,
+                  new Date().toISOString().slice(0, 10),
+                )
+              ),
+          );
+          account.reportedComponents.push(
+            ...sold.map((s) => ({
+              currency: s.currency,
+              cost: s.cost,
+              pnl: s.realizedPnl,
+            })),
+          );
+        }
+        return { positions, orders, transactionBuckets, accountPerformances };
       },
     ),
   );
@@ -138,6 +191,9 @@ export async function fetchPortfolioView(
     orders,
     transactionBuckets,
     bucketName,
+    accountPerformances: results.flatMap((result) =>
+      result.accountPerformances
+    ),
     historyOrders: filterHistoryOrdersByBucket(
       orders,
       transactionBuckets,

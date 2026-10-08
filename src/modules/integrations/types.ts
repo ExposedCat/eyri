@@ -39,6 +39,14 @@ export type IntegrationPortfolioPosition = {
 };
 
 export type IntegrationOrder = {
+  executionId?: string;
+  walletImpact?: {
+    currency: string;
+    netValue: number;
+    fxRate: number;
+    realisedProfitLoss?: number;
+    taxes: { name: string; quantity: number; currency: string }[];
+  };
   // Synthesized history entries keep their bucket identity across refreshes.
   transactionKey?: string;
   integrationId: number;
@@ -56,6 +64,12 @@ export type IntegrationOrder = {
 };
 
 export type IntegrationAdapter = {
+  fetchAccountPerformance?: (
+    database: Database,
+    integration: Integration,
+    positions: IntegrationPortfolioPosition[],
+    orders: IntegrationOrder[],
+  ) => Promise<IntegrationAccountPerformance>;
   fetchCashHistory?: (
     database: Database,
     integration: Integration,
@@ -69,6 +83,24 @@ export type IntegrationAdapter = {
     integration: Integration,
   ) => Promise<IntegrationOrder[]>;
   probe?: (integration: Integration) => Promise<void>;
+};
+
+export type IntegrationAccountPerformance = {
+  integrationId: number;
+  currency: string;
+  totalValue: number;
+  netContributions: number;
+  pnl: number;
+  deposits: number;
+  withdrawals: number;
+  cash: number;
+  ledgerCash: Record<string, number>;
+  openedAt: Date;
+  historyThrough: Date;
+  positionValue: number;
+  investmentValue: number;
+  // The matching snapshot, kept in each component's currency until reporting.
+  reportedComponents?: { currency: string; cost: number; pnl: number }[];
 };
 
 export type IntegrationCashTransaction = {

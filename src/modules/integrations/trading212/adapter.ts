@@ -14,6 +14,7 @@ import {
 } from "./api.ts";
 import { parseTrading212Credentials } from "./credentials.ts";
 import { fetchTrading212CashHistory } from "./transactions.ts";
+import { fetchTrading212AccountPerformance } from "./ledger.ts";
 import {
   buildCfdHistoryOrders,
   buildCfdPositions,
@@ -121,6 +122,13 @@ export function toTrading212Order(
   const quantity = numberOrNull(fill.quantity);
   const price = numberOrNull(fill.price);
   const date = new Date(fill.filledAt);
+  const wallet = fill.walletImpact;
+  if (wallet && (
+    !wallet.currency?.trim() || numberOrNull(wallet.netValue) === null || wallet.netValue < 0 ||
+    numberOrNull(wallet.fxRate) === null || wallet.fxRate <= 0 || !Array.isArray(wallet.taxes) ||
+    (order.side === "SELL" && numberOrNull(wallet.realisedProfitLoss) === null) ||
+    wallet.taxes.some((tax) => !tax.name || !tax.currency?.trim() || numberOrNull(tax.quantity) === null)
+  )) throw new Error("Invalid Trading 212 fill wallet impact");
   if (
     quantity === null || quantity === 0 || price === null || price < 0 ||
     !Number.isFinite(+date) || (order.side !== "BUY" && order.side !== "SELL")
@@ -130,6 +138,11 @@ export function toTrading212Order(
   return {
     ...baseFields(integration),
     ...instrumentFields(order.instrument),
+    executionId: String(fill.id),
+    ...(wallet ? { walletImpact: {
+      ...wallet, currency: wallet.currency.trim().toUpperCase(),
+      taxes: wallet.taxes.map((tax) => ({ ...tax, currency: tax.currency.trim().toUpperCase() })),
+    } } : {}),
     quantity: order.side === "SELL" ? -Math.abs(quantity) : Math.abs(quantity),
     price,
     date,
@@ -280,6 +293,7 @@ function fetchCfdOrders(database: Database, integration: Integration) {
 }
 
 export const trading212Adapter: IntegrationAdapter = {
+  fetchAccountPerformance: fetchTrading212AccountPerformance,
   fetchCashHistory: fetchTrading212CashHistory,
   async fetchPortfolio(database, integration) {
     const client = getTrading212Client(

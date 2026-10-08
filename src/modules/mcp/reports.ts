@@ -180,6 +180,7 @@ export async function runReport(
     positions: name !== "history" && name !== "sold",
     history: ["alltime", "allnumber", "sold", "chart"].includes(name),
     displayHistory: name === "history",
+    accountPerformance: ["alltime", "allnumber", "chart"].includes(name),
   });
   const input = {
     ...view,
@@ -271,11 +272,12 @@ export async function runReport(
         ...context,
         tickers: performances.map((p) => p.ticker),
         total: report?.total.change ?? null,
+        ...(report?.accounts.length ? { accounts: report.accounts } : {}),
       };
     const item = (p: NonNullable<typeof report>["total"]) => ({
       pnl: p.change,
       returnPct:
-        p.cost === null || p.change === null
+        p.accountAdjustment || p.cost === null || p.change === null
           ? null
           : p.cost === 0
             ? 0
@@ -286,6 +288,7 @@ export async function runReport(
       ...context,
       positions: performances.map((p) => ({ ticker: p.ticker, ...item(p) })),
       total: report ? item(report.total) : null,
+      ...(report?.accounts.length ? { accounts: report.accounts } : {}),
     };
   }
   if (name === "sold") {
