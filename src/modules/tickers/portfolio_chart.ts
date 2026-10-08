@@ -1,5 +1,5 @@
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
-import { fetchConversionRates } from "../../utils/exchange_rates.ts";
+import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
 import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { isStockPosition } from "./portfolio.ts";
 import { renderPortfolioAllocation } from "./portfolio_chart_renderer.ts";
@@ -17,19 +17,15 @@ export type PortfolioChart = {
 	}[];
 };
 
-export async function buildPortfolioChart(
+export async function buildPortfolioAllocation(
 	positions: IntegrationPortfolioPosition[],
 	request: typeof fetch = fetch,
 	currency = "USD",
-): Promise<PortfolioChart | null> {
+) {
 	const stocks = positions.filter((position) =>
 		isStockPosition(position) && position.amount !== 0
 	);
-	const conversionRates = await fetchConversionRates(
-		stocks.map((position) => position.currency),
-		currency,
-		request,
-	);
+	const reported = await portfolioPositionsInCurrency(stocks, request, currency);
 	const entries = new Map<
 		string,
 		{
@@ -38,28 +34,26 @@ export async function buildPortfolioChart(
 			change: number | null;
 		}
 	>();
-	for (const position of stocks) {
+	for (const position of reported) {
 		const ticker = position.ticker.trim().toUpperCase();
-		const currency = position.currency.trim().toUpperCase();
-		const conversion = conversionRates.get(currency)!;
-		const nativeValue = position.currentPrice === null
+		const nativeValue = position.brokerValuations || position.currentPrice === null
 			? position.totalNow
 			: position.currentPrice * position.amount;
 		if (nativeValue === null || !Number.isFinite(nativeValue)) {
 			throw new Error(`Current price unavailable for ${ticker}.`);
 		}
-		const value = nativeValue * conversion;
+		const value = nativeValue;
 		const nativeCost = position.totalInput ??
 			(position.averageUnitPrice === null
 				? null
 				: position.averageUnitPrice * position.amount);
-		const cost = nativeCost === null ? null : nativeCost * conversion;
-		const nativeChange = nativeCost === null
+		const cost = nativeCost;
+		const nativeChange = position.brokerValuations || nativeCost === null
 			? position.unrealizedPnl === null
 				? null
 				: position.unrealizedPnl
 			: nativeValue - nativeCost;
-		const change = nativeChange === null ? null : nativeChange * conversion;
+		const change = nativeChange;
 		const existing = entries.get(ticker);
 		entries.set(
 			ticker,
@@ -90,20 +84,46 @@ export async function buildPortfolioChart(
 	if (grossValue === 0) return null;
 	const total = holdings.reduce((sum, [, holding]) => sum + holding.value, 0);
 	return {
-		total: formatMoney(total, currency),
+		total,
 		holdingsCount: holdings.length,
 		holdings: holdings.map(([ticker, holding]) => ({
 			ticker,
 			weight: Math.abs(holding.value) / grossValue * 100,
+			value: holding.value,
+			change: holding.change,
+			returnPct: holding.change === null || holding.cost === null || holding.cost === 0
+				? null : holding.change / holding.cost * 100,
+		})),
+	};
+}
+
+export async function buildPortfolioChart(
+	positions: IntegrationPortfolioPosition[],
+	request: typeof fetch = fetch,
+	currency = "USD",
+): Promise<PortfolioChart | null> {
+	const allocation = await buildPortfolioAllocation(
+		positions,
+		request,
+		currency,
+	);
+	if (!allocation) return null;
+	return {
+		total: formatMoney(allocation.total, currency),
+		holdingsCount: allocation.holdingsCount,
+		holdings: allocation.holdings.map((holding) => ({
+			ticker: holding.ticker,
+			weight: holding.weight,
 			value: formatMoney(holding.value, currency, 0),
 			change: holding.change,
-			changeLabel: holding.change === null
-				? "?"
-				: formatMoneyChange(holding.change, "$", 2, currency),
-			returnLabel:
-				holding.change === null || holding.cost === null || holding.cost === 0
+			changeLabel:
+				holding.change === null
 					? "?"
-					: formatMoneyChange(holding.change / holding.cost * 100, "%", 1),
+					: formatMoneyChange(holding.change, "$", 2, currency),
+			returnLabel:
+				holding.returnPct === null
+					? "?"
+					: formatMoneyChange(holding.returnPct, "%", 1),
 		})),
 	};
 }

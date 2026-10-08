@@ -48,6 +48,10 @@ services:
       - .env
     environment:
       PODMAN_SOCKET_PATH: /run/podman/podman.sock
+      EYRI_MCP_HOST: "0.0.0.0"
+      EYRI_MCP_PORT: "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
     healthcheck:
       test:
         [

@@ -135,6 +135,24 @@ Deno.test("all-time series retains sold-only gains and isolates same-ticker FIFO
   ok(Math.abs(points.at(-1)!.percentage + 20 / 300 * 100) < 1e-9);
 });
 
+Deno.test("live chart endpoint uses FX-inclusive broker valuation and agrees with alltime", async () => {
+  const orders = [trade(2, 100, "2025-01-02")];
+  const positions = [{
+    ...holding(2, 200, 110),
+    brokerValuations: [{ currency: "EUR", totalInput: 170, totalNow: 198, unrealizedPnl: 27.99 }],
+  }];
+  const args = { positions, orders, transactionBuckets: new Map<string, string>(), bucketName: null, now };
+  const points = buildAllTimeSeries(args, new Map([[instrumentKey(orders[0]), history()]]), new Map([["USD", 1], ["EUR", 1.25]]));
+  equal(points.at(-1)!.gain, 27.99 * 1.25);
+  equal(points.at(-1)!.percentage, 27.99 / 170 * 100);
+  const text = await buildIntegratedAllTimePerformanceList({
+    ...args,
+    request: async () => Response.json({ base: "USD", quote: "EUR", rate: .8 }),
+    formatTicker: (ticker) => ticker,
+  });
+  match(text, /Total: \+16\.46% \+\$34\.99/);
+});
+
 Deno.test("bucket all-time curves consume earlier unselected purchases before selected lots", () => {
   const orders = [
     trade(4, 100, "2025-01-02"),

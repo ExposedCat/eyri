@@ -65,16 +65,32 @@ export function toTrading212Position(
   if (amount === 0) return null;
   const averageUnitPrice = numberOrNull(position.averagePricePaid);
   const currentPrice = numberOrNull(position.currentPrice);
-  // Prices and totals must share the instrument currency. Wallet-impact values
-  // are account-currency amounts and cannot be mixed into these calculations.
+  // Keep native prices for history and market data, and preserve the broker's
+  // account-currency cost and return separately for exact FX-inclusive reporting.
   const totalInput = averageUnitPrice === null
     ? null
     : averageUnitPrice * amount;
   const totalNow = currentPrice === null ? null : currentPrice * amount;
   const openedAt = position.createdAt ? new Date(position.createdAt) : null;
+  const wallet = position.walletImpact;
+  if (wallet && (
+    !wallet.currency?.trim() || numberOrNull(wallet.totalCost) === null ||
+    wallet.totalCost < 0 || numberOrNull(wallet.currentValue) === null ||
+    wallet.currentValue < 0 || numberOrNull(wallet.unrealizedProfitLoss) === null
+  )) {
+    throw new Error("Invalid Trading 212 wallet valuation");
+  }
   return {
     ...baseFields(integration),
     ...instrumentFields(position.instrument),
+    ...(wallet ? {
+      brokerValuations: [{
+        currency: wallet.currency.trim().toUpperCase(),
+        totalInput: wallet.totalCost,
+        totalNow: wallet.currentValue,
+        unrealizedPnl: wallet.unrealizedProfitLoss,
+      }],
+    } : {}),
     amount,
     averageUnitPrice,
     currentPrice,

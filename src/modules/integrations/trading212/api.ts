@@ -13,6 +13,13 @@ export type Trading212Position = {
   averagePricePaid?: number;
   currentPrice?: number;
   createdAt?: string;
+  walletImpact?: {
+    currency: string;
+    totalCost: number;
+    currentValue: number;
+    unrealizedProfitLoss: number;
+    fxImpact?: number | null;
+  };
 };
 
 export type Trading212HistoricalOrder = {

@@ -129,9 +129,11 @@ Deno.test("Trading 212 integration maps live positions and fills, caches history
     match(
       await buildIntegratedPerformanceList({
         positions,
+        currency: "EUR",
+        request: async () => Response.json({ base: "USD", quote: "EUR", rate: .8 }),
         formatTicker: (ticker) => ticker,
       }),
-      /AAPL \+50\.00% \+\$25\.00/,
+      /AAPL \+48\.89% \+22\.00 EUR/,
     );
     const [first, second] = await Promise.all([
       fetchIntegratedOrderHistory(db, 1),
@@ -245,6 +247,10 @@ Deno.test("Trading 212 rejects unsupported corporate actions and malformed fills
   equal(position?.ticker, "VUSA_EQ");
   equal(position?.totalInput, null);
   equal(position?.totalNow, null);
+  throws(() => toTrading212Position(integration, {
+    instrument: { ticker: "NVDA_US_EQ", currency: "USD" }, quantity: 1,
+    walletImpact: { currency: "EUR", totalCost: NaN, currentValue: 100, unrealizedProfitLoss: 10 },
+  }), /Invalid Trading 212 wallet valuation/);
 });
 
 Deno.test("portfolio commands fetch live equity and CFD cash but not equity orders until needed", async () => {

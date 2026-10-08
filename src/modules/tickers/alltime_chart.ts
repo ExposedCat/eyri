@@ -20,6 +20,7 @@ import type {
 } from "../integrations/types.ts";
 import { usdFactor } from "../integrations/usd.ts";
 import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
+import { portfolioPositionCurrencies, portfolioValuations } from "../integrations/usd.ts";
 import { isCfdAllocation } from "./cfd_history.ts";
 import {
   dayAfter,
@@ -282,6 +283,15 @@ export function buildAllTimeSeries(
   // Use exactly /alltime's current + FIFO-sold cost/P&L for the live endpoint.
   const totals = new Map<string, Totals>();
   for (const p of args.positions) {
+    if (p.brokerValuations) {
+      for (const valuation of portfolioValuations(p)) {
+        if (valuation.totalInput === null || valuation.unrealizedPnl === null) {
+          throw new Error(`Current price or book cost unavailable for ${p.ticker}.`);
+        }
+        addTotals(totals, valuation.currency, valuation.totalInput, valuation.unrealizedPnl);
+      }
+      continue;
+    }
     if (
       p.currentPrice === null || p.totalInput === null ||
       p.averageUnitPrice === null
@@ -493,7 +503,7 @@ export async function loadAllTimeDataset(
     throw new HistoricalDataError(failures);
   }
   const rates = await fetchUsdConversionRates(
-    [...sources.values()].map((p) => p.currency).concat(
+    [...sources.values()].flatMap(portfolioPositionCurrencies).concat(
       [...histories.values()].map((h) => h.currency),
     ),
     request,

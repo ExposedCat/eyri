@@ -10,7 +10,7 @@ type UserRow = {
   currency: string | null;
 };
 
-function readUser(database: Database, userId: number): User | null {
+export function readUser(database: Database, userId: number): User | null {
   const row = database
     .prepare("SELECT user_id, currency FROM users WHERE user_id = ?")
     .get(userId) as UserRow | undefined;

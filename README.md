@@ -8,6 +8,70 @@
 - grammY
 - SQLite
 
+## Eyri MCP
+
+Eyri exposes the reporting commands as MCP tools at
+`http://127.0.0.1:8000/mcp` using stateless Streamable HTTP. The endpoint starts
+alongside the bot; Compose publishes port 8000 on the host's loopback interface.
+Set `EYRI_MCP_HOST` and `EYRI_MCP_PORT` to change the listener, or set
+`EYRI_MCP_PORT=0` to disable it. To run HTTP without starting Telegram, use
+`deno task mcp`.
+
+Every tool requires the existing Telegram `userId` as a positive integer.
+**Authentication is currently disabled:** the supplied ID selects the user's
+portfolio. MCP does not create users; run `/start` in Telegram first.
+
+Tools: `number`, `allnumber`, `perf`, `alltime`, `worth`, `worthnumber`, `stocks`,
+`options`, `sold`, `dpnl`, `history`, `when`, `portfolio`, `chart`, `buckets`,
+`integrations`, `rsu`, and `rsu_at`. These expose reports; account setup, bucket
+changes, RSU edits, and other management commands remain in Telegram.
+
+Portfolio tools accept optional `bucketName`, with the same shared and included
+bucket behavior as Telegram. `when` takes a nonempty `prices` object, e.g.
+`{"AAPL":150}`, in the user's reporting currency and uses the default portfolio.
+`rsu_at` requires `cutoff` as a UTC `YYYY-MM-DD` date. `buckets`, `integrations`,
+`rsu`, and `rsu_at` use only the user's own records.
+
+Results contain compact JSON text and the same object in MCP `structuredContent`.
+Monetary values use the saved `/currency` preference (USD by default), percentage
+values use percentage points (`20` means 20%), and unavailable values are `null`.
+Number tools return `{currency,tickers,total}`; detailed reports return positions
+and a total. `portfolio` returns allocation weights and values; `chart` returns
+daily `{date,pnl,returnPct}` points instead of a PNG. Integration descriptions
+mask API keys exactly as Telegram does. Empty portfolios return empty lists and
+`total: null`; report failures return `isError: true` and `{error:{code,message}}`.
+Broker refreshes use the existing adapters and can update their local caches.
+
+Example MCP client configuration for HTTP:
+
+```json
+{
+  "mcpServers": {
+    "eyri": { "url": "http://127.0.0.1:8000/mcp" }
+  }
+}
+```
+
+For a local stdio client, use `deno task mcp:stdio`, or configure the subprocess
+with an absolute project path and the same SQLite database as the bot:
+
+```json
+{
+  "mcpServers": {
+    "eyri": {
+      "command": "deno",
+      "args": ["run", "-A", "/absolute/path/to/eyri/src/mcp.ts", "--stdio"],
+      "cwd": "/absolute/path/to/eyri",
+      "env": { "EYRI_DATABASE_PATH": "/absolute/path/to/eyri/data/eyri.sqlite" }
+    }
+  }
+}
+```
+
+Standalone MCP does not require `TOKEN` or start Telegram polling or background
+IBKR sync loops. When it shares a database with the bot, it can read the bot's
+synced broker history. Stdout is reserved for MCP JSON-RPC; logs go to stderr.
+
 ## Integrations
 
 Use `/integrations` to manage accounts in a rich message. Each account has an
@@ -71,9 +135,14 @@ account under Settings → API (Beta), with
 Portfolio, History - Orders and History - Transactions read permissions, and leave trading permissions off.
 Invest and Stocks & Shares ISA accounts are supported.
 
-Trading 212 holdings and executed trades are stored in instrument currency;
-reports convert money to your selected currency (default USD) using the latest Frankfurter rates. Reported returns
-exclude historical FX effects and wallet fees/taxes.
+Trading 212 native prices and executed trades are stored in instrument currency.
+Current whole-position reports use the API's account-currency wallet cost, value
+and unrealized return, including its FX impact and any costs reflected by the
+broker. Reports in that account currency match the supplied valuation exactly;
+other reporting currencies convert that valuation using the latest Frankfurter
+rates. Sold history, historical chart points and partial FIFO bucket holdings
+still use native trade costs and exclude historical FX effects and wallet fees/taxes.
+The live chart endpoint uses the same FX-inclusive open-position return as `/perf`.
 US equity IDs such as `AAPL_US_EQ` display as `AAPL`; other listing IDs are preserved.
 Order history is cached in SQLite and paginated, then refreshed incrementally at
 most once per minute. A large first import can take time because of API rate limits.

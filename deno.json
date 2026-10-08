@@ -1,7 +1,9 @@
 {
   "tasks": {
     "dev": "deno run --watch --env-file=.env -A src/main.ts",
-    "format": "deno run -A @biomejs/biome format src --write; deno run -A @biomejs/biome lint src --write"
+    "format": "deno run -A @biomejs/biome format src --write; deno run -A @biomejs/biome lint src --write",
+    "mcp": "deno run --env-file=.env -A src/mcp.ts",
+    "mcp:stdio": "deno run --env-file=.env -A src/mcp.ts --stdio"
   },
   "compilerOptions": {
     "lib": ["deno.ns", "dom", "dom.iterable"]
@@ -16,7 +18,9 @@
     "grammy_runner": "https://deno.land/x/grammy_runner@v2.0.3/mod.ts",
     "https://lib.deno.dev/x/grammy@v1/mod.ts": "https://deno.land/x/grammy@v1.38.3/mod.ts",
     "https://lib.deno.dev/x/grammy@v1/types.ts": "https://deno.land/x/grammy@v1.38.3/types.ts",
-    "grammy_types": "https://deno.land/x/grammy_types/mod.ts"
+    "grammy_types": "https://deno.land/x/grammy_types/mod.ts",
+    "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@1.32.1",
+    "zod": "npm:zod@3.25.76"
   },
   "unstable": ["cron"]
 }

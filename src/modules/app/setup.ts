@@ -6,6 +6,7 @@ import { connectToDb } from "../database/setup.ts";
 import { startIbkrExecutionSyncLoop } from "../integrations/ibkr/adapter.ts";
 import { startFlexSyncLoop } from "../integrations/ibkr/flex.ts";
 import { ensureTickerDisplaySchema } from "../tickers/decorations.ts";
+import { startMcpHttpServer } from "../mcp/server.ts";
 import { ensureYahooMappings } from "../market_data/mappings.ts";
 
 export async function startApp() {
@@ -26,6 +27,17 @@ export async function startApp() {
   } catch (error) {
     console.error("Error occurred while connecting to the database:", error);
     Deno.exit(2);
+  }
+
+  try {
+    const mcp = startMcpHttpServer(database);
+    mcp?.finished.catch((error) => {
+      console.error("MCP server stopped:", error);
+      Deno.exit(5);
+    });
+  } catch (error) {
+    console.error("Error occurred while starting MCP:", error);
+    Deno.exit(5);
   }
 
   try {

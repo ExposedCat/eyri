@@ -143,13 +143,45 @@ export function getRsuView(awards: RsuAward[], now: Date, cutoff?: string) {
 	};
 }
 
-function formatRsuValue(value: number | undefined, cost: number, currency: string, displayRate: number) {
-	if (value === undefined) return "? (? ?)";
-	const change = value - cost;
-	const percentage = cost === 0 ? 0 : change / cost * 100;
-	return `${formatMoney(value * displayRate, currency)} (${formatMoneyChange(change * displayRate, "$", 2, currency)} ${
-		formatMoneyChange(percentage, "%")
-	})`;
+function rsuValue(
+	value: number | undefined,
+	cost: number,
+	displayRate: number,
+) {
+	const pnl = value === undefined ? null : value - cost;
+	return {
+		value: value === undefined ? null : value * displayRate,
+		pnl: pnl === null ? null : pnl * displayRate,
+		returnPct: pnl === null ? null : cost === 0 ? 0 : (pnl / cost) * 100,
+	};
+}
+
+function formatRsuValue(
+	value: number | undefined,
+	cost: number,
+	currency: string,
+	displayRate: number,
+) {
+	const report = rsuValue(value, cost, displayRate);
+	if (report.value === null || report.pnl === null || report.returnPct === null)
+		return "? (? ?)";
+	return `${formatMoney(report.value, currency)} (${formatMoneyChange(report.pnl, "$", 2, currency)} ${formatMoneyChange(report.returnPct, "%")})`;
+}
+
+function rsuSummaryValue(
+	vestings: RsuVestingEntry[],
+	prices: Map<string, number>,
+) {
+	let value = 0;
+	let cost = 0;
+	let complete = true;
+	for (const vesting of vestings) {
+		const price = prices.get(vesting.ticker);
+		if (price === undefined) complete = false;
+		else value += vesting.amount * price;
+		cost += vesting.amount * vesting.awardPrice;
+	}
+	return { value: complete ? value : undefined, cost };
 }
 
 export function buildRsuSummary(
@@ -161,28 +193,13 @@ export function buildRsuSummary(
 	currency = "USD",
 	displayRate = 1,
 ) {
-	let value = 0;
-	let cost = 0;
-	let complete = true;
-	for (const vesting of vestings) {
-		const price = prices.get(vesting.ticker);
-		if (price === undefined) complete = false;
-		else value += vesting.amount * price;
-		cost += vesting.amount * vesting.awardPrice;
-	}
+	const { value, cost } = rsuSummaryValue(vestings, prices);
 	return `${label}: ${
-		formatRsuValue(complete ? value : undefined, cost, currency, displayRate)
+		formatRsuValue(value, cost, currency, displayRate)
 	} over ${formatRsuDuration(start, end)}`;
 }
 
-export function buildRsuGroups(
-	vestings: RsuVestingEntry[],
-	prices: Map<string, number>,
-	formatTicker: (ticker: string) => string,
-	now: Date,
-	currency = "USD",
-	displayRate = 1,
-) {
+function rsuGroups(vestings: RsuVestingEntry[]) {
 	const dates = new Map<
 		string,
 		Map<string, { amount: number; cost: number }>
@@ -195,6 +212,18 @@ export function buildRsuGroups(
 		tickers.set(vesting.ticker, current);
 		dates.set(vesting.date, tickers);
 	}
+	return dates;
+}
+
+export function buildRsuGroups(
+	vestings: RsuVestingEntry[],
+	prices: Map<string, number>,
+	formatTicker: (ticker: string) => string,
+	now: Date,
+	currency = "USD",
+	displayRate = 1,
+) {
+	const dates = rsuGroups(vestings);
 	return [...dates].map(([date, tickers]) => {
 		const lines = [...tickers].map(([ticker, { amount, cost }]) => {
 			const price = prices.get(ticker);
@@ -207,4 +236,44 @@ export function buildRsuGroups(
 			formatRsuTimeLeft(date, now)
 		})\n${lines.join("\n")}`;
 	});
+}
+
+export function buildRsuReport(
+	view: ReturnType<typeof getRsuView>,
+	prices: Map<string, number>,
+	now: Date,
+	currency = "USD",
+	displayRate = 1,
+	cutoff?: string,
+) {
+	const summary = (vestings: RsuVestingEntry[], start: string, end: string) => {
+		const { value, cost } = rsuSummaryValue(vestings, prices);
+		return {
+			...rsuValue(value, cost, displayRate),
+			period: formatRsuDuration(start, end),
+		};
+	};
+	return {
+		currency,
+		vestings: [...rsuGroups(view.upcoming)].map(([date, tickers]) => ({
+			date,
+			timeLeft: formatRsuTimeLeft(date, now),
+			positions: [...tickers].map(([ticker, { amount, cost }]) => {
+				const price = prices.get(ticker);
+				return {
+					ticker,
+					amount,
+					...rsuValue(
+						price === undefined ? undefined : amount * price,
+						cost,
+						displayRate,
+					),
+				};
+			}),
+		})),
+		total: summary(view.total, view.start, view.end),
+		...(cutoff
+			? { missed: summary(view.missed, cutoff, view.lastVesting) }
+			: {}),
+	};
 }

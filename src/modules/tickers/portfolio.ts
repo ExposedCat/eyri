@@ -3,6 +3,7 @@ import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import { isCfdAllocation } from "./cfd_history.ts";
 import {
   portfolioPositionInCurrency,
+  portfolioPositionCurrencies,
   conversionFactor,
 } from "../integrations/usd.ts";
 import type {
@@ -272,7 +273,7 @@ function formatElapsedPeriodFromMonths(months: number) {
   return `${years} year ${remainingMonths.toFixed(1)} month`;
 }
 
-function getElapsedPeriod(startDate: Date | null | undefined, endDate: Date) {
+export function getElapsedPeriod(startDate: Date | null | undefined, endDate: Date) {
   if (!startDate) {
     return {
       days: null,
@@ -390,7 +391,7 @@ function buildIntegratedPositionPerformance(
   now: Date,
 ): IntegratedPositionPerformance {
   const currentPrice = position.currentPrice;
-  const currentValue = currentPrice === null
+  const currentValue = position.brokerValuations || currentPrice === null
     ? position.totalNow
     : position.amount * currentPrice;
   const totalInput = position.totalInput;
@@ -417,8 +418,10 @@ function buildIntegratedPositionPerformance(
     };
   }
 
-  const totalNow = position.amount * currentPrice;
-  const totalChange = totalNow - totalInput;
+  const totalNow = position.brokerValuations && position.totalNow !== null
+    ? position.totalNow : position.amount * currentPrice;
+  const totalChange = position.brokerValuations && position.unrealizedPnl !== null
+    ? position.unrealizedPnl : totalNow - totalInput;
   const totalPercentageChange = totalInput === 0
     ? 0
     : (totalChange / totalInput) * 100;
@@ -444,28 +447,14 @@ function positionPerformanceInCurrency(
   priceOverrides: Record<string, number> | undefined,
   currency: string,
 ): IntegratedPositionPerformance {
-  const factor = conversionFactor(position.currency, rates);
+  const reported = portfolioPositionInCurrency(position, rates, currency);
   const target = getPriceOverride(priceOverrides, position.ticker);
-  const performance = buildIntegratedPositionPerformance(
+  return buildIntegratedPositionPerformance(
     target === undefined
-      ? position
-      : { ...position, currentPrice: target / factor },
+      ? reported
+      : { ...reported, brokerValuations: undefined, currentPrice: target },
     now,
   );
-  const convert = (value: number | null) => value === null ? null : value * factor;
-  // All price/cost comparisons happen in native currency. Convert only the
-  // completed performance used for sorting, aggregation and rendering.
-  return {
-    ...performance,
-    position: portfolioPositionInCurrency(performance.position, rates, currency),
-    currentValue: convert(performance.currentValue),
-    currentPrice: convert(performance.currentPrice),
-    averageUnitPrice: convert(performance.averageUnitPrice),
-    totalInput: convert(performance.totalInput),
-    totalNow: convert(performance.totalNow),
-    totalChange: convert(performance.totalChange),
-    currentVsAverageChange: convert(performance.currentVsAverageChange),
-  };
 }
 
 async function positionPerformancesInCurrency(
@@ -476,7 +465,7 @@ async function positionPerformancesInCurrency(
   currency: string,
 ) {
   const rates = await fetchConversionRates(
-    positions.map((p) => p.currency),
+    positions.flatMap(portfolioPositionCurrencies),
     currency,
     request,
   );
@@ -778,6 +767,38 @@ function buildIntegratedSoldTotals(performances: IntegratedSoldPerformance[]) {
   };
 }
 
+// Shared numerical reports keep Telegram and MCP on the same calculations.
+export async function buildIntegratedPositionReport(
+  {
+    positions,
+    request,
+    currency = "USD",
+    priceOverrides,
+  }: BuildIntegratedTickerListArgs,
+  daily = false,
+) {
+  const now = new Date();
+  const performances = getSortedIntegratedPerformances(
+    await positionPerformancesInCurrency(
+      positions,
+      now,
+      request,
+      priceOverrides,
+      currency,
+    ),
+    daily ? (performance) => performance.position.dailyPnl : undefined,
+  );
+  const totals = buildIntegratedPortfolioTotals(performances, now);
+  const currentValue = performances.reduce<number | null>(
+    (total, performance) =>
+      total === null || performance.currentValue === null
+        ? null
+        : total + performance.currentValue,
+    0,
+  );
+  return { performances, totals, currentValue };
+}
+
 export async function buildIntegratedTickerList({
   positions,
   request,
@@ -794,10 +815,9 @@ export async function buildIntegratedTickerList({
     return "";
   }
 
-  const now = new Date();
-  const performances = getSortedIntegratedPerformances(
-    await positionPerformancesInCurrency(positions, now, request, priceOverrides, currency),
-  );
+  const { performances, totals } = await buildIntegratedPositionReport({
+    positions, request, currency, priceOverrides,
+  });
 
   const renderTickerLine = (performance: IntegratedPositionPerformance) => {
     const { position } = performance;
@@ -876,7 +896,6 @@ export async function buildIntegratedTickerList({
     )
     : performances.map(renderTickerLine);
 
-  const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalReturn =
     totals.totalChange === null || totals.totalPercentageChange === null
       ? "? ?"
@@ -912,20 +931,15 @@ export async function buildIntegratedPerformanceList({
     return "";
   }
 
-  const now = new Date();
-  const performances = getSortedIntegratedPerformances(
-    await positionPerformancesInCurrency(positions, now, request, priceOverrides, currency),
-  );
+  const { performances, totals, currentValue } = await buildIntegratedPositionReport({
+    positions, request, currency, priceOverrides,
+  });
 
-  const totals = buildIntegratedPortfolioTotals(performances, now);
   const getValue = (performance: IntegratedPositionPerformance) => {
     return showCurrentValue ? performance.currentValue : performance.totalChange;
   };
   const totalValue = showCurrentValue
-    ? performances.reduce<number | null>((total, performance) => {
-      const value = getValue(performance);
-      return total === null || value === null ? null : total + value;
-    }, 0)
+    ? currentValue
     : totals.totalChange;
   const formatValue = (value: number | null) =>
     value === null
@@ -972,6 +986,31 @@ export async function buildIntegratedPerformanceList({
   return [...lines, totalLine].join("\n\n");
 }
 
+export async function buildIntegratedSoldReport({
+  orders,
+  request,
+  currency = "USD",
+  transactionBuckets,
+  bucketName = null,
+}: BuildIntegratedSoldPerformanceArgs) {
+  const sold = buildIntegratedSoldPerformances(
+    orders,
+    transactionBuckets,
+    bucketName,
+  );
+  const rates = await fetchConversionRates(
+    sold.map((p) => p.currency),
+    currency,
+    request,
+  );
+  const performances = soldPerformancesInCurrency(sold, rates, currency);
+  if (performances.length === 0) {
+    return null;
+  }
+
+  return { performances, totals: buildIntegratedSoldTotals(performances) };
+}
+
 export async function buildIntegratedSoldPerformanceList({
   orders,
   request,
@@ -984,16 +1023,11 @@ export async function buildIntegratedSoldPerformanceList({
   transactionBuckets,
   bucketName = null,
 }: BuildIntegratedSoldPerformanceArgs): Promise<string> {
-  const sold = buildIntegratedSoldPerformances(orders, transactionBuckets, bucketName);
-  const rates = await fetchConversionRates(
-    sold.map((p) => p.currency),
-    currency,
-    request,
-  );
-  const performances = soldPerformancesInCurrency(sold, rates, currency);
-  if (performances.length === 0) {
-    return "";
-  }
+  const report = await buildIntegratedSoldReport({
+    orders, request, currency, transactionBuckets, bucketName,
+  });
+  if (!report) return "";
+  const { performances, totals } = report;
 
   const lines = buildSeparatedChangeLines(
     performances,
@@ -1023,7 +1057,6 @@ export async function buildIntegratedSoldPerformanceList({
     },
   );
 
-  const totals = buildIntegratedSoldTotals(performances);
   const elapsedPeriod = getElapsedPeriod(
     totals.openedAt,
     totals.closedAt ?? new Date(),
@@ -1040,24 +1073,20 @@ export async function buildIntegratedSoldPerformanceList({
   return [...lines, totalLine].join("\n\n");
 }
 
-export async function buildIntegratedAllTimePerformanceList({
+export async function buildIntegratedAllTimeReport({
   positions,
   request,
   currency = "USD",
   orders,
   priceOverrides,
-  tickerDecorations,
-  tickerLabelPreferences,
-  tickerLabelLinks,
-  tickerEmojiMappings,
-  formatTicker,
   transactionBuckets,
   bucketName = null,
-  numberOnly = false,
-}: BuildIntegratedAllTimePerformanceArgs): Promise<string> {
+}: BuildIntegratedAllTimePerformanceArgs) {
   const now = new Date();
   const through = now.toISOString().slice(0, 10);
-  orders = orders.map((order) => adjustOrderForCorporateActions(order, through));
+  orders = orders.map((order) =>
+    adjustOrderForCorporateActions(order, through),
+  );
   positions = positions.map((position) => ({
     ...position,
     ticker: currentStockTicker(position.ticker, position.currency),
@@ -1068,7 +1097,10 @@ export async function buildIntegratedAllTimePerformanceList({
     bucketName,
   );
   const rates = await fetchConversionRates(
-    [...positions, ...nativeSold].map((p) => p.currency),
+    [
+      ...positions.flatMap(portfolioPositionCurrencies),
+      ...nativeSold.map((p) => p.currency),
+    ],
     currency,
     request,
   );
@@ -1089,14 +1121,17 @@ export async function buildIntegratedAllTimePerformanceList({
     if (!current) {
       return { ...next };
     }
-    current.cost = current.cost === null || next.cost === null
-      ? null
-      : current.cost + next.cost;
-    current.change = current.change === null || next.change === null
-      ? null
-      : current.change + next.change;
+    current.cost =
+      current.cost === null || next.cost === null
+        ? null
+        : current.cost + next.cost;
+    current.change =
+      current.change === null || next.change === null
+        ? null
+        : current.change + next.change;
     if (
-      next.openedAt && (!current.openedAt || next.openedAt < current.openedAt)
+      next.openedAt &&
+      (!current.openedAt || next.openedAt < current.openedAt)
     ) {
       current.openedAt = next.openedAt;
     }
@@ -1110,19 +1145,16 @@ export async function buildIntegratedAllTimePerformanceList({
   };
 
   for (const position of positions) {
-    const target = getPriceOverride(priceOverrides, position.ticker);
-    const performance = buildIntegratedPositionPerformance(
-      target === undefined
-        ? position
-        : {
-          ...position,
-          currentPrice: target / conversionFactor(position.currency, rates),
-        },
+    const performance = positionPerformanceInCurrency(
+      position,
       now,
+      rates,
+      priceOverrides,
+      currency,
     );
-    add(getPositionDisplayKey(position.ticker, position.currency), {
+    add(getPositionDisplayKey(position.ticker, currency), {
       ticker: position.ticker,
-      currency: position.currency,
+      currency,
       cost: performance.totalInput,
       change: performance.totalChange,
       openedAt: position.openedAt,
@@ -1140,24 +1172,31 @@ export async function buildIntegratedAllTimePerformanceList({
     });
   }
   if (merged.size === 0) {
-    return "";
+    return null;
   }
 
   const display = new Map<string, Performance>();
   for (const native of merged.values()) {
-    const factor = conversionFactor(native.currency, rates);
+    const factor =
+      native.currency === currency
+        ? 1
+        : conversionFactor(native.currency, rates);
     const key = normalizePositionKeyPart(native.ticker);
-    display.set(key, merge(display.get(key), {
-      ...native,
-      currency,
-      cost: native.cost === null ? null : native.cost * factor,
-      change: native.change === null ? null : native.change * factor,
-    }));
+    display.set(
+      key,
+      merge(display.get(key), {
+        ...native,
+        currency,
+        cost: native.cost === null ? null : native.cost * factor,
+        change: native.change === null ? null : native.change * factor,
+      }),
+    );
   }
-  const performances = [...display.values()].sort((a, b) =>
-    (b.change ?? Number.NEGATIVE_INFINITY) -
-      (a.change ?? Number.NEGATIVE_INFINITY) ||
-    a.ticker.localeCompare(b.ticker)
+  const performances = [...display.values()].sort(
+    (a, b) =>
+      (b.change ?? Number.NEGATIVE_INFINITY) -
+        (a.change ?? Number.NEGATIVE_INFINITY) ||
+      a.ticker.localeCompare(b.ticker),
   );
   const total = performances.reduce((total, next) => merge(total, next), {
     ticker: "",
@@ -1167,6 +1206,30 @@ export async function buildIntegratedAllTimePerformanceList({
     openedAt: null,
     endedAt: new Date(0),
   } as Performance);
+  return { performances, total };
+}
+
+export async function buildIntegratedAllTimePerformanceList({
+  positions,
+  request,
+  currency = "USD",
+  orders,
+  priceOverrides,
+  tickerDecorations,
+  tickerLabelPreferences,
+  tickerLabelLinks,
+  tickerEmojiMappings,
+  formatTicker,
+  transactionBuckets,
+  bucketName = null,
+  numberOnly = false,
+}: BuildIntegratedAllTimePerformanceArgs): Promise<string> {
+  const report = await buildIntegratedAllTimeReport({
+    positions, request, currency, orders, priceOverrides, transactionBuckets, bucketName,
+  });
+  if (!report) return "";
+  const { performances, total } = report;
+  type Performance = typeof total;
   if (numberOnly) {
     return buildNumberSummary(
       performances.map((p) => p.ticker),
@@ -1221,11 +1284,9 @@ export async function buildIntegratedDailyPerformanceList({
     return "";
   }
 
-  const now = new Date();
-  const performances = getSortedIntegratedPerformances(
-    await positionPerformancesInCurrency(positions, now, request, priceOverrides, currency),
-    (performance) => performance.position.dailyPnl,
-  );
+  const { performances, totals } = await buildIntegratedPositionReport({
+    positions, request, currency, priceOverrides,
+  }, true);
 
   const lines = buildSeparatedChangeLines(
     performances,
@@ -1253,7 +1314,6 @@ export async function buildIntegratedDailyPerformanceList({
     },
   );
 
-  const totals = buildIntegratedPortfolioTotals(performances, now);
   const totalLine = totals.dailyChange === null
     ? "Total: ? ? today"
     : `Total: ${
@@ -1571,6 +1631,8 @@ export function buildBucketedPortfolioPositions({
           ? { assetCategory: livePosition.assetCategory }
           : {}),
         amount: draft.amount,
+        ...(Math.abs(draft.amount - liveAmount) <= FLOAT_EPSILON && livePosition.brokerValuations
+          ? { brokerValuations: livePosition.brokerValuations } : {}),
         averageUnitPrice: draft.totalInput / draft.amount,
         currentPrice,
         currency: draft.currency,
@@ -1627,6 +1689,25 @@ export function buildIntegratedHistoryGroups(orders: IntegrationOrder[]) {
   );
 }
 
+export async function buildIntegratedHistoryReport({
+  orders,
+  request,
+  currency = "USD",
+}: BuildIntegratedHistoryArgs) {
+  const sorted = buildIntegratedHistoryGroups(orders);
+  const rates = await fetchConversionRates(
+    sorted.map((g) => g.currency),
+    currency,
+    request,
+  );
+  const groups = sorted.map((original) => ({
+    ...original,
+    currency,
+    total: original.total * conversionFactor(original.currency, rates),
+  }));
+  return { sorted, groups };
+}
+
 export async function buildIntegratedHistory({
   orders,
   request,
@@ -1637,27 +1718,15 @@ export async function buildIntegratedHistory({
   tickerEmojiMappings,
   formatLineSuffix,
 }: BuildIntegratedHistoryArgs): Promise<string> {
-  const sorted = buildIntegratedHistoryGroups(orders);
-  if (sorted.length === 0) {
-    return "";
-  }
-
-  const rates = await fetchConversionRates(
-    sorted.map((g) => g.currency),
-    currency,
-    request,
-  );
+  const { sorted, groups } = await buildIntegratedHistoryReport({ orders, request, currency });
+  if (sorted.length === 0) return "";
   const grouped = new Map<number, string[]>();
   const yearTotals = new Map<number, { total: number; currency: string }>();
   let totalSpent = 0;
   let totalCurrency = currency;
 
   for (const [index, original] of sorted.entries()) {
-    const group = {
-      ...original,
-      currency,
-      total: original.total * conversionFactor(original.currency, rates),
-    };
+    const group = groups[index];
     const year = group.date.getUTCFullYear();
     const lines = grouped.get(year) ?? [];
     const averagePrice = group.total / group.quantity;

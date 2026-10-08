@@ -8,6 +8,7 @@ import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
 import { trading212Adapter } from "./trading212/adapter.ts";
 import { enrichPortfolioWithVontobelQuotes } from "../market_data/vontobel.ts";
+import { portfolioValuations } from "./usd.ts";
 import type {
   IntegrationAdapter,
   IntegrationPortfolioPosition,
@@ -64,6 +65,9 @@ function mergePosition(
 
   return {
     ...current,
+    ...(current.brokerValuations || next.brokerValuations ? {
+      brokerValuations: [...portfolioValuations(current), ...portfolioValuations(next)],
+    } : {}),
     ...(current.assetCategory == null && next.assetCategory != null
       ? { assetCategory: next.assetCategory }
       : {}),
