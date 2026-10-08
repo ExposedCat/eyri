@@ -48,13 +48,18 @@ export function parseTrading212Csv(csv: string): Row[] {
     ![
       "Action",
       "Time (UTC)",
-      "ID",
       "ISIN",
       "Gross Total",
       "Currency (Gross Total)",
     ].every((h) => headers.includes(h))
   ) {
     throw new Error("Invalid Trading 212 CSV headers");
+  }
+  // An export with no activity omits optional columns, including ID. It is a
+  // valid empty interval; event identity remains mandatory for nonempty data.
+  if (!records.length) return [];
+  if (!headers.includes("ID")) {
+    throw new Error("Trading 212 CSV events are missing IDs");
   }
   return records.map((r) => {
     if (r.length !== headers.length) {

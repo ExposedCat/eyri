@@ -48,6 +48,19 @@ const headers = [
   "Taxes",
   "Currency (Taxes)",
 ];
+
+Deno.test("empty Trading 212 export intervals can omit the ID column", () => {
+  const emptyHeaders =
+    "Action,Time (UTC),ISIN,Ticker,Name,No. of shares,Price / share,Currency (Price / share),Exchange rate,Gross Total,Currency (Gross Total),Withholding tax,Currency (Withholding tax),Taxes,Currency (Taxes),Net Total,Currency (Net Total)";
+  deepStrictEqual(parseTrading212Csv(emptyHeaders + "\n"), []);
+  throws(
+    () =>
+      parseTrading212Csv(
+        emptyHeaders + "\nDeposit,2026-01-01,,,,,,,,1,EUR,,,,,,\n",
+      ),
+    /missing IDs/,
+  );
+});
 function row(
   Action: string,
   ID: string,
