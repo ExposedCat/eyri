@@ -17,6 +17,14 @@ Set `EYRI_MCP_HOST` and `EYRI_MCP_PORT` to change the listener, or set
 `EYRI_MCP_PORT=0` to disable it. To run HTTP without starting Telegram, use
 `deno task mcp`.
 
+For Context's Finance MCP integration under PM3, both app containers join the
+external `finance-mcp` network. Create it once with
+`podman network exists finance-mcp || podman network create finance-mcp`, then
+recreate both projects using PM3 after updating their repositories. Context
+connects to `http://eyri_app:8000/mcp`; set `FINANCE_MCP_NETWORK` in both projects'
+`.env` files if the network has another name. The external network survives
+PM3's Compose down/up restarts, and port 8000 remains published only on loopback.
+
 Every tool requires the existing Telegram `userId` as a positive integer.
 **Authentication is currently disabled:** the supplied ID selects the user's
 portfolio. MCP does not create users; run `/start` in Telegram first.

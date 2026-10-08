@@ -52,6 +52,9 @@ services:
       EYRI_MCP_PORT: "8000"
     ports:
       - "127.0.0.1:8000:8000"
+    networks:
+      - default
+      - finance-mcp
     healthcheck:
       test:
         [
@@ -72,3 +75,9 @@ volumes:
   ib-gateway-settings:
   ib-gateway-2-settings:
   eyri-data:
+
+networks:
+  default:
+  finance-mcp:
+    name: ${FINANCE_MCP_NETWORK:-finance-mcp}
+    external: true
