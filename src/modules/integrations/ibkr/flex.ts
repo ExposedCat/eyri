@@ -150,14 +150,18 @@ function getXmlElements(xml: string, tagNames: string[]) {
   return elements;
 }
 
-async function fetchFlexXml(path: string, params: Record<string, string>) {
+async function fetchFlexXml(
+  request: typeof fetch,
+  path: string,
+  params: Record<string, string>,
+) {
   return logFetch(`IBKR Flex ${path}`, async () => {
     const url = new URL(`${FLEX_BASE_URL}${path}`);
     for (const [key, value] of Object.entries(params)) {
       url.searchParams.set(key, value);
     }
 
-    const response = await fetch(url, {
+    const response = await request(url, {
       headers: { "User-Agent": "eyri" },
     });
     if (!response.ok) {
@@ -185,27 +189,32 @@ function addDays(date: Date, days: number) {
   return next;
 }
 
-function getTodayUtc() {
-  const today = new Date();
+function getTodayUtc(now: Date) {
   return new Date(
-    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()),
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
   );
 }
 
-function getFlexStatementRange(batchIndex: number): FlexStatementRange {
-  // Flex can omit same-day trades when td is today's date; asking through
-  // tomorrow keeps today's executions in the current 365-day batch.
-  const end = addDays(getTodayUtc(), 1 - batchIndex * FLEX_BATCH_DAYS);
+export function getFlexStatementRange(
+  batchIndex: number,
+  now = new Date(),
+): FlexStatementRange {
+  // Flex fails with 1003 when td is in the future and omits same-day trades,
+  // so batches end yesterday UTC; the Gateway execution sync covers today.
+  const end = addDays(getTodayUtc(now), -1 - batchIndex * FLEX_BATCH_DAYS);
   const from = addDays(end, -(FLEX_BATCH_DAYS - 1));
   return { from, to: end };
 }
 
-async function getFlexStatement(
+export async function getFlexStatement(
   token: string,
   queryId: string,
   range: FlexStatementRange,
+  request: typeof fetch = fetch,
+  sleep = (milliseconds: number) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds)),
 ) {
-  const sendXml = await fetchFlexXml("/SendRequest", {
+  const sendXml = await fetchFlexXml(request, "/SendRequest", {
     t: token,
     q: queryId,
     fd: formatFlexDate(range.from),
@@ -230,10 +239,10 @@ async function getFlexStatement(
 
   for (let attempt = 0; attempt < 5; attempt++) {
     if (attempt > 0) {
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await sleep(3_000);
     }
 
-    const statementXml = await fetchFlexXml("/GetStatement", {
+    const statementXml = await fetchFlexXml(request, "/GetStatement", {
       t: token,
       q: referenceCode,
       v: "3",
@@ -244,16 +253,7 @@ async function getFlexStatement(
     }
 
     const code = getXmlText(statementXml, "ErrorCode");
-    if (code === "1019") {
-      const message = getXmlText(statementXml, "ErrorMessage");
-      throw new Error(
-        `IBKR Flex statement retrieval rate-limited (1019): ${
-          message ?? "too many requests"
-        }`,
-      );
-    }
-
-    if (code !== "1003" && code !== "1004") {
+    if (code !== "1003" && code !== "1004" && code !== "1019") {
       const message = getXmlText(statementXml, "ErrorMessage");
       throw new Error(
         `IBKR Flex statement retrieval failed (${code}): ${
