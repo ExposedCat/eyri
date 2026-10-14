@@ -1,10 +1,17 @@
-// Run: deno run -A scripts/render_chart_samples.ts [output-directory]
-// These previews use deterministic sample data, not broker account data.
+// Run: deno run -A scripts/render_chart_samples.ts [output-directory] [--live-benchmark]
+// Portfolios are deterministic samples, never broker account data. The optional
+// live-benchmark flag uses real CSPX.L closes instead of a labeled sample curve.
 import { renderAllTimeDatasets } from "../src/modules/tickers/alltime_chart_renderer.ts";
 import type { AllTimeDataset } from "../src/modules/tickers/alltime_chart.ts";
 import { renderPortfolioChart } from "../src/modules/tickers/portfolio_chart.ts";
+import { buildChartBenchmark } from "../src/modules/tickers/chart_benchmark.ts";
+import {
+  dayAfter,
+  fetchYahooHistory,
+} from "../src/modules/market_data/yahoo.ts";
 
-const directory = Deno.args[0] ?? "/tmp/eyri-chart-previews";
+const directory = Deno.args.find((arg) => !arg.startsWith("--")) ??
+  "/tmp/eyri-chart-previews";
 await Deno.mkdir(directory, { recursive: true });
 const start = Date.UTC(2025, 9, 1);
 let randomState = 42;
@@ -31,15 +38,25 @@ const portfolio: AllTimeDataset = {
   bucketName: null,
   points,
 };
-const benchmark = {
-  label: "S&P 500 (CSPX.L)",
-  symbol: "CSPX.L",
-  asOf: points.at(-1)!.date,
-  points: points.map((point, index) => ({
-    date: point.date,
-    percentage: index / 372 * 14 + Math.sin(index / 42) * 3,
-  })),
-};
+const benchmark = Deno.args.includes("--live-benchmark")
+  ? buildChartBenchmark(
+    await fetchYahooHistory(
+      "CSPX.L",
+      dayAfter(points[0].date, -7),
+      dayAfter(points.at(-1)!.date),
+    ),
+    points[0].date,
+    points.at(-1)!.date,
+  )
+  : {
+    label: "Sample S&P 500 (CSPX.L)",
+    symbol: "CSPX.L",
+    asOf: points.at(-1)!.date,
+    points: points.map((point, index) => ({
+      date: point.date,
+      percentage: index / 372 * 14 + Math.sin(index / 42) * 3,
+    })),
+  };
 await Deno.writeFile(
   `${directory}/alltime.png`,
   renderAllTimeDatasets([portfolio], benchmark),

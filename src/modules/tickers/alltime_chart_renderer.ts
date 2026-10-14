@@ -126,7 +126,8 @@ export function renderAllTimeDatasets(
             borderWidth: 4.4,
             borderCapStyle: "round" as const,
             borderJoinStyle: "round" as const,
-            cubicInterpolationMode: "monotone" as const,
+            // Join actual daily closes directly; no curve smoothing.
+            tension: 0,
             pointRadius: ({ dataIndex }: ScriptableContext<"line">) =>
               dataIndex === benchmark.points.length - 1 ? 5 : 0,
             pointBorderWidth: 0,
