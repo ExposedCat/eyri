@@ -25,6 +25,8 @@ services:
       - .env-ibkr-2
     environment:
       USE_IBG_CONTROLLER: "yes"
+      EXISTING_SESSION_DETECTED_ACTION: primary
+      BYPASS_WARNING: "Continue Login,Reconnect This Session"
       TRADING_MODE: live
       READ_ONLY_API: "yes"
       TWS_SETTINGS_PATH: /home/ibgateway/Jts

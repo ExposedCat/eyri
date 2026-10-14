@@ -231,6 +231,74 @@ Deno.test("live warrant bids preserve zero and unknown costs, skip other instrum
   );
 });
 
+Deno.test("Vontobel missing snapshot bid uses the dedicated latest bid and its timestamp", async () => {
+  for (const missing of [undefined, null]) {
+    const snapshot = latestQuote();
+    Object.assign(snapshot.payload.price, { bid: missing });
+    const calls: string[] = [];
+    const request: typeof fetch = async (input) => {
+      const path = new URL(String(input)).pathname;
+      calls.push(path);
+      return Response.json(path.includes("productdetailpage") ? snapshot : {
+        bid: .28,
+        ask: .29,
+        latest: .285,
+        latestTimestamp: "2026-10-14T15:32:34.493+00:00",
+      });
+    };
+    const [holding] = await enrichPortfolioWithVontobelQuotes([{
+      ticker, assetCategory: "WAR", currency: "EUR", amount: 100,
+      totalInput: 30,
+    } as IntegrationPortfolioPosition], request);
+    equal(holding.currentPrice, .28);
+    ok(Math.abs(holding.totalNow! - 28) < 1e-10);
+    ok(Math.abs(holding.unrealizedPnl! + 2) < 1e-10);
+    equal(holding.currentPriceSource, "vontobel_bid");
+    equal(holding.currentPriceAsOf, "2026-10-14T15:32:34.493+00:00");
+    deepStrictEqual(calls, [
+      `/api/v1/productdetailpage/${isin}`, `/api/v1/prices/${isin}/latest`,
+    ]);
+  }
+});
+
+Deno.test("Vontobel latest-bid fallback preserves zero and rejects absent, invalid or failed quotes", async () => {
+  const snapshot = latestQuote();
+  Reflect.deleteProperty(snapshot.payload.price, "bid");
+  const quote = (latest: unknown, status = 200): typeof fetch => async (input) =>
+    String(input).includes("productdetailpage")
+      ? Response.json(snapshot)
+      : Response.json(latest, { status });
+  const timestamp = "2026-10-14T15:32:34Z";
+  equal((await fetchVontobelQuote(isin, quote({ bid: 0, latestTimestamp: timestamp }))).bid, 0);
+  for (const latest of [
+    { ask: .29, latest: .28, latestTimestamp: timestamp },
+    { bid: -1, latestTimestamp: timestamp },
+    { bid: ".28", latestTimestamp: timestamp },
+    { bid: .28, latestTimestamp: "bad" },
+    { bid: .28 }, null,
+  ]) {
+    await rejects(fetchVontobelQuote(isin, quote(latest)), /Invalid Vontobel bid quote/);
+  }
+  await rejects(fetchVontobelQuote(isin, quote({}, 503)), /HTTP 503/);
+});
+
+Deno.test("Vontobel fallback never bypasses issuer, currency, unit or invalid-bid checks", async () => {
+  for (const change of ["issuer", "currency", "unit", "negative"] as const) {
+    const snapshot = latestQuote();
+    Reflect.deleteProperty(snapshot.payload.price, "bid");
+    if (change === "issuer") snapshot.payload.data.issuer = "Other issuer";
+    if (change === "currency") snapshot.payload.price.currency = "USD";
+    if (change === "unit") snapshot.payload.price.isPercentPrice = true;
+    if (change === "negative") snapshot.payload.price.bid = -1;
+    let calls = 0;
+    await rejects(fetchVontobelQuote(isin, async () => {
+      calls++;
+      return Response.json(snapshot);
+    }));
+    equal(calls, 1);
+  }
+});
+
 Deno.test("Vontobel history selects warrant bids, sorts UTC day labels and accepts zero", async () => {
   const history = await fetchVontobelHistory(
     isin,

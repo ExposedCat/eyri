@@ -16,19 +16,12 @@ import type {
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
 import { readFlexOrders } from "./flex.ts";
 import { logFetch } from "../../../utils/fetch_logging.ts";
+import { connectIbkr as connect, type IbkrConnectionConfig } from "./connection.ts";
 
 const EXECUTION_SYNC_INTERVAL_MS = 15 * 1000;
 const EXECUTION_CLIENT_ID_OFFSET = 1000;
 const EXECUTION_SYNC_REQUEST_ID = 90_000;
 const DAILY_PNL_TIMEOUT_MS = 10_000;
-
-type IbkrConnectionConfig = {
-  host: string;
-  port: number;
-  accountId?: string;
-  clientId: number;
-  timeoutMs: number;
-};
 
 type IbkrPortfolioPosition = IntegrationPortfolioPosition & {
   conId?: number;
@@ -74,60 +67,6 @@ function normalizeIbkrCallbackError(args: unknown[]) {
 
   const error = args.find((arg): arg is Error => arg instanceof Error);
   return error ?? new Error(args.map(String).join(" "));
-}
-
-function wait(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function connectOnce(config: IbkrConnectionConfig) {
-  const api = new IBApi({ host: config.host, port: config.port });
-
-  await withTimeout(
-    new Promise<void>((resolve, reject) => {
-      const cleanup = () => {
-        api.off(EventName.connected, onConnected);
-        api.off(EventName.error, onError);
-      };
-      const onConnected = () => {
-        cleanup();
-        resolve();
-      };
-      const onError = (error: unknown) => {
-        cleanup();
-        reject(normalizeError(error));
-      };
-
-      api.once(EventName.connected, onConnected);
-      api.once(EventName.error, onError);
-      api.connect(config.clientId);
-    }),
-    config.timeoutMs,
-    `Timed out connecting to IBKR Gateway at ${config.host}:${config.port}`,
-  );
-
-  return api;
-}
-
-async function connect(config: IbkrConnectionConfig) {
-  const startedAt = Date.now();
-  let lastError: Error | null = null;
-
-  while (Date.now() - startedAt < config.timeoutMs) {
-    try {
-      return await connectOnce(config);
-    } catch (error) {
-      lastError = normalizeError(error);
-      await wait(1_000);
-    }
-  }
-
-  throw (
-    lastError ??
-    new Error(
-      `Timed out connecting to IBKR Gateway at ${config.host}:${config.port}`,
-    )
-  );
 }
 
 async function getManagedAccount(api: IBApi, config: IbkrConnectionConfig) {

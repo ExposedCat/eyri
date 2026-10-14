@@ -366,9 +366,9 @@ Deno.test("incomplete trades, unmatched sales, missing closes and unreconciled h
   };
   const rates = new Map([["USD", 1]]),
     histories = new Map([[instrumentKey(buy), history()]]);
-  throws(
-    () => buildAllTimeSeries({ ...base, orders: [] }, histories, rates),
-    /purchase history/,
+  equal(
+    buildAllTimeSeries({ ...base, orders: [] }, histories, rates).at(-1)!.gain,
+    260,
   );
   throws(
     () =>
@@ -737,7 +737,7 @@ Deno.test("chart stitches APH option predecessors across the split without using
   }
 });
 
-Deno.test("a current holding with no purchase is a history error, not a Yahoo mapping suggestion", async () => {
+Deno.test("a current option holding with no purchase is a history error, not a Yahoo mapping suggestion", async () => {
   const db = new Database(":memory:");
   try {
     await rejects(
@@ -748,6 +748,7 @@ Deno.test("a current holding with no purchase is a history error, not a Yahoo ma
           positions: [holding(1, 100, 130), {
             ...holding(1, 100, 130),
             ticker: "OTHER",
+            assetCategory: "OPT",
           }],
           transactionBuckets: new Map(),
           bucketName: null,
@@ -766,6 +767,108 @@ Deno.test("a current holding with no purchase is a history error, not a Yahoo ma
   } finally {
     db.close();
   }
+});
+
+Deno.test("a referral stock with no purchase adds its full value at zero cost only at the current endpoint", async () => {
+  const db = new Database(":memory:");
+  const buy = trade(1, 100, "2025-01-02");
+  const gift = {
+    ...holding(0.0809, 5, 100),
+    ticker: "IBKR",
+    assetCategory: "STK",
+    openedAt: null,
+  };
+  const args = {
+    orders: [buy],
+    positions: [holding(1, 100, 130), gift],
+    transactionBuckets: new Map<string, string>(),
+    bucketName: null,
+    now,
+  };
+  const calls: [string, string | undefined][] = [];
+  try {
+    const dataset = await loadAllTimeDataset(db, args, 1, "Test", {
+      resolve: (source: { ticker: string }, date: string | undefined) => {
+        calls.push([source.ticker, date]);
+        return Promise.resolve(source.ticker);
+      },
+      get: (symbol: string) => Promise.resolve({ ...history(), symbol }),
+    } as never);
+    deepStrictEqual(calls, [["AAPL", "2025-01-02"], ["IBKR", "2025-01-06"]]);
+    equal(dataset.points.find((p) => p.date === "2025-01-05")!.gain, 10);
+    equal(dataset.points.at(-1)!.gain, 38.09);
+    equal(dataset.points.at(-1)!.percentage, 38.09);
+    equal(args.orders.length, 1);
+    equal(gift.totalInput, 5);
+    equal(args.transactionBuckets.size, 0);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("a bucket containing only free stock charts without recorded orders and uses its broker currency valuation", () => {
+  const gift = {
+    ...holding(1, 50, 130),
+    brokerValuations: [{
+      currency: "EUR",
+      totalInput: 40,
+      totalNow: 90,
+      unrealizedPnl: 50,
+    }],
+  };
+  const args = {
+    positions: [gift],
+    orders: [],
+    transactionBuckets: new Map<string, string>(),
+    bucketName: "gifts",
+    now,
+  };
+  const series = buildAllTimeSeries(
+    args,
+    new Map([[instrumentKey(gift), history()]]),
+    new Map([["USD", 1], ["EUR", 1.1]]),
+  );
+  equal(series.length, 2);
+  equal(series[0].gain, 0);
+  equal(series[1].date, "2025-01-06");
+  equal(Number(series[1].gain.toFixed(8)), 99);
+  equal(series[1].percentage, 0);
+  equal(args.transactionBuckets.size, 0);
+});
+
+Deno.test("free stock cost assumptions preserve funding-based account reconciliation", () => {
+  const gift = holding(1, 50, 130);
+  const account: IntegrationAccountPerformance = {
+    integrationId: 1,
+    currency: "USD",
+    totalValue: 140,
+    netContributions: 100,
+    pnl: 40,
+    deposits: 100,
+    withdrawals: 0,
+    cash: 10,
+    ledgerCash: { USD: 10 },
+    openedAt: new Date("2025-01-01"),
+    historyThrough: now,
+    positionValue: 130,
+    investmentValue: 130,
+    reportedComponents: [{ currency: "USD", cost: 50, pnl: 80 }],
+  };
+  const series = buildAllTimeSeries(
+    {
+      positions: [gift],
+      orders: [],
+      transactionBuckets: new Map(),
+      bucketName: null,
+      now,
+      accountPerformances: [account],
+    },
+    new Map([[instrumentKey(gift), history()]]),
+    new Map([["USD", 1]]),
+  );
+  equal(series.at(-1)!.gain, 40);
+  equal(series.at(-1)!.percentage, 40);
+  equal(account.reportedComponents!.length, 1);
 });
 
 Deno.test("a post-split APH purchase fetches only the new contract; later failures suggest the correct mapping", async () => {

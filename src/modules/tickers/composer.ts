@@ -652,7 +652,7 @@ tickersComposer.command("restart", async (ctx) => {
       await restartIbGateway(integration.credentials);
       restartedHosts.add(host);
     }
-    await ctx.reply("IB Gateway restart requested.");
+    await ctx.reply("IB Gateway container restart requested. Login may still be in progress; API readiness has not been confirmed.");
   } catch (error) {
     await replyRestartError(ctx, error);
   }

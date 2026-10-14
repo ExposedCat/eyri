@@ -54,7 +54,7 @@ export class VontobelHistoryError extends Error {
 
 export class NotVontobelWarrantError extends Error {}
 
-function apiRequest(path: string, request: typeof fetch) {
+function apiRequest(path: string, request: typeof fetch, enveloped = true) {
   return logFetch(`Vontobel ${path}`, async () => {
     const response = await request(API + path + "?c=de-de", {
       headers: {
@@ -72,6 +72,9 @@ function apiRequest(path: string, request: typeof fetch) {
       throw new Error(`Vontobel returned HTTP ${response.status}.`);
     }
     const data = await response.json();
+    // The dedicated latest-price route returns the price directly, whereas
+    // product details and charts use an isSuccess/payload envelope.
+    if (!enveloped) return data;
     if (data?.isSuccess !== true || !data.payload) {
       throw new Error("Invalid Vontobel response.");
     }
@@ -138,7 +141,22 @@ export async function fetchVontobelQuote(
     request,
   );
   const product = parseProduct(isin, payload);
-  const price = payload.price;
+  let price = payload.price;
+  if (
+    price?.currency === product.currency && price.isPercentPrice === false &&
+    (price.bid === undefined || price.bid === null)
+  ) {
+    // Product-detail snapshots can omit bids while the site's dedicated
+    // price feed still quotes the instrument. The verified product metadata
+    // supplies the currency/unit; retain the price feed's own timestamp.
+    const latest = await apiRequest(`prices/${isin}/latest`, request, false);
+    price = {
+      currency: product.currency,
+      isPercentPrice: false,
+      bid: latest?.bid,
+      latestTimestamp: latest?.latestTimestamp,
+    };
+  }
   if (
     price?.currency !== product.currency || price.isPercentPrice !== false ||
     typeof price.bid !== "number" || !Number.isFinite(price.bid) ||

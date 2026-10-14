@@ -1,6 +1,6 @@
 import type { Database } from "../database/setup.ts";
 import { renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
-import { historicalQuoteMultiplier } from "../market_data/options.ts";
+import { historicalQuoteMultiplier, yahooOptionContract } from "../market_data/options.ts";
 import { DATABENTO_PREFIX } from "../market_data/databento.ts";
 import { VONTOBEL_PREFIX, VontobelHistoryError } from "../market_data/vontobel.ts";
 import {
@@ -74,11 +74,94 @@ export function selectedChartOrders(args: Args) {
   );
 }
 
+function withFreeStockPurchases(args: Args): Args {
+  const purchased = new Set(
+    args.orders.filter((o) => o.quantity > 0).map(instrumentKey),
+  );
+  const orders = [...args.orders];
+  const transactionBuckets = new Map(args.transactionBuckets);
+  const adjustments = new Map<
+    number,
+    { currency: string; cost: number; pnl: number }[]
+  >();
+  const positions = args.positions.map((position) => {
+    const category = position.assetCategory?.trim().toUpperCase();
+    if (
+      position.amount <= 0 || purchased.has(instrumentKey(position)) ||
+      (category && category !== "STK" && category !== "STOCK") ||
+      yahooOptionContract(position.ticker) || isCfdAllocation(position)
+    ) return position;
+
+    // The acquisition date is unknown. Record the assumption only at the
+    // current endpoint, without inventing earlier ownership or broker trades.
+    const transactionKey = JSON.stringify([
+      "free-stock",
+      position.integrationId,
+      position.account,
+      instrumentKey(position),
+    ]);
+    orders.push({
+      integrationId: position.integrationId,
+      integrationKind: position.integrationKind,
+      account: position.account,
+      ticker: position.ticker,
+      currency: position.currency,
+      assetCategory: position.assetCategory ?? "STK",
+      date: new Date(dateOf(args.now ?? new Date())),
+      quantity: position.amount,
+      price: 0,
+      transactionKey,
+      yahooSymbol: position.yahooSymbol,
+      isin: position.isin,
+      historicalPriceMultiplier: position.historicalPriceMultiplier,
+    });
+    if (args.bucketName !== null) {
+      transactionBuckets.set(transactionKey, args.bucketName);
+    }
+    const components = adjustments.get(position.integrationId) ?? [];
+    for (const valuation of portfolioValuations(position)) {
+      const cost = valuation.totalInput ?? 0;
+      components.push({ currency: valuation.currency, cost: -cost, pnl: cost });
+    }
+    adjustments.set(position.integrationId, components);
+    return {
+      ...position,
+      averageUnitPrice: 0,
+      totalInput: 0,
+      unrealizedPnl: position.totalNow,
+      ...(position.brokerValuations
+        ? {
+          brokerValuations: position.brokerValuations.map((v) => ({
+            ...v,
+            totalInput: 0,
+            unrealizedPnl: v.totalNow,
+          })),
+        }
+        : {}),
+    };
+  });
+  return {
+    ...args,
+    positions,
+    orders,
+    transactionBuckets,
+    accountPerformances: args.accountPerformances?.map((account) => ({
+      ...account,
+      // Funding-based account returns still reconcile against the same snapshot.
+      reportedComponents: account.reportedComponents && [
+        ...account.reportedComponents,
+        ...(adjustments.get(account.integrationId) ?? []),
+      ],
+    })),
+  };
+}
+
 export function buildAllTimeSeries(
   args: Args,
   histories: Map<string, PriceHistory>,
   rates: ReadonlyMap<string, number>,
 ): AllTimePoint[] {
+  args = withFreeStockPurchases(args);
   const now = args.now ?? new Date();
   const selected = selectedChartOrders(args);
   if (!selected.length) {
@@ -393,6 +476,7 @@ export async function loadAllTimeDataset(
       ticker: currentStockTicker(position.ticker, position.currency),
     })),
   };
+  args = withFreeStockPurchases(args);
   const selected = selectedChartOrders(args);
   if (!selected.length) {
     throw new Error(
@@ -527,7 +611,7 @@ export async function loadAllTimeDataset(
     request,
   );
   const fingerprint = await hash({
-    version: 3,
+    version: 4,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],

@@ -99,6 +99,15 @@ an Interactive Brokers integration for the current user.
 TOTP login. It uses its own settings volume and the same private network as
 Eyri. Both Gateway instances are managed by the existing PM3 project.
 
+The second Gateway uses the unmodified, pinned controller image.
+`EXISTING_SESSION_DETECTED_ACTION=primary` accepts session-conflict prompts,
+and `BYPASS_WARNING=Continue Login,Reconnect This Session` also handles those
+buttons if they appear after authentication while the API is starting.
+These settings let the Gateway take over an existing session with the same
+username. The stock upstream watchdog relaunches a disconnected Gateway after
+its grace period; it does not immediately dismiss session prompts during normal
+monitoring. Using the same IBKR username in another app can still displace it.
+
 On the server, in `/home/kitkat/apps/eyri`, create `.env-ibkr-2` from
 `.env-ibkr-2.example` and fill `TWS_USERID`, `TWS_PASSWORD`, and `TWOFACTOR_CODE`.
 The last value is the Base32 Mobile Authenticator **setup key**, not a rotating
@@ -254,6 +263,8 @@ Recognized Vontobel warrants use the issuer's current EUR bid for live portfolio
 values and returns, instead of IBKR's portfolio mark. Broker purchase costs,
 including commissions, are preserved. Quotes are verified against the issuer,
 product type and holding currency before bucket allocation or report calculations.
+If the product-detail snapshot omits its bid, Eyri requests the issuer's dedicated
+latest-price endpoint and keeps that quote's timestamp.
 If a required bid cannot be loaded, the report fails instead of using the broker
 mark. Diagnostic dumps include the quote source and timestamp.
 
@@ -444,8 +455,12 @@ VSCO/VSCO.US joins VSXY/VSXY.US using Yahoo's combined VSXY history. APH option
 splits on June 12, 2024 and September 3, 2026 double contract quantities and halve
 strikes and unit costs. The chart stitches the predecessor strike's historical
 premiums into the adjusted contract, preserving original bucket assignments.
-A holding without matching purchases reports missing purchase history rather
-than suggesting an unrelated `/yahoo` mapping.
+Stock holdings with no recorded purchase are assumed to be free, with a $0
+purchase price. Their full current value counts as gain at the chart's current
+endpoint; no earlier acquisition date is assumed. This chart-only fallback does
+not add broker trades or change bucket assignments. Other instruments without
+matching purchases report missing purchase history rather than suggesting an
+unrelated `/yahoo` mapping.
 
 If Yahoo cannot resolve an option or supply its purchase-date history, `/chart`
 can fall back to Databento's `OPRA.PILLAR` archive. Set `DATABENTO_API_KEY` (or
@@ -488,8 +503,9 @@ Successful fetches remain cached for a retry.
 A failed Compare leaves the existing chart and participants unchanged.
 Unsupported or missing historical prices, unmatched sales and quantities that
 disagree with the live broker also cause an error rather than a partial graph.
-Complete purchase history is required;
-historical short positions are not supported.
+Complete purchase history is required except for stock holdings with no recorded
+purchase, which use the free-stock assumption above. Historical short positions
+are not supported.
 
 Live Yahoo chart-endpoint probes on 2026-10-06 established these usable windows:
 
