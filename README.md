@@ -371,6 +371,13 @@ the series, excluding historical FX effects, dividends and fees.
 The chart is sent as a Telegram photo using the portfolio's dark background,
 mint gains and pink losses. Every month has a label and a vertical grid line;
 the plot and participant legend fill the image, with no header or footer.
+An orange **S&P 500 (CSPX.L)** line shows the USD buy-and-hold return of the
+accumulating iShares ETF on the London Stock Exchange, rebased to 0% at the
+chart's starting date. It uses cached daily closes, carries the last close over
+non-trading days, and shows the latest close's date in the legend. If the portfolio
+starts before the ETF's available history (September 2010), the benchmark begins
+at its first available close. This is a market-return reference, not a simulation
+of the portfolio's deposits and withdrawals.
 **Compare** adds the person clicking the button to that same graph, up to six
 participants. A single chart displays monetary gains in the author's selected
 currency. Compare switches all participants to USD, including the original chart;

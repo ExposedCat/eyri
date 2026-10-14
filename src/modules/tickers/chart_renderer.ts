@@ -17,6 +17,7 @@ export const chartColors = {
   baseline: "#8494A6",
   green: "#63D8AB",
   red: "#FA8991",
+  orange: "#F5A623",
 };
 export const chartFont = "DejaVu Sans, Noto Sans, sans-serif";
 

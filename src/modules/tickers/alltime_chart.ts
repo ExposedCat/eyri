@@ -1,5 +1,6 @@
 import type { Database } from "../database/setup.ts";
 import { renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
+import { loadChartBenchmark } from "./chart_benchmark.ts";
 import { historicalQuoteMultiplier, yahooOptionContract } from "../market_data/options.ts";
 import { DATABENTO_PREFIX } from "../market_data/databento.ts";
 import { VONTOBEL_PREFIX, VontobelHistoryError } from "../market_data/vontobel.ts";
@@ -640,14 +641,16 @@ export async function loadAllTimeDataset(
 export async function renderAllTimeChart(
   db: Database,
   datasets: AllTimeDataset[],
+  benchmarkCache: Parameters<typeof loadChartBenchmark>[1] = historyCache(db),
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  const key = await hash({ version: 5, datasets });
+  const benchmark = await loadChartBenchmark(datasets, benchmarkCache);
+  const key = await hash({ version: 6, datasets, benchmark });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;
   if (stored) return stored.png;
-  const png = renderAllTimeDatasets(datasets);
+  const png = renderAllTimeDatasets(datasets, benchmark);
   db.prepare(
     "INSERT OR REPLACE INTO alltime_render_cache(cache_key,png,created_at) VALUES (?,?,?)",
   ).run(key, png, Date.now());

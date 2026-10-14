@@ -14,8 +14,7 @@ const points = Array.from({ length: 373 }, (_, index) => {
   randomState ^= randomState >>> 17;
   randomState ^= randomState << 5;
   noise = noise * 0.82 + ((randomState >>> 0) / 4_294_967_296 - 0.5) * 1.4;
-  const percentage =
-    (index / 372) * 22 +
+  const percentage = (index / 372) * 22 +
     Math.sin(index / 23) * 8 +
     Math.sin(index / 8) * 2 +
     noise -
@@ -32,9 +31,18 @@ const portfolio: AllTimeDataset = {
   bucketName: null,
   points,
 };
+const benchmark = {
+  label: "S&P 500 (CSPX.L)",
+  symbol: "CSPX.L",
+  asOf: points.at(-1)!.date,
+  points: points.map((point, index) => ({
+    date: point.date,
+    percentage: index / 372 * 14 + Math.sin(index / 42) * 3,
+  })),
+};
 await Deno.writeFile(
   `${directory}/alltime.png`,
-  renderAllTimeDatasets([portfolio]),
+  renderAllTimeDatasets([portfolio], benchmark),
 );
 await Deno.writeFile(
   `${directory}/comparison.png`,
@@ -50,7 +58,7 @@ await Deno.writeFile(
         gain: ((index / 372) * 12 + Math.sin(index / 35) * 4) * 700,
       })),
     },
-  ]),
+  ], benchmark),
 );
 await Deno.writeFile(
   `${directory}/portfolio.png`,

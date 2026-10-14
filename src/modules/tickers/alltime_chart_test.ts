@@ -429,12 +429,15 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
         .get() as { count: number }).count,
       1,
     );
-    const png = await renderAllTimeChart(db, [first]);
+    const benchmarkCache = { get: () => Promise.resolve({
+      ...history(), symbol: "CSPX.L", instrumentType: "ETF",
+    }) };
+    const png = await renderAllTimeChart(db, [first], benchmarkCache);
     deepStrictEqual([...png.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
     const dimensions = new DataView(png.buffer, png.byteOffset);
     equal(dimensions.getUint32(16), 2400);
     equal(dimensions.getUint32(20), 1400);
-    const repeat = await renderAllTimeChart(db, [second]);
+    const repeat = await renderAllTimeChart(db, [second], benchmarkCache);
     deepStrictEqual(repeat, png);
     equal(
       (db.prepare("SELECT COUNT(*) AS count FROM alltime_render_cache")
@@ -443,10 +446,10 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
     );
     await Deno.writeFile("/tmp/eyri-alltime-test.png", png);
     const eur = { ...first, displayCurrency: "EUR", displayRate: .8 };
-    const eurPng = await renderAllTimeChart(db, [eur]);
+    const eurPng = await renderAllTimeChart(db, [eur], benchmarkCache);
     ok(eurPng.length > 0);
     ok(!eurPng.every((byte, index) => byte === png[index]));
-    deepStrictEqual(await renderAllTimeChart(db, [eur]), eurPng);
+    deepStrictEqual(await renderAllTimeChart(db, [eur], benchmarkCache), eurPng);
     deepStrictEqual(eur.points, first.points);
     await Deno.writeFile("/tmp/eyri-alltime-eur-test.png", eurPng);
 
@@ -462,7 +465,7 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
     };
     await Deno.writeFile(
       "/tmp/eyri-alltime-compare-test.png",
-      await renderAllTimeChart(db, [first, other]),
+      await renderAllTimeChart(db, [first, other], benchmarkCache),
     );
   } finally {
     db.close();

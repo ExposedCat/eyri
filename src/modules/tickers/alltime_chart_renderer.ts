@@ -1,5 +1,6 @@
-import type { Chart, Color, ScriptableContext } from "chart.js";
+import type { Chart, ChartDataset, Color, ScriptableContext } from "chart.js";
 import type { AllTimeDataset } from "./alltime_chart.ts";
+import type { ChartBenchmark } from "./chart_benchmark.ts";
 import {
   chartColors as colors,
   chartFont,
@@ -38,11 +39,19 @@ function money(value: number, currency: string) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-  return `${value > 0 ? "+" : value < 0 ? "-" : ""}${currency === "USD" ? `$${amount}` : `${amount} ${currency}`}`;
+  return `${value > 0 ? "+" : value < 0 ? "-" : ""}${
+    currency === "USD" ? `$${amount}` : `${amount} ${currency}`
+  }`;
 }
 
-export function renderAllTimeDatasets(datasets: AllTimeDataset[]): Uint8Array {
-  if (!datasets.length || datasets.some((dataset) => !dataset.points.length)) {
+export function renderAllTimeDatasets(
+  datasets: AllTimeDataset[],
+  benchmark?: ChartBenchmark,
+): Uint8Array {
+  if (
+    !datasets.length || datasets.some((dataset) => !dataset.points.length) ||
+    (benchmark && !benchmark.points.length)
+  ) {
     throw new Error("No performance points to chart.");
   }
   const first = new Date(
@@ -51,12 +60,11 @@ export function renderAllTimeDatasets(datasets: AllTimeDataset[]): Uint8Array {
   const last = new Date(
     Math.max(
       ...datasets.map((dataset) =>
-        Date.parse(dataset.points[dataset.points.length - 1].date),
+        Date.parse(dataset.points[dataset.points.length - 1].date)
       ),
     ),
   );
-  const months =
-    (last.getUTCFullYear() - first.getUTCFullYear()) * 12 +
+  const months = (last.getUTCFullYear() - first.getUTCFullYear()) * 12 +
     last.getUTCMonth() -
     first.getUTCMonth() +
     1;
@@ -73,36 +81,60 @@ export function renderAllTimeDatasets(datasets: AllTimeDataset[]): Uint8Array {
     const current = new Date(date);
     date = Date.UTC(current.getUTCFullYear(), current.getUTCMonth() + 1, 1);
   }
-  const legendHeight = Math.ceil(datasets.length / (single ? 1 : 2)) * 60;
+  const legendCount = datasets.length + (benchmark ? 1 : 0);
+  const legendColumns = legendCount === 1 ? 1 : 2;
+  const legendHeight = Math.ceil(legendCount / legendColumns) * 60;
   return renderChart(width, 1400, {
     type: "line",
     data: {
-      datasets: datasets.map((dataset, index) => ({
-        label: dataset.label,
-        data: dataset.points.map((point) => ({
-          x: Date.parse(point.date),
-          y: point.percentage,
-        })),
-        parsing: false,
-        borderColor: single
-          ? ({ chart }: ScriptableContext<"line">) => performanceColor(chart)
-          : palette[index % palette.length],
-        borderWidth: 4.4,
-        borderCapStyle: "round",
-        borderJoinStyle: "round",
-        // Preserve every daily value without overshooting between samples.
-        cubicInterpolationMode: "monotone",
-        pointRadius: ({ dataIndex }: ScriptableContext<"line">) =>
-          dataIndex === dataset.points.length - 1 ? 5 : 0,
-        pointBorderWidth: 0,
-        pointBackgroundColor: single
-          ? ({ parsed }: ScriptableContext<"line">) =>
+      datasets: [
+        ...datasets.map<ChartDataset<"line">>((dataset, index) => ({
+          label: dataset.label,
+          data: dataset.points.map((point) => ({
+            x: Date.parse(point.date),
+            y: point.percentage,
+          })),
+          parsing: false,
+          borderColor: single
+            ? ({ chart }: ScriptableContext<"line">) => performanceColor(chart)
+            : palette[index % palette.length],
+          borderWidth: 4.4,
+          borderCapStyle: "round",
+          borderJoinStyle: "round",
+          // Preserve every daily value without overshooting between samples.
+          cubicInterpolationMode: "monotone",
+          pointRadius: ({ dataIndex }: ScriptableContext<"line">) =>
+            dataIndex === dataset.points.length - 1 ? 5 : 0,
+          pointBorderWidth: 0,
+          pointBackgroundColor: single
+            ? ({ parsed }: ScriptableContext<"line">) =>
               (parsed.y ?? 0) >= 0 ? colors.green : colors.red
-          : palette[index % palette.length],
-        fill: single
-          ? { target: "origin", above: "#63D8AB19", below: "#FA899119" }
-          : false,
-      })),
+            : palette[index % palette.length],
+          fill: single
+            ? { target: "origin", above: "#63D8AB19", below: "#FA899119" }
+            : false,
+        })),
+        ...(benchmark
+          ? [{
+            label: benchmark.label,
+            data: benchmark.points.map((point) => ({
+              x: Date.parse(point.date),
+              y: point.percentage,
+            })),
+            parsing: false as const,
+            borderColor: colors.orange,
+            borderWidth: 4.4,
+            borderCapStyle: "round" as const,
+            borderJoinStyle: "round" as const,
+            cubicInterpolationMode: "monotone" as const,
+            pointRadius: ({ dataIndex }: ScriptableContext<"line">) =>
+              dataIndex === benchmark.points.length - 1 ? 5 : 0,
+            pointBorderWidth: 0,
+            pointBackgroundColor: colors.orange,
+            fill: false as const,
+          }]
+          : []),
+      ],
     },
     options: {
       layout: {
@@ -133,7 +165,7 @@ export function renderAllTimeDatasets(datasets: AllTimeDataset[]): Uint8Array {
                 timeZone: "UTC",
               });
               return date.getUTCMonth() === 0 ||
-                Number(value) === monthTicks[0].value
+                  Number(value) === monthTicks[0].value
                 ? [month, String(date.getUTCFullYear())]
                 : month;
             },
@@ -166,36 +198,54 @@ export function renderAllTimeDatasets(datasets: AllTimeDataset[]): Uint8Array {
           ctx.save();
           ctx.font = `30px ${chartFont}`;
           ctx.textBaseline = "middle";
-          datasets.forEach((dataset, index) => {
+          const entries = datasets.map((dataset, index) => {
             const last = dataset.points[dataset.points.length - 1];
-            const column = single ? 0 : index % 2;
-            const row = single ? 0 : Math.floor(index / 2);
-            const x = chartArea.left + column * (chartArea.width / 2);
-            const y = chart.height - legendHeight - 38 + row * 60;
-            ctx.strokeStyle = single
-              ? last.percentage >= 0
-                ? colors.green
-                : colors.red
+            const color = single
+              ? last.percentage >= 0 ? colors.green : colors.red
               : palette[index % palette.length];
-            ctx.lineWidth = 4.4;
-            ctx.beginPath();
-            ctx.moveTo(x, y);
-            ctx.lineTo(x + 45, y);
-            ctx.stroke();
-            const name =
-              dataset.label +
+            const name = dataset.label +
               (dataset.bucketName ? ` / ${dataset.bucketName}` : "");
             const currency = single
               ? (dataset.displayCurrency ?? "USD")
               : "USD";
             const rate = single ? (dataset.displayRate ?? 1) : 1;
-            const label = `${name}  ${last.percentage >= 0 ? "+" : ""}${last.percentage.toFixed(2)}%  (${money(last.gain * rate, currency)})`;
+            const label = `${name}  ${last.percentage >= 0 ? "+" : ""}${
+              last.percentage.toFixed(2)
+            }%  (${money(last.gain * rate, currency)})`;
+            return { color, label };
+          });
+          if (benchmark) {
+            const last = benchmark.points.at(-1)!;
+            const since = benchmark.points[0].date > datasets.map((d) =>
+                d.points[0].date
+              ).sort()[0]
+              ? ` · since ${benchmark.points[0].date}`
+              : "";
+            entries.push({
+              color: colors.orange,
+              label: `${benchmark.label}  ${last.percentage >= 0 ? "+" : ""}${
+                last.percentage.toFixed(2)
+              }% · ${benchmark.asOf} close${since}`,
+            });
+          }
+          entries.forEach(({ color, label }, index) => {
+            const column = index % legendColumns;
+            const row = Math.floor(index / legendColumns);
+            const x = chartArea.left +
+              column * (chartArea.width / legendColumns);
+            const y = chart.height - legendHeight - 38 + row * 60;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 4.4;
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + 45, y);
+            ctx.stroke();
             ctx.fillStyle = colors.foreground;
             ctx.fillText(
               label,
               x + 60,
               y,
-              chartArea.width / (single ? 1 : 2) - 80,
+              chartArea.width / legendColumns - 80,
             );
           });
           ctx.restore();
