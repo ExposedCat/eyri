@@ -17,7 +17,9 @@ import {
   ensureChartSchema,
   loadAllTimeDataset,
   renderAllTimeChart,
+  switchChartBenchmarks,
 } from "./alltime_chart.ts";
+import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
 
 type Session = {
   id: string;
@@ -26,8 +28,20 @@ type Session = {
   datasets: string;
 };
 const MAX_PARTICIPANTS = 6;
-const button = (id: string) =>
-  new InlineKeyboard().text("Compare", `chart_compare:${id}`);
+const buttons = (
+  id: string,
+  datasets: AllTimeDataset[],
+  isPrivate: boolean,
+  compareLabel = "Compare",
+  indexLabel?: string,
+) => {
+  const index = chartBenchmarkIndex(datasets[0].benchmark?.symbol);
+  const keyboard = new InlineKeyboard();
+  if (!isPrivate && datasets.length < MAX_PARTICIPANTS) {
+    keyboard.text(compareLabel, `chart_compare:${id}`);
+  }
+  return keyboard.text(indexLabel ?? CHART_BENCHMARKS[index].name, `chart_index:${id}:${index}`);
+};
 const pending = new Set<string>();
 
 async function datasetFor(ctx: CustomContext, bucketName: string | null) {
@@ -67,6 +81,7 @@ export function readChartSession(
 type Runtime = {
   dataset: typeof datasetFor;
   render: typeof renderAllTimeChart;
+  switchBenchmarks?: typeof switchChartBenchmarks;
   validateSymbol?: (symbol: string, ticker?: string) => Promise<void>;
   request?: typeof fetch;
 };
@@ -162,10 +177,6 @@ export function createChartComposer(
         dataset.displayRate = rates.get("USD")!;
       }
       const image = await runtime.render(ctx.db, [dataset]);
-      if (ctx.chat.type === "private") {
-        await ctx.replyWithPhoto(new InputFile(image, "alltime.png"));
-        return;
-      }
       ensureChartSchema(ctx.db);
       const id = crypto.randomUUID();
       ctx.db.prepare(
@@ -174,7 +185,7 @@ export function createChartComposer(
       try {
         const message = await ctx.replyWithPhoto(
           new InputFile(image, "alltime.png"),
-          { reply_markup: button(id) },
+          { reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
         );
         ctx.db.prepare(
           "UPDATE alltime_chart_sessions SET message_id = ? WHERE id = ?",
@@ -189,85 +200,105 @@ export function createChartComposer(
       await replyChartError(ctx, error);
     }
   });
-  composer.callbackQuery(/^chart_compare:([0-9a-f-]{36})$/, async (ctx) => {
-    const id = ctx.match[1];
+  composer.callbackQuery(/^chart_(compare|index):([0-9a-f-]{36})(?::(sp500|momentum))?$/, async (ctx) => {
+    const switching = ctx.match[1] === "index";
+    const id = ctx.match[2];
     const messageId = ctx.callbackQuery.message?.message_id;
-    if (!ctx.chat || ctx.chat.type === "private" || !ctx.from || !messageId) {
-      await ctx.answerCallbackQuery({
-        text: "This chart is unavailable.",
-        show_alert: true,
-      });
+    if (!ctx.chat || (!switching && ctx.chat.type === "private") || !ctx.from || !messageId) {
+      await ctx.answerCallbackQuery({ text: "This chart is unavailable.", show_alert: true });
       return;
     }
     const session = readChartSession(ctx.db, id, ctx.chat.id, messageId);
     if (!session) {
-      await ctx.answerCallbackQuery({
-        text: "This chart is unavailable in this chat.",
-        show_alert: true,
-      });
+      await ctx.answerCallbackQuery({ text: "This chart is unavailable in this chat.", show_alert: true });
       return;
     }
     if (pending.has(id)) {
-      await ctx.answerCallbackQuery({
-        text: "A portfolio is being added. Please wait.",
-      });
+      await ctx.answerCallbackQuery({ text: "This chart is updating. Please wait." });
       return;
     }
     const datasets = JSON.parse(session.datasets) as AllTimeDataset[];
-    if (datasets.some((d) => d.userId === ctx.from.id)) {
+    if (datasets.some((dataset) => !dataset.benchmark)) {
       await ctx.answerCallbackQuery({
-        text: "Your all-time performance is already on this chart.",
+        text: "This chart predates personal benchmarks. Create a new chart with /chart.",
         show_alert: true,
       });
       return;
     }
-    if (datasets.length >= MAX_PARTICIPANTS) {
-      await ctx.answerCallbackQuery({
-        text: "This chart already has six portfolios.",
-        show_alert: true,
-      });
-      return;
+    const current = chartBenchmarkIndex(datasets[0].benchmark!.symbol);
+    if (switching) {
+      if (ctx.match[3] !== current) {
+        await ctx.answerCallbackQuery({ text: "The index has already changed. Use the updated button." });
+        return;
+      }
+      if (datasets.some((dataset) => !dataset.benchmarkPurchases)) {
+        await ctx.answerCallbackQuery({
+          text: "This chart predates index switching. Create a new chart with /chart.",
+          show_alert: true,
+        });
+        return;
+      }
+    } else {
+      if (datasets.some((d) => d.userId === ctx.from.id)) {
+        await ctx.answerCallbackQuery({ text: "Your all-time performance is already on this chart.", show_alert: true });
+        return;
+      }
+      if (datasets.length >= MAX_PARTICIPANTS) {
+        await ctx.answerCallbackQuery({ text: "This chart already has six portfolios.", show_alert: true });
+        return;
+      }
     }
-    // Claim the chart before the first await so simultaneous clicks cannot queue.
+    const isPrivate = ctx.chat.type === "private";
+    // Share one lock between Compare and index changes, claimed before any await.
     pending.add(id);
     try {
       await ctx.answerCallbackQuery();
-      const name = [ctx.from.first_name, ctx.from.last_name].filter(Boolean)
-        .join(" ").slice(0, 60);
+      const name = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ").slice(0, 60);
       await ctx.editMessageReplyMarkup({
-        reply_markup: new InlineKeyboard().text(`Adding ${name}...`, `chart_compare:${id}`),
+        reply_markup: buttons(id, datasets, isPrivate,
+          switching ? "Compare" : `Adding ${name}...`, switching ? "Switching..." : undefined),
       });
-      // Existing curves are the snapshots their owners chose to publish. Only
-      // the clicker's accounts are fetched; another user's credentials are never used here.
-      const added = await runtime.dataset(ctx, null);
-      const original = datasets[0].points;
-      const start = original[0].date;
-      const end = original.at(-1)!.date;
-      const next = [...datasets, added].map((dataset) => {
-        const { displayCurrency: _currency, displayRate: _rate, ...usdDataset } = dataset;
-        const points = dataset.points.filter((point) => point.date >= start && point.date <= end);
-        if (!points.length) {
-          throw new Error("Your portfolio has no performance history within this chart's date range.");
+      let next: AllTimeDataset[];
+      const switchBenchmarks = runtime.switchBenchmarks ?? switchChartBenchmarks;
+      if (switching) {
+        next = await switchBenchmarks(ctx.db, datasets, current === "sp500" ? "momentum" : "sp500");
+      } else {
+        // Only the clicker's accounts are fetched; existing curves and purchase
+        // schedules remain the snapshots their owners chose to publish.
+        const added = await runtime.dataset(ctx, null);
+        const original = datasets[0].points;
+        const start = original[0].date;
+        const end = original.at(-1)!.date;
+        next = [...datasets, added].map((dataset) => {
+          const { displayCurrency: _currency, displayRate: _rate, ...usdDataset } = dataset;
+          const points = dataset.points.filter((point) => point.date >= start && point.date <= end);
+          if (!points.length) throw new Error("Your portfolio has no performance history within this chart's date range.");
+          const clip = (benchmark: NonNullable<AllTimeDataset["benchmark"]>) => ({
+            ...benchmark,
+            points: benchmark.points.filter((point) => point.date >= start && point.date <= end),
+          });
+          const benchmark = dataset.benchmark && clip(dataset.benchmark);
+          const benchmarkSnapshots = dataset.benchmarkSnapshots && Object.fromEntries(
+            Object.entries(dataset.benchmarkSnapshots).map(([index, snapshot]) => [index, clip(snapshot)]),
+          );
+          return { ...usdDataset, points, benchmark, ...(benchmarkSnapshots && { benchmarkSnapshots }) };
+        });
+        if (chartBenchmarkIndex(next.at(-1)!.benchmark?.symbol) !== current) {
+          const [added] = await switchBenchmarks(ctx.db, [next.at(-1)!], current);
+          next[next.length - 1] = added;
         }
-        return { ...usdDataset, points };
-      });
+      }
       const image = await runtime.render(ctx.db, next);
-      await ctx.editMessageMedia({
-        type: "photo",
-        media: new InputFile(image, "alltime.png"),
-      }, {
-        reply_markup: next.length < MAX_PARTICIPANTS
-          ? button(id)
-          : { inline_keyboard: [] },
+      await ctx.editMessageMedia({ type: "photo", media: new InputFile(image, "alltime.png") }, {
+        reply_markup: buttons(id, next, isPrivate),
       });
-      ctx.db.prepare(
-        "UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?",
-      ).run(JSON.stringify(next), id);
+      ctx.db.prepare("UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?")
+        .run(JSON.stringify(next), id);
     } catch (error) {
       try {
-        await ctx.editMessageReplyMarkup({ reply_markup: button(id) });
+        await ctx.editMessageReplyMarkup({ reply_markup: buttons(id, datasets, isPrivate) });
       } catch (restoreError) {
-        console.error("Failed to restore chart Compare button:", restoreError);
+        console.error("Failed to restore chart buttons:", restoreError);
       }
       await replyChartError(ctx, error);
     } finally {

@@ -2,90 +2,113 @@ import type { PriceHistory } from "../market_data/history.ts";
 import { dayAfter } from "../market_data/history.ts";
 
 export const CHART_BENCHMARK_SYMBOL = "CSPX.L";
+export const CHART_BENCHMARKS = {
+  sp500: { name: "S&P 500", symbol: CHART_BENCHMARK_SYMBOL },
+  momentum: { name: "Momentum", symbol: "IUMO.L" },
+} as const;
+export type ChartBenchmarkIndex = keyof typeof CHART_BENCHMARKS;
+export function chartBenchmarkIndex(symbol?: string): ChartBenchmarkIndex {
+  return symbol === CHART_BENCHMARKS.momentum.symbol ? "momentum" : "sp500";
+}
+export type BenchmarkPurchase = { date: string; amountUsd: number };
 export type ChartBenchmark = {
   label: string;
   symbol: string;
   asOf: string;
-  points: { date: string; percentage: number }[];
+  points: { date: string; percentage: number; gain: number }[];
 };
 
+// Buy fractional index ETF shares for every actual purchase, then hold them.
+// Sales of the original instruments do not sell the ETF or remove its cost.
 export function buildChartBenchmark(
   history: PriceHistory,
+  purchases: BenchmarkPurchase[],
   start: string,
   end: string,
+  index: ChartBenchmarkIndex = "sp500",
 ): ChartBenchmark {
-  if (start > end) throw new Error("Invalid S&P 500 benchmark date range.");
+  const { name, symbol } = CHART_BENCHMARKS[index];
+  if (start > end) throw new Error(`Invalid ${name} benchmark date range.`);
   if (
-    history.symbol !== CHART_BENCHMARK_SYMBOL || history.currency !== "USD" ||
+    history.symbol !== symbol || history.currency !== "USD" ||
     history.instrumentType !== "ETF"
-  ) throw new Error("S&P 500 benchmark must use the CSPX.L USD ETF listing.");
+  ) throw new Error(`${name} benchmark must use the ${symbol} USD ETF listing.`);
   if (
     history.splits.some((split) =>
       !Number.isFinite(split.ratio) || split.ratio <= 0
     )
-  ) {
-    throw new Error("Invalid S&P 500 benchmark stock split.");
-  }
-  // The shared cache stores unadjusted closes. Normalize to end-date share
-  // units so a split cannot look like an investment loss.
+  ) throw new Error(`Invalid ${name} benchmark stock split.`);
+  if (purchases.some((purchase) =>
+    !/^\d{4}-\d{2}-\d{2}$/.test(purchase.date) ||
+    !Number.isFinite(Date.parse(purchase.date)) ||
+    !Number.isFinite(purchase.amountUsd) || purchase.amountUsd < 0
+  )) throw new Error(`Invalid ${name} benchmark purchase.`);
+
+  // The shared cache stores raw closes. Express all closes in end-date share
+  // units so a split changes neither the hypothetical investment nor its gain.
   const bars = history.bars.filter((bar) => bar.date <= end).map((bar) => ({
     ...bar,
     close: bar.close /
       history.splits.filter((split) =>
         split.date > bar.date && split.date <= end
       ).reduce((factor, split) => factor * split.ratio, 1),
-  }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  })).sort((a, b) => a.date.localeCompare(b.date));
   if (
-    !bars.length ||
-    bars.some((bar, index) =>
+    !bars.length || bars.some((bar, index) =>
       !Number.isFinite(bar.close) || bar.close <= 0 ||
       (index > 0 && bar.date === bars[index - 1].date)
     )
-  ) throw new Error("S&P 500 benchmark has no valid prices for this chart.");
+  ) throw new Error(`${name} benchmark has no valid prices for this chart.`);
 
-  // Start at the last close on/before the portfolio's baseline date. A chart
-  // predating the ETF starts the benchmark at its first available close.
-  let index = 0;
-  while (index + 1 < bars.length && bars[index + 1].date <= start) index++;
-  const first = bars[index].date > start ? bars[index].date : start;
-  const base = bars[index].close;
+  const buys = purchases.filter((p) => p.amountUsd > 0 && p.date <= end)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (buys.length && buys[0].date < bars[0].date) {
+    throw new Error(`${name} benchmark closing price unavailable on ${buys[0].date}.`);
+  }
   const points: ChartBenchmark["points"] = [];
+  let barIndex = 0, buyIndex = 0, shares = 0, cost = 0;
+  const first = buys.length && buys[0].date < start ? buys[0].date : start;
   for (let date = first; date <= end; date = dayAfter(date)) {
-    while (index + 1 < bars.length && bars[index + 1].date <= date) index++;
-    points.push({ date, percentage: (bars[index].close / base - 1) * 100 });
+    while (barIndex + 1 < bars.length && bars[barIndex + 1].date <= date) barIndex++;
+    while (buyIndex < buys.length && buys[buyIndex].date <= date) {
+      const purchase = buys[buyIndex++];
+      shares += purchase.amountUsd / bars[barIndex].close;
+      cost += purchase.amountUsd;
+    }
+    if (date < start) continue;
+    const gain = cost === 0 ? 0 : shares * bars[barIndex].close - cost;
+    points.push({ date, percentage: cost === 0 ? 0 : gain / cost * 100, gain });
   }
   return {
-    label: "S&P 500 (CSPX.L)",
-    symbol: CHART_BENCHMARK_SYMBOL,
+    label: `If ${name} (${symbol})`,
+    symbol,
     asOf: bars.at(-1)!.date,
     points,
   };
 }
 
 export async function loadChartBenchmark(
-  datasets: { points: { date: string }[] }[],
+  purchases: BenchmarkPurchase[],
+  start: string,
+  end: string,
   cache: {
     get(symbol: string, start: string, end?: string): Promise<PriceHistory>;
   },
+  index: ChartBenchmarkIndex = "sp500",
 ): Promise<ChartBenchmark> {
-  if (!datasets.length || datasets.some((dataset) => !dataset.points.length)) {
-    throw new Error("No performance points to chart.");
-  }
-  const start = datasets.map((dataset) => dataset.points[0].date).sort()[0];
-  const end = datasets.map((dataset) => dataset.points.at(-1)!.date).sort().at(
-    -1,
-  )!;
+  const { name, symbol } = CHART_BENCHMARKS[index];
+  const earliest = purchases.filter((p) => p.amountUsd > 0 && p.date <= end)
+    .map((p) => p.date).sort()[0];
   try {
     const history = await cache.get(
-      CHART_BENCHMARK_SYMBOL,
-      dayAfter(start, -7),
+      symbol,
+      dayAfter(earliest && earliest < start ? earliest : start, -7),
       dayAfter(end),
     );
-    return buildChartBenchmark(history, start, end);
+    return buildChartBenchmark(history, purchases, start, end, index);
   } catch (cause) {
     throw new Error(
-      "S&P 500 benchmark (CSPX.L) prices unavailable. Try /chart again shortly.",
+      `${name} benchmark (${symbol}) prices unavailable for your purchase history. Try again shortly.`,
       { cause },
     );
   }

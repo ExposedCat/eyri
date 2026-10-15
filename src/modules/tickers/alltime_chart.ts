@@ -1,6 +1,12 @@
 import type { Database } from "../database/setup.ts";
 import { renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
-import { loadChartBenchmark } from "./chart_benchmark.ts";
+import {
+  type BenchmarkPurchase,
+  type ChartBenchmark,
+  type ChartBenchmarkIndex,
+  chartBenchmarkIndex,
+  loadChartBenchmark,
+} from "./chart_benchmark.ts";
 import { historicalQuoteMultiplier, yahooOptionContract } from "../market_data/options.ts";
 import { DATABENTO_PREFIX } from "../market_data/databento.ts";
 import { VONTOBEL_PREFIX, VontobelHistoryError } from "../market_data/vontobel.ts";
@@ -45,6 +51,10 @@ export type AllTimeDataset = {
   label: string;
   bucketName: string | null;
   points: AllTimePoint[];
+  // Absent only on older published sessions, which must be recreated.
+  benchmark?: ChartBenchmark;
+  benchmarkPurchases?: BenchmarkPurchase[];
+  benchmarkSnapshots?: Partial<Record<ChartBenchmarkIndex, ChartBenchmark>>;
   // Points remain USD snapshots; only single-chart monetary labels use these.
   displayCurrency?: string;
   displayRate?: number;
@@ -72,8 +82,8 @@ const lotKey = (order: IntegrationOrder) =>
 const dateOf = (date: Date) => date.toISOString().slice(0, 10);
 
 export function selectedChartOrders(args: Args) {
-  return args.orders.filter((order) =>
-    isDisplayableOrder(order) && order.quantity > 0 &&
+  return args.orders.filter(isDisplayableOrder).filter((order) =>
+    order.quantity > 0 &&
     (args.transactionBuckets.get(getOrderTransactionKey(order)) ?? null) ===
       args.bucketName
   );
@@ -641,22 +651,56 @@ export async function loadAllTimeDataset(
       "DELETE FROM alltime_series_cache WHERE cache_key IN (SELECT cache_key FROM alltime_series_cache ORDER BY created_at DESC LIMIT -1 OFFSET 128)",
     );
   }
-  return { userId, label, bucketName: args.bucketName, points };
+  const purchases = selected.map((order) => ({
+    date: dateOf(order.date),
+    // Broker adapters normalize trade prices per held unit (including options).
+    // Use the same current FX factors as the actual curve, including GBX/GBP.
+    amountUsd: order.quantity * order.price * usdFactor(order.currency, rates),
+  }));
+  const benchmark = await loadChartBenchmark(
+    purchases, points[0].date, points.at(-1)!.date, cache,
+  );
+  return { userId, label, bucketName: args.bucketName, points, benchmark, benchmarkPurchases: purchases };
+}
+
+export async function switchChartBenchmarks(
+  db: Database,
+  datasets: AllTimeDataset[],
+  index: ChartBenchmarkIndex,
+  cache: Parameters<typeof loadChartBenchmark>[3] = historyCache(db),
+): Promise<AllTimeDataset[]> {
+  if (datasets.some((dataset) => !dataset.benchmarkPurchases || !dataset.benchmark)) {
+    throw new Error("This chart predates index switching. Create a new chart with /chart.");
+  }
+  return await Promise.all(datasets.map(async (dataset) => {
+    const current = chartBenchmarkIndex(dataset.benchmark!.symbol);
+    if (current === index) return dataset;
+    const benchmark = dataset.benchmarkSnapshots?.[index] ?? await loadChartBenchmark(
+      dataset.benchmarkPurchases!, dataset.points[0].date,
+      dataset.points.at(-1)!.date, cache, index,
+    );
+    return {
+      ...dataset,
+      benchmark,
+      benchmarkSnapshots: { ...dataset.benchmarkSnapshots, [current]: dataset.benchmark!, [index]: benchmark },
+    };
+  }));
 }
 
 export async function renderAllTimeChart(
   db: Database,
   datasets: AllTimeDataset[],
-  benchmarkCache: Parameters<typeof loadChartBenchmark>[1] = historyCache(db),
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  const benchmark = await loadChartBenchmark(datasets, benchmarkCache);
-  const key = await hash({ version: 6, datasets, benchmark });
+  if (!datasets.length || datasets.some((dataset) => !dataset.benchmark)) {
+    throw new Error("This chart predates personal benchmarks. Create a new chart with /chart.");
+  }
+  const key = await hash({ version: 8, datasets });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;
   if (stored) return stored.png;
-  const png = renderAllTimeDatasets(datasets, benchmark);
+  const png = renderAllTimeDatasets(datasets);
   db.prepare(
     "INSERT OR REPLACE INTO alltime_render_cache(cache_key,png,created_at) VALUES (?,?,?)",
   ).run(key, png, Date.now());

@@ -12,18 +12,36 @@ import type {
   IntegrationOrder,
   IntegrationPortfolioPosition,
 } from "../integrations/types.ts";
-import type { PriceHistory } from "../market_data/yahoo.ts";
+import { dayAfter, type PriceHistory } from "../market_data/yahoo.ts";
 import {
   type AllTimeDataset,
   buildAllTimeSeries,
   instrumentKey,
-  loadAllTimeDataset,
+  loadAllTimeDataset as loadDataset,
   renderAllTimeChart,
+  switchChartBenchmarks,
 } from "./alltime_chart.ts";
+import { buildChartBenchmark } from "./chart_benchmark.ts";
 import {
   buildIntegratedAllTimePerformanceList,
   getOrderTransactionKey,
 } from "./portfolio.ts";
+
+// Keep instrument fixtures focused on their own histories; benchmark prices
+// are a separate shared market-data request, never an instrument resolution.
+function loadAllTimeDataset(...args: Parameters<typeof loadDataset>) {
+  const cache = args[4]!;
+  args[4] = {
+    resolve: (...params: Parameters<typeof cache.resolve>) => cache.resolve(...params),
+    get: (symbol: string, start: string, end?: string) => symbol === "CSPX.L"
+      ? Promise.resolve({
+        symbol, currency: "USD", instrumentType: "ETF", splits: [],
+        bars: [{ date: start, close: 100 }, { date: dayAfter(end!, -1), close: 110 }],
+      })
+      : cache.get(symbol, start, end),
+  } as never;
+  return loadDataset(...args);
+}
 
 const now = new Date("2025-01-06T20:00:00Z");
 function trade(
@@ -429,15 +447,12 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
         .get() as { count: number }).count,
       1,
     );
-    const benchmarkCache = { get: () => Promise.resolve({
-      ...history(), symbol: "CSPX.L", instrumentType: "ETF",
-    }) };
-    const png = await renderAllTimeChart(db, [first], benchmarkCache);
+    const png = await renderAllTimeChart(db, [first]);
     deepStrictEqual([...png.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
     const dimensions = new DataView(png.buffer, png.byteOffset);
     equal(dimensions.getUint32(16), 2400);
     equal(dimensions.getUint32(20), 1400);
-    const repeat = await renderAllTimeChart(db, [second], benchmarkCache);
+    const repeat = await renderAllTimeChart(db, [second]);
     deepStrictEqual(repeat, png);
     equal(
       (db.prepare("SELECT COUNT(*) AS count FROM alltime_render_cache")
@@ -446,10 +461,10 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
     );
     await Deno.writeFile("/tmp/eyri-alltime-test.png", png);
     const eur = { ...first, displayCurrency: "EUR", displayRate: .8 };
-    const eurPng = await renderAllTimeChart(db, [eur], benchmarkCache);
+    const eurPng = await renderAllTimeChart(db, [eur]);
     ok(eurPng.length > 0);
     ok(!eurPng.every((byte, index) => byte === png[index]));
-    deepStrictEqual(await renderAllTimeChart(db, [eur], benchmarkCache), eurPng);
+    deepStrictEqual(await renderAllTimeChart(db, [eur]), eurPng);
     deepStrictEqual(eur.points, first.points);
     await Deno.writeFile("/tmp/eyri-alltime-eur-test.png", eurPng);
 
@@ -465,7 +480,7 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
     };
     await Deno.writeFile(
       "/tmp/eyri-alltime-compare-test.png",
-      await renderAllTimeChart(db, [first, other], benchmarkCache),
+      await renderAllTimeChart(db, [first, other]),
     );
   } finally {
     db.close();
@@ -935,4 +950,102 @@ Deno.test("a post-split APH purchase fetches only the new contract; later failur
   } finally {
     db.close();
   }
+});
+
+Deno.test("personal benchmark uses selected USD/GBP/GBX/option purchase costs and holds through actual sales", async () => {
+  const db = new Database(":memory:");
+  const usd = trade(10, 100, "2025-01-02");
+  const gbp = trade(1, 100, "2025-01-03", "GBP");
+  const gbx = trade(1, 10000, "2025-01-03", "GBX");
+  const option = { ...trade(2, 100, "2025-01-03"), ticker: "+AMD.15JAN2027.C280", integrationKind: "f24", assetCategory: "OPT" };
+  const excluded = { ...trade(1000, 1000, "2025-01-02"), ticker: "OTHER" };
+  const calls: string[] = [];
+  const orders = [usd, gbp, gbx, option, excluded, trade(-10, 110, "2025-01-03")];
+  const cache = {
+    resolve: (source: { ticker: string; currency: string }) => Promise.resolve(`${source.ticker}:${source.currency}`),
+    get: (symbol: string) => {
+      calls.push(symbol);
+      if (symbol === "CSPX.L") return Promise.resolve({
+        ...history("USD", [
+          { date: "2025-01-02", close: 100 },
+          { date: "2025-01-03", close: 110 },
+          { date: "2025-01-06", close: 121 },
+        ]), symbol, instrumentType: "ETF",
+      });
+      const currency = symbol.split(":").at(-1)!;
+      const price = symbol.startsWith("+") ? 1 : currency === "GBX" ? 10000 : 100;
+      return Promise.resolve(history(currency, [
+        { date: "2025-01-02", close: price },
+        { date: "2025-01-03", close: price },
+        { date: "2025-01-06", close: price * 1.1 },
+      ]));
+    },
+  };
+  try {
+    const dataset = await loadDataset(db, {
+      orders,
+      positions: [holding(1, 100, 110, "GBP"), holding(1, 10000, 11000, "GBX"), {
+        ...holding(2, 200, 110), ticker: option.ticker, integrationKind: "f24",
+      }],
+      transactionBuckets: new Map([usd, gbp, gbx, option].map(o => [getOrderTransactionKey(o), "Core"])),
+      bucketName: "Core", now,
+    }, 1, "Person", cache as never, async () => Response.json({ base: "USD", quote: "GBP", rate: .5 }));
+    const benchmark = dataset.benchmark!;
+    // USD 1000 bought at 100; USD 600 bought at 110; all shares now at 121.
+    ok(Math.abs(benchmark.points.at(-1)!.gain - 270) < 1e-8);
+    ok(Math.abs(benchmark.points.at(-1)!.percentage - 16.875) < 1e-8);
+    ok(Math.abs(benchmark.points.find(p => p.date === "2025-01-03")!.percentage - 6.25) < 1e-8);
+    equal(calls.filter(s => s === "CSPX.L").length, 1);
+    ok(!calls.some(s => s.startsWith("OTHER")));
+    // The snapshot is serializable without broker credentials or raw orders.
+    deepStrictEqual(JSON.parse(JSON.stringify(dataset)).benchmark, benchmark);
+  } finally { db.close(); }
+});
+
+Deno.test("switching index replays saved purchases before the visible window and restores frozen curves without fetching", async () => {
+  const db = new Database(":memory:");
+  const originalHistory = { ...history("USD", [
+    { date: "2025-01-02", close: 100 }, { date: "2025-01-03", close: 110 },
+    { date: "2025-01-06", close: 121 },
+  ]), symbol: "CSPX.L", instrumentType: "ETF" };
+  const purchases = [
+    { date: "2025-01-02", amountUsd: 1000 }, { date: "2025-01-03", amountUsd: 1000 },
+  ];
+  const first: AllTimeDataset = {
+    userId: 1, label: "First", bucketName: null, displayCurrency: "EUR", displayRate: .8,
+    points: [{ date: "2025-01-03", percentage: 5, gain: 100 }, { date: "2025-01-06", percentage: 15.5, gain: 310 }],
+    benchmarkPurchases: purchases,
+    benchmark: buildChartBenchmark(originalHistory, purchases, "2025-01-03", "2025-01-06"),
+  };
+  const second: AllTimeDataset = { ...first, userId: 2, label: "Second",
+    benchmarkPurchases: purchases.slice(1),
+    benchmark: buildChartBenchmark(originalHistory, purchases.slice(1), "2025-01-03", "2025-01-06"),
+  };
+  const saved = structuredClone([first, second]);
+  const calls: string[] = [];
+  try {
+    const changed = await switchChartBenchmarks(db, [first, second], "momentum", {
+      get: (symbol) => {
+        calls.push(symbol);
+        return Promise.resolve({ ...originalHistory, symbol, bars: [
+          { date: "2025-01-02", close: 100 }, { date: "2025-01-03", close: 120 },
+          { date: "2025-01-06", close: 150 },
+        ] });
+      },
+    });
+    deepStrictEqual(calls, ["IUMO.L", "IUMO.L"]);
+    deepStrictEqual(changed.map(d => d.points), saved.map(d => d.points));
+    deepStrictEqual(changed.map(d => d.benchmarkPurchases), saved.map(d => d.benchmarkPurchases));
+    equal(changed[0].displayCurrency, "EUR");
+    equal(changed[0].displayRate, .8);
+    ok(Math.abs(changed[0].benchmark!.points[0].percentage - 10) < 1e-8);
+    ok(Math.abs(changed[0].benchmark!.points.at(-1)!.percentage - 37.5) < 1e-8);
+    ok(Math.abs(changed[1].benchmark!.points.at(-1)!.percentage - 25) < 1e-8);
+    const failIfFetched = { get: () => { throw new Error("Unexpected price fetch"); } };
+    const restored = await switchChartBenchmarks(db, JSON.parse(JSON.stringify(changed)), "sp500", failIfFetched);
+    deepStrictEqual(restored.map(d => d.benchmark), saved.map(d => d.benchmark));
+    const repeated = await switchChartBenchmarks(db, restored, "momentum", failIfFetched);
+    deepStrictEqual(repeated.map(d => d.benchmark), changed.map(d => d.benchmark));
+    deepStrictEqual([first, second], saved);
+  } finally { db.close(); }
 });

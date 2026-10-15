@@ -1,0 +1,92 @@
+<div id="sp-two-buys">
+  <h3>Return on total purchase cost</h3>
+  <div class="viz-controls">
+    <label class="form-label">January investment (X₁)
+      <input class="form-control" name="first" type="number" min="0" step="any" value="1000">
+    </label>
+    <label class="form-label">April investment (X₂)
+      <input class="form-control" name="second" type="number" min="0" step="any" value="1000">
+    </label>
+    <label class="form-label">Market change, Jan → Apr (%)
+      <input class="form-control" name="growth1" type="number" min="-99.99" step="any" value="10">
+    </label>
+    <label class="form-label">Market change, Apr → May (%)
+      <input class="form-control" name="growth2" type="number" min="-99.99" step="any" value="10">
+    </label>
+  </div>
+  <div class="validation text-destructive" role="alert" hidden></div>
+  <div class="plot"></div>
+  <div class="result tabular-nums" aria-live="polite"></div>
+  <style>
+    #sp-two-buys .plot { width:100%; }
+    #sp-two-buys svg { display:block; width:100%; }
+    #sp-two-buys svg text { fill:var(--foreground); font-size:12px; }
+  </style>
+  <script>
+    (() => {
+      const root = document.getElementById('sp-two-buys');
+      const host = root.querySelector('.plot');
+      const ns = 'http://www.w3.org/2000/svg';
+      const format = v => `${v>0?'+':''}${v.toFixed(2)}%`;
+      function draw() {
+        host.replaceChildren();
+        const values = ['first','second','growth1','growth2'].map(name => root.querySelector(`[name="${name}"]`).valueAsNumber);
+        const [first, second, growth1, growth2] = values;
+        const error = root.querySelector('.validation');
+        error.hidden = values.every(Number.isFinite) && first >= 0 && second >= 0 && first+second > 0 && growth1 > -100 && growth2 > -100;
+        if (!error.hidden) {
+          error.textContent = 'Use nonnegative amounts with a positive total, and market changes greater than −100%.';
+          root.querySelector('.result').textContent = '';
+          return;
+        }
+        const after = first/(first+second)*growth1;
+        const market = ((1+growth1/100)*(1+growth2/100)-1)*100;
+        const final = first/(first+second)*market + second/(first+second)*growth2;
+        const data = [
+          {date:['Jan 1','First buy'], value:0, label:first>0?'0%':'No holding'},
+          {date:['Apr 1','Before buy'], value:first>0?growth1:0, label:first>0?format(growth1):'No holding'},
+          {date:['Apr 1','Second buy'], value:after, label:format(after)},
+          {date:['May 1','Valuation'], value:final, label:format(final)}
+        ];
+        root.querySelector('.result').textContent = `Your final return: ${format(final)} · Market since Jan 1: ${format(market)}`;
+        const w = host.getBoundingClientRect().width;
+        const h = 310, left = 66, right = w-20, top = 36, bottom = 226;
+        const svg = document.createElementNS(ns,'svg');
+        svg.setAttribute('viewBox',`0 0 ${w} ${h}`);
+        svg.setAttribute('role','img');
+        svg.setAttribute('aria-label',`Return on total purchase cost: ${data.map(d=>d.date.join(' ')+': '+d.label).join('; ')}. Events are equally spaced, not calendar days. Connecting lines are schematic.`);
+        host.append(svg);
+        const add = (tag,attrs,text) => {
+          const el = document.createElementNS(ns,tag);
+          for(const [k,v] of Object.entries(attrs)) el.setAttribute(k,v);
+          if(text !== undefined) el.textContent = text;
+          svg.append(el); return el;
+        };
+        const min = Math.min(...data.map(d=>d.value));
+        const max = Math.max(...data.map(d=>d.value));
+        const span = Math.max(max-min,1);
+        const lo = min-span*.12;
+        const hi = max+span*.25;
+        const x = i => left+10+i*(right-left-20)/3;
+        const y = v => bottom-8-(v-lo)/(hi-lo)*(bottom-top-16);
+        add('rect',{x:left,y:top,width:right-left,height:bottom-top,fill:'none',stroke:'var(--border)','data-chart-frame':''});
+        const ticks = [...new Set([min,(min+max)/2,max])];
+        for(const v of ticks) {
+          add('line',{x1:left,x2:right,y1:y(v),y2:y(v),stroke:'var(--border)'});
+          add('text',{x:left-10,y:y(v)+4,'text-anchor':'end'},`${Number(v.toFixed(1))}%`);
+        }
+        add('text',{x:16,y:(top+bottom)/2,transform:`rotate(-90 16 ${(top+bottom)/2})`,'text-anchor':'middle',class:'axis-title','data-axis':'y'},'Gain / total cost (%)');
+        add('text',{x:(left+right)/2,y:302,'text-anchor':'middle',class:'axis-title','data-axis':'x'},'Purchase / valuation event');
+        add('path',{d:data.map((d,i)=>`${i?'L':'M'}${x(i)} ${y(d.value)}`).join(' '),fill:'none',stroke:'var(--viz-series-1)','stroke-width':3});
+        data.forEach((d,i)=>{
+          add('circle',{cx:x(i),cy:y(d.value),r:4,fill:'var(--viz-series-1)'});
+          add('text',{x:x(i)+(i===3?-2:0),y:y(d.value)-13,'text-anchor':i===3?'end':i===0?'start':'middle'},d.label);
+          d.date.forEach((t,j)=>add('text',{x:x(i),y:246+j*17,'text-anchor':i===3?'end':i===0?'start':'middle'},t));
+        });
+      }
+      root.querySelectorAll('input').forEach(input => input.addEventListener('input',draw));
+      new ResizeObserver(draw).observe(host);
+      draw();
+    })();
+  </script>
+</div>

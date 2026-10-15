@@ -1,6 +1,6 @@
 import type { Chart, ChartDataset, Color, ScriptableContext } from "chart.js";
 import type { AllTimeDataset } from "./alltime_chart.ts";
-import type { ChartBenchmark } from "./chart_benchmark.ts";
+import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
 import {
   chartColors as colors,
   chartFont,
@@ -46,11 +46,10 @@ function money(value: number, currency: string) {
 
 export function renderAllTimeDatasets(
   datasets: AllTimeDataset[],
-  benchmark?: ChartBenchmark,
 ): Uint8Array {
   if (
     !datasets.length || datasets.some((dataset) => !dataset.points.length) ||
-    (benchmark && !benchmark.points.length)
+    datasets.some((dataset) => dataset.benchmark && !dataset.benchmark.points.length)
   ) {
     throw new Error("No performance points to chart.");
   }
@@ -72,6 +71,8 @@ export function renderAllTimeDatasets(
     Math.max(12, Math.min(32, months * 0.6 + 1.4)) * 200,
   );
   const single = datasets.length === 1;
+  const hasBenchmarks = datasets.some((dataset) => dataset.benchmark);
+  const colorBySign = single && !hasBenchmarks;
   const monthTicks: { value: number }[] = [];
   for (
     let date = Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1);
@@ -81,7 +82,7 @@ export function renderAllTimeDatasets(
     const current = new Date(date);
     date = Date.UTC(current.getUTCFullYear(), current.getUTCMonth() + 1, 1);
   }
-  const legendCount = datasets.length + (benchmark ? 1 : 0);
+  const legendCount = datasets.length + datasets.filter((dataset) => dataset.benchmark).length;
   const legendColumns = legendCount === 1 ? 1 : 2;
   const legendHeight = Math.ceil(legendCount / legendColumns) * 60;
   return renderChart(width, 1400, {
@@ -95,7 +96,7 @@ export function renderAllTimeDatasets(
             y: point.percentage,
           })),
           parsing: false,
-          borderColor: single
+          borderColor: colorBySign
             ? ({ chart }: ScriptableContext<"line">) => performanceColor(chart)
             : palette[index % palette.length],
           borderWidth: 4.4,
@@ -106,32 +107,31 @@ export function renderAllTimeDatasets(
           pointRadius: ({ dataIndex }: ScriptableContext<"line">) =>
             dataIndex === dataset.points.length - 1 ? 5 : 0,
           pointBorderWidth: 0,
-          pointBackgroundColor: single
+          pointBackgroundColor: colorBySign
             ? ({ parsed }: ScriptableContext<"line">) =>
               (parsed.y ?? 0) >= 0 ? colors.green : colors.red
             : palette[index % palette.length],
-          fill: single
+          fill: colorBySign
             ? { target: "origin", above: "#63D8AB19", below: "#FA899119" }
             : false,
         })),
-        ...(benchmark
-          ? [{
-            label: benchmark.label,
-            data: benchmark.points.map((point) => ({
+        ...datasets.flatMap<ChartDataset<"line">>((dataset, index) =>
+          dataset.benchmark ? [{
+            label: `${dataset.label} · ${dataset.benchmark.label}`,
+            data: dataset.benchmark.points.map((point) => ({
               x: Date.parse(point.date),
               y: point.percentage,
             })),
             parsing: false as const,
-            borderColor: colors.orange,
+            borderColor: `${palette[index % palette.length]}80`,
             borderWidth: 4.4,
+            borderDash: [18, 12],
             borderCapStyle: "round" as const,
             borderJoinStyle: "round" as const,
             // Join actual daily closes directly; no curve smoothing.
             tension: 0,
-            pointRadius: ({ dataIndex }: ScriptableContext<"line">) =>
-              dataIndex === benchmark.points.length - 1 ? 5 : 0,
+            pointRadius: 0,
             pointBorderWidth: 0,
-            pointBackgroundColor: colors.orange,
             fill: false as const,
           }]
           : []),
@@ -199,9 +199,9 @@ export function renderAllTimeDatasets(
           ctx.save();
           ctx.font = `30px ${chartFont}`;
           ctx.textBaseline = "middle";
-          const entries = datasets.map((dataset, index) => {
+          const entries = datasets.flatMap((dataset, index) => {
             const last = dataset.points[dataset.points.length - 1];
-            const color = single
+            const color = colorBySign
               ? last.percentage >= 0 ? colors.green : colors.red
               : palette[index % palette.length];
             const name = dataset.label +
@@ -213,23 +213,20 @@ export function renderAllTimeDatasets(
             const label = `${name}  ${last.percentage >= 0 ? "+" : ""}${
               last.percentage.toFixed(2)
             }%  (${money(last.gain * rate, currency)})`;
-            return { color, label };
+            const entries = [{ color, label, dashed: false }];
+            if (dataset.benchmark) {
+              const last = dataset.benchmark.points.at(-1)!;
+              entries.push({
+                color: `${palette[index % palette.length]}80`,
+                label: `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${last.percentage >= 0 ? "+" : ""}${
+                  last.percentage.toFixed(2)
+                }%  (${money(last.gain * rate, currency)})`,
+                dashed: true,
+              });
+            }
+            return entries;
           });
-          if (benchmark) {
-            const last = benchmark.points.at(-1)!;
-            const since = benchmark.points[0].date > datasets.map((d) =>
-                d.points[0].date
-              ).sort()[0]
-              ? ` · since ${benchmark.points[0].date}`
-              : "";
-            entries.push({
-              color: colors.orange,
-              label: `${benchmark.label}  ${last.percentage >= 0 ? "+" : ""}${
-                last.percentage.toFixed(2)
-              }% · ${benchmark.asOf} close${since}`,
-            });
-          }
-          entries.forEach(({ color, label }, index) => {
+          entries.forEach(({ color, label, dashed }, index) => {
             const column = index % legendColumns;
             const row = Math.floor(index / legendColumns);
             const x = chartArea.left +
@@ -237,6 +234,7 @@ export function renderAllTimeDatasets(
             const y = chart.height - legendHeight - 38 + row * 60;
             ctx.strokeStyle = color;
             ctx.lineWidth = 4.4;
+            ctx.setLineDash(dashed ? [18, 12] : []);
             ctx.beginPath();
             ctx.moveTo(x, y);
             ctx.lineTo(x + 45, y);

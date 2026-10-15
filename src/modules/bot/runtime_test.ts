@@ -200,3 +200,34 @@ Deno.test("fatal polling errors reject the runner task", async () => {
     console.error = originalError;
   }
 });
+
+Deno.test("index and Compare callbacks reach the chart lock without queuing behind the same user", async () => {
+  const release = deferred();
+  const responsive = deferred();
+  const completed = deferred();
+  const started: number[] = [];
+  const updates: Update[] = ["chart_index:one:sp500", "chart_compare:one", "chart_index:one:sp500"].map((data, i) => ({
+    update_id: i + 1,
+    callback_query: {
+      id: String(i), data, chat_instance: "one",
+      from: { id: 1, is_bot: false, first_name: "User" },
+    },
+  }));
+  const bot = harness(updates);
+  bot.callbackQuery(/^chart_/, async ctx => {
+    started.push(ctx.update.update_id);
+    if (ctx.update.update_id === 1) {
+      await release.promise;
+      completed.resolve();
+    } else if (started.length === 3) responsive.resolve();
+  });
+  const runner = runBot(bot);
+  try {
+    await within(responsive.promise);
+    deepStrictEqual(started, [1, 2, 3]);
+  } finally {
+    release.resolve();
+    await within(completed.promise);
+    await runner.stop();
+  }
+});

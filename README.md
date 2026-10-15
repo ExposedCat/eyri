@@ -368,19 +368,34 @@ adjust historical quantities and unit costs. Today's endpoint uses broker prices
 and book cost. All amounts use the latest exchange rates consistently across
 the series, excluding historical FX effects, dividends and fees.
 
-The chart is sent as a Telegram photo using the portfolio's dark background,
-mint gains and pink losses. Every month has a label and a vertical grid line;
-the plot and participant legend fill the image, with no header or footer.
-An orange **S&P 500 (CSPX.L)** line shows the USD buy-and-hold return of the
-accumulating iShares ETF on the London Stock Exchange, rebased to 0% at the
-chart's starting date. It uses cached daily closes, carries the last close over
-non-trading days, and shows the latest close's date in the legend. If the portfolio
-starts before the ETF's available history (September 2010), the benchmark begins
-at its first available close. This is a market-return reference, not a simulation
-of the portfolio's deposits and withdrawals.
+The chart is sent as a Telegram photo using the portfolio's dark background.
+Every participant keeps one color for their solid actual-performance line and a
+semi-transparent dashed **if S&P 500** line. The dashed line invests each selected
+purchase's amount into fractional shares of **CSPX.L**, the accumulating USD iShares
+S&P 500 ETF, using the closing price on that date (the preceding close on weekends
+and holidays). It then holds those hypothetical shares, including when the actual
+instrument was sold; each later purchase adds another hypothetical investment.
+Its percentage is hypothetical gain divided by cumulative purchase cost. Zero-cost
+awards add no hypothetical investment. Purchase costs use the same latest USD FX
+rates as the actual curve, including conversion from GBX; fees are excluded.
+The two curves and monetary gains appear together in the participant legend.
+The **S&P 500** button beside Compare switches the index to **Momentum**, using
+the USD **IUMO.L** ETF with the same personal purchase schedule. Clicking
+**Momentum** switches back to S&P 500. The button names the current selection,
+changes every participant's benchmark together, and also appears on its own in DMs.
+Joining an existing chart uses that chart's selected index.
+
+Each personal benchmark and its USD purchase schedule are saved with the owner's
+published snapshot. Switching indices never refetches broker accounts; once
+calculated, both index curves are retained so toggling back restores the same snapshot.
+Comparisons clip them to the original chart window while retaining the effect of purchases made
+before that window. Missing history rejects the chart rather than moving purchases
+to a different date; older charts without personal benchmarks must be recreated
+with `/chart`.
 In group chats, **Compare** adds the person clicking the button to that same graph,
 up to six participants. DMs have no Compare button. While adding a participant,
-the button shows **Adding NAME...** and further clicks are rejected until it finishes.
+the button shows **Adding NAME...** and further clicks on either button are rejected
+until it finishes. Index changes show **Switching...** and share the same lock.
 Comparisons keep the original chart's start and end dates, trimming added histories
 to that span without rebasing their returns. A single chart displays monetary gains in the author's selected
 currency. Compare switches all participants to USD, including the original chart;

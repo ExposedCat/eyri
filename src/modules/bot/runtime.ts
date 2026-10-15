@@ -44,7 +44,7 @@ export function setupBotRuntime(bot: Bot) {
       if (ctx.hasCommand("rsu") && !/^\S+\s+\S/.test(ctx.message?.text ?? "")) {
         return [];
       }
-      if (ctx.callbackQuery?.data?.startsWith("chart_compare:")) return [];
+      if (/^chart_(compare|index):/.test(ctx.callbackQuery?.data ?? "")) return [];
       return [`user:${ctx.from.id}`];
     }),
   );

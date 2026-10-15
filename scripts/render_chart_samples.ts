@@ -38,28 +38,26 @@ const portfolio: AllTimeDataset = {
   bucketName: null,
   points,
 };
-const benchmark = Deno.args.includes("--live-benchmark")
-  ? buildChartBenchmark(
-    await fetchYahooHistory(
-      "CSPX.L",
-      dayAfter(points[0].date, -7),
-      dayAfter(points.at(-1)!.date),
-    ),
-    points[0].date,
-    points.at(-1)!.date,
-  )
+const benchmarkHistory = Deno.args.includes("--live-benchmark")
+  ? await fetchYahooHistory("CSPX.L", dayAfter(points[0].date, -7), dayAfter(points.at(-1)!.date))
   : {
-    label: "Sample S&P 500 (CSPX.L)",
-    symbol: "CSPX.L",
-    asOf: points.at(-1)!.date,
-    points: points.map((point, index) => ({
+    symbol: "CSPX.L", currency: "USD", instrumentType: "ETF", splits: [],
+    bars: points.map((point, index) => ({
       date: point.date,
-      percentage: index / 372 * 14 + Math.sin(index / 42) * 3,
+      close: 100 * (1 + (index / 372 * 14 + Math.sin(index / 42) * 3) / 100),
     })),
   };
+const sampleBenchmark = (firstAmount: number, laterAmount: number) => {
+  const result = buildChartBenchmark(benchmarkHistory, points.filter((_, i) => i % 31 === 0)
+    .map((p, i) => ({ date: p.date, amountUsd: i === 0 ? firstAmount : laterAmount })),
+    points[0].date, points.at(-1)!.date);
+  if (!Deno.args.includes("--live-benchmark")) result.label = "Sample if S&P 500";
+  return result;
+};
+portfolio.benchmark = sampleBenchmark(10000, 3000);
 await Deno.writeFile(
   `${directory}/alltime.png`,
-  renderAllTimeDatasets([portfolio], benchmark),
+  renderAllTimeDatasets([portfolio]),
 );
 await Deno.writeFile(
   `${directory}/comparison.png`,
@@ -69,13 +67,14 @@ await Deno.writeFile(
       ...portfolio,
       userId: 1,
       label: "Sample comparison",
+      benchmark: sampleBenchmark(30000, 500),
       points: points.map((point, index) => ({
         ...point,
         percentage: (index / 372) * 12 + Math.sin(index / 35) * 4,
         gain: ((index / 372) * 12 + Math.sin(index / 35) * 4) * 700,
       })),
     },
-  ], benchmark),
+  ]),
 );
 await Deno.writeFile(
   `${directory}/portfolio.png`,

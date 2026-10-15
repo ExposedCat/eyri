@@ -4,7 +4,8 @@ import { Bot, InlineKeyboard } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
 import { ensureSchema } from "../database/setup.ts";
 import { createChartComposer, readChartSession } from "./chart_composer.ts";
-import type { AllTimeDataset } from "./alltime_chart.ts";
+import { type AllTimeDataset, switchChartBenchmarks } from "./alltime_chart.ts";
+import { dayAfter } from "../market_data/history.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
 import { readYahooMapping } from "../market_data/mappings.ts";
 import { createBucket, transferBucketAccess } from "../database/bucket.ts";
@@ -18,6 +19,9 @@ function harness(db: Database, currencies = new Map<number, string>()) {
   const apiFailures = new Set<string>();
   const datasetGates = new Map<number, () => Promise<void>>();
   const pointsByUser = new Map<number, AllTimeDataset["points"]>();
+  const benchmarkRequests: { symbol: string; start: string; end: string }[] = [];
+  const benchmarkFailures = new Set<string>();
+  const benchmarkGates = new Map<string, () => Promise<void>>();
   const invalidSymbols = new Set<string>();
   const validatedSymbols: string[] = [];
   const bot = new Bot<CustomContext>("123:test", {
@@ -76,17 +80,33 @@ function harness(db: Database, currencies = new Map<number, string>()) {
           ]),
         );
       }
+      const points = pointsByUser.get(ctx.from!.id) ?? [{ date: "2025-01-01", percentage: 0, gain: 0 }, {
+        date: "2025-01-02", percentage: 10, gain: 100,
+      }];
       return Promise.resolve({
         userId: ctx.from!.id,
         label: ctx.from!.first_name,
         bucketName,
-        points: pointsByUser.get(ctx.from!.id) ?? [{ date: "2025-01-01", percentage: 0, gain: 0 }, {
-          date: "2025-01-02",
-          percentage: 10,
-          gain: 100,
-        }],
+        points,
+        benchmarkPurchases: points.map((p, i) => ({ date: p.date, amountUsd: i === 0 ? 1000 : 100 })),
+        benchmark: {
+          label: "If S&P 500 (CSPX.L)", symbol: "CSPX.L",
+          asOf: points.at(-1)!.date,
+          points: points.map((p) => ({ ...p, percentage: p.percentage / 2, gain: p.gain / 2 })),
+        },
       });
     },
+    switchBenchmarks: (db, datasets, index) => switchChartBenchmarks(db, datasets, index, {
+      get: async (symbol, start, end) => {
+        benchmarkRequests.push({ symbol, start, end: end! });
+        await benchmarkGates.get(symbol)?.();
+        if (benchmarkFailures.has(symbol)) throw new Error("Unavailable");
+        return {
+          symbol, currency: "USD", instrumentType: "ETF", splits: [],
+          bars: [{ date: start, close: 100 }, { date: dayAfter(end!, -1), close: 120 }],
+        };
+      },
+    }),
     render: (_db, datasets) => {
       rendered.push(datasets.map((d) => d.userId));
       renderedDatasets.push(structuredClone(datasets));
@@ -115,6 +135,9 @@ function harness(db: Database, currencies = new Map<number, string>()) {
     apiFailures,
     datasetGates,
     pointsByUser,
+    benchmarkRequests,
+    benchmarkFailures,
+    benchmarkGates,
     invalidSymbols,
     validatedSymbols,
     command: (text = "/chart", userId = 1, chatId = -1001) =>
@@ -174,6 +197,17 @@ function callback(
   }).inline_keyboard[0][0].callback_data;
   return data;
 }
+function chartKeyboard(data: string, compareLabel: string | null = "Compare", index = "sp500") {
+  const id = data.split(":")[1];
+  const keyboard = new InlineKeyboard();
+  if (compareLabel) keyboard.text(compareLabel, `chart_compare:${id}`);
+  return keyboard.text(index === "sp500" ? "S&P 500" : "Momentum", `chart_index:${id}:${index}`);
+}
+function indexCallback(calls: { method: string; payload: Record<string, unknown> }[]) {
+  const call = calls.filter(c => c.method === "sendPhoto" || c.method === "editMessageMedia").at(-1)!;
+  const rows = (call.payload.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard;
+  return rows.flat().find(button => button.callback_data.startsWith("chart_index:"))!.callback_data;
+}
 
 Deno.test("/chart sends one photo with Compare and compares only clickers' own accounts", async () => {
   const db = new Database(":memory:");
@@ -182,6 +216,7 @@ Deno.test("/chart sends one photo with Compare and compares only clickers' own a
     const h = harness(db);
     await h.command();
     const data = callback(h.calls);
+    deepStrictEqual(h.calls.find(c => c.method === "sendPhoto")!.payload.reply_markup, chartKeyboard(data));
     equal(h.calls.filter((c) => c.method === "sendPhoto").length, 1);
     equal(h.calls.filter((c) => c.method === "sendDocument").length, 0);
     ok(new TextEncoder().encode(data).length <= 64);
@@ -203,16 +238,22 @@ Deno.test("/chart sends one photo with Compare and compares only clickers' own a
   }
 });
 
-Deno.test("DM charts have no Compare button or session, and old DM buttons cannot add participants", async () => {
+Deno.test("DM charts show only the index toggle and never accept Compare clicks", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
     const h = harness(db);
     await h.command("/chart", 1, 1);
     const photo = h.calls.find((c) => c.method === "sendPhoto")!;
-    equal(photo.payload.reply_markup, undefined);
-    equal(readChartSession(db, "missing", 1, 100), null);
-    equal((db.prepare("SELECT COUNT(*) AS count FROM alltime_chart_sessions").get() as { count: number }).count, 0);
+    const toggle = indexCallback(h.calls);
+    deepStrictEqual(photo.payload.reply_markup, chartKeyboard(toggle, null));
+    ok(new TextEncoder().encode(toggle).length <= 64);
+    ok(readChartSession(db, toggle.split(":")[1], 1, 100));
+    await h.compare(toggle, 1, 1);
+    deepStrictEqual(h.calls.filter(c => c.method === "editMessageMedia").at(-1)!.payload.reply_markup,
+      chartKeyboard(toggle, null, "momentum"));
+    deepStrictEqual(h.fetched, [1]);
+    deepStrictEqual(h.benchmarkRequests.map(r => r.symbol), ["IUMO.L"]);
 
     await h.command();
     const data = callback(h.calls.filter((c) => c !== photo));
@@ -252,6 +293,9 @@ Deno.test("Compare keeps the original date range and point values across older/n
     ]);
     await h.compare(data);
     deepStrictEqual(h.renderedDatasets[0].map((d) => d.points), [original, inRange]);
+    deepStrictEqual(h.renderedDatasets[0][0].benchmark, first.renderedDatasets[0][0].benchmark);
+    deepStrictEqual(h.renderedDatasets[0][1].benchmark!.points,
+      inRange.map(p => ({ ...p, percentage: p.percentage / 2, gain: p.gain / 2 })));
     const resumed = harness(db);
     const laterStart = [
       { date: "2025-07-01", percentage: 0, gain: 0 },
@@ -263,6 +307,10 @@ Deno.test("Compare keeps the original date range and point values across older/n
     ]);
     await resumed.compare(data, 3);
     deepStrictEqual(resumed.renderedDatasets[0].map((d) => d.points), [original, inRange, laterStart]);
+    deepStrictEqual(resumed.renderedDatasets[0].slice(0, 2).map(d => d.benchmark),
+      h.renderedDatasets[0].map(d => d.benchmark));
+    deepStrictEqual(resumed.renderedDatasets[0][2].benchmark!.points,
+      laterStart.map(p => ({ ...p, percentage: p.percentage / 2, gain: p.gain / 2 })));
     const stored = JSON.parse(readChartSession(db, data.split(":")[1], -1001, 100)!.datasets);
     deepStrictEqual(stored, resumed.renderedDatasets[0]);
   } finally {
@@ -301,7 +349,7 @@ Deno.test("failed comparison media upload restores Compare and leaves the saved 
     await h.compare(data);
     equal(readChartSession(db, data.split(":")[1], -1001, 100)!.datasets, before);
     const restored = h.calls.filter((c) => c.method === "editMessageReplyMarkup").at(-1)!;
-    deepStrictEqual(restored.payload.reply_markup, new InlineKeyboard().text("Compare", data));
+    deepStrictEqual(restored.payload.reply_markup, chartKeyboard(data));
     h.apiFailures.delete("editMessageMedia");
     await h.compare(data);
     const saved = JSON.parse(readChartSession(db, data.split(":")[1], -1001, 100)!.datasets);
@@ -329,6 +377,25 @@ Deno.test("Compare survives composer restart and rejects forwarded/cross-chat or
   }
 });
 
+Deno.test("legacy comparison sessions require a new chart without fetching any participant's accounts", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const first = harness(db);
+    await first.command();
+    const data = callback(first.calls);
+    const id = data.split(":")[1];
+    const datasets = JSON.parse(readChartSession(db, id, -1001, 100)!.datasets) as AllTimeDataset[];
+    delete datasets[0].benchmark;
+    db.prepare("UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?")
+      .run(JSON.stringify(datasets), id);
+    const resumed = harness(db);
+    await resumed.compare(data);
+    deepStrictEqual(resumed.fetched, []);
+    match(String(resumed.calls.at(-1)!.payload.text), /Create a new chart with \/chart/);
+  } finally { db.close(); }
+});
+
 Deno.test("Compare shows the pending name, rejects concurrent clicks without queuing, and removes Compare at six", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
@@ -345,22 +412,28 @@ Deno.test("Compare shows the pending name, rejects concurrent clicks without que
     const adding = h.compare(data, 2);
     await started.promise;
     const busy = h.calls.find((c) => c.method === "editMessageReplyMarkup")!;
-    deepStrictEqual(busy.payload.reply_markup, new InlineKeyboard().text("Adding User 2...", data));
+    deepStrictEqual(busy.payload.reply_markup, chartKeyboard(data, "Adding User 2..."));
     await Promise.all([h.compare(data, 2), h.compare(data, 3)]);
+    await h.compare(indexCallback(h.calls), 1);
+    equal(h.benchmarkRequests.length, 0);
     deepStrictEqual(h.fetched, [1, 2]);
-    match(String(h.calls.at(-1)!.payload.text), /being added/);
+    match(String(h.calls.at(-1)!.payload.text), /updating/);
     finish.resolve();
     await adding;
     deepStrictEqual(h.rendered.at(-1), [1, 2]);
     const restored = h.calls.find((c) => c.method === "editMessageMedia")!;
-    deepStrictEqual(restored.payload.reply_markup, new InlineKeyboard().text("Compare", data));
+    deepStrictEqual(restored.payload.reply_markup, chartKeyboard(data));
     await h.compare(data, 3);
     await h.compare(data, 4);
     await h.compare(data, 5);
     await h.compare(data, 6);
     deepStrictEqual(h.rendered.at(-1), [1, 2, 3, 4, 5, 6]);
     const last = h.calls.filter((c) => c.method === "editMessageMedia").at(-1)!;
-    deepStrictEqual(last.payload.reply_markup, { inline_keyboard: [] });
+    deepStrictEqual(last.payload.reply_markup, chartKeyboard(data, null));
+    await h.compare(indexCallback(h.calls), 1);
+    deepStrictEqual(h.renderedDatasets.at(-1)!.map(d => d.benchmark!.symbol), Array(6).fill("IUMO.L"));
+    deepStrictEqual(h.calls.filter(c => c.method === "editMessageMedia").at(-1)!.payload.reply_markup,
+      chartKeyboard(data, null, "momentum"));
     await h.compare(data, 7);
     equal(h.fetched.length, 6);
     match(String(h.calls.at(-1)!.payload.text), /six portfolios/);
@@ -443,7 +516,7 @@ Deno.test("failed Compare sends an error and preserves the complete existing ima
     );
     h.failures.delete(2);
     const restored = h.calls.filter((c) => c.method === "editMessageReplyMarkup").at(-1)!;
-    deepStrictEqual(restored.payload.reply_markup, new InlineKeyboard().text("Compare", data));
+    deepStrictEqual(restored.payload.reply_markup, chartKeyboard(data));
     await h.compare(data, 2);
     equal(h.calls.filter((c) => c.method === "editMessageMedia").length, 1);
   } finally {
@@ -526,4 +599,162 @@ Deno.test("Compare changes a preferred-currency chart to USD while preserving or
   } finally {
     db.close();
   }
+});
+
+Deno.test("index toggle switches every participant, survives restart, and restores frozen S&P curves", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const compare = callback(h.calls);
+    await h.compare(compare);
+    const before = JSON.parse(readChartSession(db, compare.split(":")[1], -1001, 100)!.datasets) as AllTimeDataset[];
+    const toggle = indexCallback(h.calls);
+    const resumed = harness(db);
+    await resumed.compare(toggle, 3, -1002);
+    await resumed.compare(toggle, 3, -1001, 101);
+    equal(resumed.benchmarkRequests.length, 0);
+    await resumed.compare(toggle, 3);
+    deepStrictEqual(resumed.fetched, []);
+    const changed = resumed.renderedDatasets[0];
+    deepStrictEqual(changed.map(d => d.benchmark!.symbol), ["IUMO.L", "IUMO.L"]);
+    deepStrictEqual(changed.map(d => d.points), before.map(d => d.points));
+    deepStrictEqual(changed.map(d => d.benchmarkPurchases), before.map(d => d.benchmarkPurchases));
+    deepStrictEqual(resumed.benchmarkRequests.map(r => r.symbol), ["IUMO.L", "IUMO.L"]);
+    const media = resumed.calls.find(c => c.method === "editMessageMedia")!;
+    deepStrictEqual(media.payload.reply_markup, chartKeyboard(compare, "Compare", "momentum"));
+    const edits = resumed.calls.filter(c => c.method === "editMessageMedia").length;
+    await resumed.compare(toggle, 3);
+    equal(resumed.calls.filter(c => c.method === "editMessageMedia").length, edits);
+    match(String(resumed.calls.at(-1)!.payload.text), /already changed/);
+    const restart = harness(db);
+    await restart.compare(indexCallback(resumed.calls), 3);
+    deepStrictEqual(restart.fetched, []);
+    deepStrictEqual(restart.benchmarkRequests, []);
+    deepStrictEqual(restart.renderedDatasets[0].map(d => d.benchmark), before.map(d => d.benchmark));
+    deepStrictEqual(restart.calls.find(c => c.method === "editMessageMedia")!.payload.reply_markup, chartKeyboard(compare));
+  } finally { db.close(); }
+});
+
+Deno.test("index changes preserve single-chart preferred currency and DM keyboard after restart", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const first = harness(db, new Map([[1, "EUR"]]));
+    await first.command("/chart", 1, 1);
+    const before = first.renderedDatasets[0][0];
+    const resumed = harness(db);
+    await resumed.compare(indexCallback(first.calls), 1, 1);
+    const changed = resumed.renderedDatasets[0][0];
+    equal(changed.displayCurrency, "EUR");
+    equal(changed.displayRate, .8);
+    deepStrictEqual(changed.points, before.points);
+    equal(changed.benchmark!.symbol, "IUMO.L");
+    deepStrictEqual(resumed.fetched, []);
+    deepStrictEqual(resumed.calls.find(c => c.method === "editMessageMedia")!.payload.reply_markup,
+      chartKeyboard(indexCallback(first.calls), null, "momentum"));
+  } finally { db.close(); }
+});
+
+Deno.test("a participant joining a Momentum chart uses Momentum and keeps the original window", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const compare = callback(h.calls);
+    await h.compare(indexCallback(h.calls), 1);
+    const original = structuredClone(h.renderedDatasets.at(-1)![0]);
+    const resumed = harness(db);
+    resumed.pointsByUser.set(2, [
+      { date: "2020-01-01", percentage: 0, gain: 0 },
+      { date: "2025-01-01", percentage: 10, gain: 100 },
+      { date: "2025-01-02", percentage: 12, gain: 120 },
+      { date: "2026-10-15", percentage: 15, gain: 150 },
+    ]);
+    await resumed.compare(compare);
+    deepStrictEqual(resumed.fetched, [2]);
+    const datasets = resumed.renderedDatasets[0];
+    deepStrictEqual(datasets[0], original);
+    deepStrictEqual(datasets.map(d => d.benchmark!.symbol), ["IUMO.L", "IUMO.L"]);
+    deepStrictEqual(datasets[1].points.map(p => p.date), ["2025-01-01", "2025-01-02"]);
+    deepStrictEqual(datasets[1].benchmark!.points.map(p => p.date), ["2025-01-01", "2025-01-02"]);
+    equal(datasets[1].benchmarkSnapshots!.sp500!.points[0].date, "2025-01-01");
+    equal(datasets[1].benchmarkPurchases![0].date, "2020-01-01");
+    equal(resumed.benchmarkRequests[0].symbol, "IUMO.L");
+    equal(resumed.benchmarkRequests[0].start, "2019-12-25");
+    equal(resumed.benchmarkRequests[0].end, "2025-01-03");
+  } finally { db.close(); }
+});
+
+Deno.test("index switching locks both buttons and failures restore the original chart and keyboard", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const compare = callback(h.calls);
+    const toggle = indexCallback(h.calls);
+    const before = readChartSession(db, compare.split(":")[1], -1001, 100)!.datasets;
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    h.benchmarkGates.set("IUMO.L", () => { started.resolve(); return finish.promise; });
+    h.benchmarkFailures.add("IUMO.L");
+    const updating = h.compare(toggle, 1);
+    await started.promise;
+    const busy = h.calls.find(c => c.method === "editMessageReplyMarkup")!;
+    deepStrictEqual(busy.payload.reply_markup, new InlineKeyboard().text("Compare", compare).text("Switching...", toggle));
+    await Promise.all([h.compare(compare), h.compare(toggle)]);
+    deepStrictEqual(h.fetched, [1]);
+    equal(h.benchmarkRequests.length, 1);
+    match(String(h.calls.at(-1)!.payload.text), /updating/);
+    finish.resolve();
+    await updating;
+    equal(readChartSession(db, compare.split(":")[1], -1001, 100)!.datasets, before);
+    equal(h.calls.filter(c => c.method === "editMessageMedia").length, 0);
+    deepStrictEqual(h.calls.filter(c => c.method === "editMessageReplyMarkup").at(-1)!.payload.reply_markup, chartKeyboard(compare));
+    match(String(h.calls.at(-1)!.payload.text), /Momentum.*unavailable/);
+    h.benchmarkFailures.clear();
+    await h.compare(toggle, 1);
+    equal(h.renderedDatasets.at(-1)![0].benchmark!.symbol, "IUMO.L");
+  } finally { db.close(); }
+});
+
+Deno.test("failed toggle media upload preserves the session and can be retried", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const compare = callback(h.calls);
+    const toggle = indexCallback(h.calls);
+    const before = readChartSession(db, compare.split(":")[1], -1001, 100)!.datasets;
+    h.apiFailures.add("editMessageMedia");
+    await h.compare(toggle, 1);
+    equal(readChartSession(db, compare.split(":")[1], -1001, 100)!.datasets, before);
+    deepStrictEqual(h.calls.filter(c => c.method === "editMessageReplyMarkup").at(-1)!.payload.reply_markup, chartKeyboard(compare));
+    h.apiFailures.clear();
+    await h.compare(toggle, 1);
+    const saved = JSON.parse(readChartSession(db, compare.split(":")[1], -1001, 100)!.datasets) as AllTimeDataset[];
+    equal(saved[0].benchmark!.symbol, "IUMO.L");
+  } finally { db.close(); }
+});
+
+Deno.test("index switching asks to recreate older charts lacking saved purchase amounts", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const compare = callback(h.calls);
+    const id = compare.split(":")[1];
+    const saved = JSON.parse(readChartSession(db, id, -1001, 100)!.datasets) as AllTimeDataset[];
+    delete saved[0].benchmarkPurchases;
+    db.prepare("UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?").run(JSON.stringify(saved), id);
+    await h.compare(indexCallback(h.calls));
+    match(String(h.calls.at(-1)!.payload.text), /Create a new chart/);
+    equal(h.benchmarkRequests.length, 0);
+    deepStrictEqual(h.fetched, [1]);
+  } finally { db.close(); }
 });
