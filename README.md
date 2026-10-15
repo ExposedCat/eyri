@@ -378,8 +378,11 @@ non-trading days, and shows the latest close's date in the legend. If the portfo
 starts before the ETF's available history (September 2010), the benchmark begins
 at its first available close. This is a market-return reference, not a simulation
 of the portfolio's deposits and withdrawals.
-**Compare** adds the person clicking the button to that same graph, up to six
-participants. A single chart displays monetary gains in the author's selected
+In group chats, **Compare** adds the person clicking the button to that same graph,
+up to six participants. DMs have no Compare button. While adding a participant,
+the button shows **Adding NAME...** and further clicks are rejected until it finishes.
+Comparisons keep the original chart's start and end dates, trimming added histories
+to that span without rebasing their returns. A single chart displays monetary gains in the author's selected
 currency. Compare switches all participants to USD, including the original chart;
 percentages and published snapshots are preserved without refetching their accounts.
 Published curves remain snapshots of what their owners shared;

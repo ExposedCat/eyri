@@ -1,6 +1,6 @@
 import { deepStrictEqual, equal, match, ok } from "node:assert/strict";
 import { Database } from "@db/sqlite";
-import { Bot } from "grammy";
+import { Bot, InlineKeyboard } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
 import { ensureSchema } from "../database/setup.ts";
 import { createChartComposer, readChartSession } from "./chart_composer.ts";
@@ -15,6 +15,9 @@ function harness(db: Database, currencies = new Map<number, string>()) {
   const rendered: number[][] = [];
   const renderedDatasets: AllTimeDataset[][] = [];
   const failures = new Set<number>();
+  const apiFailures = new Set<string>();
+  const datasetGates = new Map<number, () => Promise<void>>();
+  const pointsByUser = new Map<number, AllTimeDataset["points"]>();
   const invalidSymbols = new Set<string>();
   const validatedSymbols: string[] = [];
   const bot = new Bot<CustomContext>("123:test", {
@@ -35,6 +38,7 @@ function harness(db: Database, currencies = new Map<number, string>()) {
       method,
       payload: payload as unknown as Record<string, unknown>,
     });
+    if (apiFailures.has(method)) return Promise.reject(new Error(`${method} failed`));
     return Promise.resolve({
       ok: true,
       result: method === "answerCallbackQuery" ? true : {
@@ -60,8 +64,9 @@ function harness(db: Database, currencies = new Map<number, string>()) {
   });
   const composer = createChartComposer({
     request: async () => Response.json({ base: "USD", quote: "EUR", rate: .8 }),
-    dataset: (ctx, bucketName) => {
+    dataset: async (ctx, bucketName) => {
       fetched.push(ctx.from!.id);
+      await datasetGates.get(ctx.from!.id)?.();
       if (failures.has(ctx.from!.id)) {
         return Promise.reject(
           new HistoricalDataError([
@@ -75,7 +80,7 @@ function harness(db: Database, currencies = new Map<number, string>()) {
         userId: ctx.from!.id,
         label: ctx.from!.first_name,
         bucketName,
-        points: [{ date: "2025-01-01", percentage: 0, gain: 0 }, {
+        points: pointsByUser.get(ctx.from!.id) ?? [{ date: "2025-01-01", percentage: 0, gain: 0 }, {
           date: "2025-01-02",
           percentage: 10,
           gain: 100,
@@ -107,6 +112,9 @@ function harness(db: Database, currencies = new Map<number, string>()) {
     rendered,
     renderedDatasets,
     failures,
+    apiFailures,
+    datasetGates,
+    pointsByUser,
     invalidSymbols,
     validatedSymbols,
     command: (text = "/chart", userId = 1, chatId = -1001) =>
@@ -115,7 +123,9 @@ function harness(db: Database, currencies = new Map<number, string>()) {
         message: {
           message_id: updateId,
           date: 1,
-          chat: { id: chatId, type: "supergroup", title: "Investing" },
+          chat: chatId > 0
+            ? { id: chatId, type: "private", first_name: `User ${chatId}` }
+            : { id: chatId, type: "supergroup", title: "Investing" },
           from: from(userId),
           text,
           entities: [{
@@ -141,7 +151,9 @@ function harness(db: Database, currencies = new Map<number, string>()) {
           message: {
             message_id: messageId,
             date: 1,
-            chat: { id: chatId, type: "supergroup", title: "Investing" },
+            chat: chatId > 0
+              ? { id: chatId, type: "private", first_name: `User ${chatId}` }
+              : { id: chatId, type: "supergroup", title: "Investing" },
             photo: [{
               file_id: "file",
               file_unique_id: "unique",
@@ -191,6 +203,114 @@ Deno.test("/chart sends one photo with Compare and compares only clickers' own a
   }
 });
 
+Deno.test("DM charts have no Compare button or session, and old DM buttons cannot add participants", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command("/chart", 1, 1);
+    const photo = h.calls.find((c) => c.method === "sendPhoto")!;
+    equal(photo.payload.reply_markup, undefined);
+    equal(readChartSession(db, "missing", 1, 100), null);
+    equal((db.prepare("SELECT COUNT(*) AS count FROM alltime_chart_sessions").get() as { count: number }).count, 0);
+
+    await h.command();
+    const data = callback(h.calls.filter((c) => c !== photo));
+    db.prepare("UPDATE alltime_chart_sessions SET chat_id = '1'").run();
+    await h.compare(data, 2, 1);
+    deepStrictEqual(h.fetched, [1, 1]);
+    match(String(h.calls.at(-1)!.payload.text), /unavailable/);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("Compare keeps the original date range and point values across older/newer histories and restarts", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const first = harness(db);
+    const original = [
+      { date: "2025-05-01", percentage: 2, gain: 20 },
+      { date: "2025-10-01", percentage: 10, gain: 100 },
+    ];
+    first.pointsByUser.set(1, original);
+    await first.command();
+    const data = callback(first.calls);
+    const h = harness(db);
+    const inRange = [
+      { date: "2025-05-01", percentage: 30, gain: 300 },
+      { date: "2025-07-01", percentage: 35, gain: 350 },
+      { date: "2025-10-01", percentage: 40, gain: 400 },
+    ];
+    h.pointsByUser.set(2, [
+      { date: "2020-01-01", percentage: 0, gain: 0 },
+      { date: "2025-04-30", percentage: 29, gain: 290 },
+      ...inRange,
+      { date: "2025-10-02", percentage: 41, gain: 410 },
+      { date: "2026-10-15", percentage: 60, gain: 600 },
+    ]);
+    await h.compare(data);
+    deepStrictEqual(h.renderedDatasets[0].map((d) => d.points), [original, inRange]);
+    const resumed = harness(db);
+    const laterStart = [
+      { date: "2025-07-01", percentage: 0, gain: 0 },
+      { date: "2025-10-01", percentage: 5, gain: 50 },
+    ];
+    resumed.pointsByUser.set(3, [
+      ...laterStart,
+      { date: "2026-10-15", percentage: 15, gain: 150 },
+    ]);
+    await resumed.compare(data, 3);
+    deepStrictEqual(resumed.renderedDatasets[0].map((d) => d.points), [original, inRange, laterStart]);
+    const stored = JSON.parse(readChartSession(db, data.split(":")[1], -1001, 100)!.datasets);
+    deepStrictEqual(stored, resumed.renderedDatasets[0]);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("Compare rejects a portfolio outside the chart date range and releases the lock for retry", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const data = callback(h.calls);
+    h.pointsByUser.set(2, [{ date: "2026-01-01", percentage: 0, gain: 0 }]);
+    await h.compare(data);
+    match(String(h.calls.at(-1)!.payload.text), /no performance history within this chart's date range/);
+    deepStrictEqual(h.rendered, [[1]]);
+    h.pointsByUser.delete(2);
+    await h.compare(data);
+    deepStrictEqual(h.rendered, [[1], [1, 2]]);
+  } finally {
+    db.close();
+  }
+});
+
+Deno.test("failed comparison media upload restores Compare and leaves the saved chart intact for retry", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const data = callback(h.calls);
+    const before = readChartSession(db, data.split(":")[1], -1001, 100)!.datasets;
+    h.apiFailures.add("editMessageMedia");
+    await h.compare(data);
+    equal(readChartSession(db, data.split(":")[1], -1001, 100)!.datasets, before);
+    const restored = h.calls.filter((c) => c.method === "editMessageReplyMarkup").at(-1)!;
+    deepStrictEqual(restored.payload.reply_markup, new InlineKeyboard().text("Compare", data));
+    h.apiFailures.delete("editMessageMedia");
+    await h.compare(data);
+    const saved = JSON.parse(readChartSession(db, data.split(":")[1], -1001, 100)!.datasets);
+    deepStrictEqual(saved.map((d: AllTimeDataset) => d.userId), [1, 2]);
+  } finally {
+    db.close();
+  }
+});
+
 Deno.test("Compare survives composer restart and rejects forwarded/cross-chat or wrong-message buttons", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
@@ -209,14 +329,32 @@ Deno.test("Compare survives composer restart and rejects forwarded/cross-chat or
   }
 });
 
-Deno.test("concurrent comparisons retain both participants and remove Compare at six", async () => {
+Deno.test("Compare shows the pending name, rejects concurrent clicks without queuing, and removes Compare at six", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
     const h = harness(db);
     await h.command();
     const data = callback(h.calls);
+    const started = Promise.withResolvers<void>();
+    const finish = Promise.withResolvers<void>();
+    h.datasetGates.set(2, () => {
+      started.resolve();
+      return finish.promise;
+    });
+    const adding = h.compare(data, 2);
+    await started.promise;
+    const busy = h.calls.find((c) => c.method === "editMessageReplyMarkup")!;
+    deepStrictEqual(busy.payload.reply_markup, new InlineKeyboard().text("Adding User 2...", data));
     await Promise.all([h.compare(data, 2), h.compare(data, 3)]);
+    deepStrictEqual(h.fetched, [1, 2]);
+    match(String(h.calls.at(-1)!.payload.text), /being added/);
+    finish.resolve();
+    await adding;
+    deepStrictEqual(h.rendered.at(-1), [1, 2]);
+    const restored = h.calls.find((c) => c.method === "editMessageMedia")!;
+    deepStrictEqual(restored.payload.reply_markup, new InlineKeyboard().text("Compare", data));
+    await h.compare(data, 3);
     await h.compare(data, 4);
     await h.compare(data, 5);
     await h.compare(data, 6);
@@ -304,6 +442,8 @@ Deno.test("failed Compare sends an error and preserves the complete existing ima
       /Failed to fetch historical data:/,
     );
     h.failures.delete(2);
+    const restored = h.calls.filter((c) => c.method === "editMessageReplyMarkup").at(-1)!;
+    deepStrictEqual(restored.payload.reply_markup, new InlineKeyboard().text("Compare", data));
     await h.compare(data, 2);
     equal(h.calls.filter((c) => c.method === "editMessageMedia").length, 1);
   } finally {

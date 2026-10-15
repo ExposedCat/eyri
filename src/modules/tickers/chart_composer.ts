@@ -28,7 +28,7 @@ type Session = {
 const MAX_PARTICIPANTS = 6;
 const button = (id: string) =>
   new InlineKeyboard().text("Compare", `chart_compare:${id}`);
-const pending = new Map<string, Promise<unknown>>();
+const pending = new Set<string>();
 
 async function datasetFor(ctx: CustomContext, bucketName: string | null) {
   const userId = ctx.from!.id;
@@ -162,6 +162,10 @@ export function createChartComposer(
         dataset.displayRate = rates.get("USD")!;
       }
       const image = await runtime.render(ctx.db, [dataset]);
+      if (ctx.chat.type === "private") {
+        await ctx.replyWithPhoto(new InputFile(image, "alltime.png"));
+        return;
+      }
       ensureChartSchema(ctx.db);
       const id = crypto.randomUUID();
       ctx.db.prepare(
@@ -188,7 +192,7 @@ export function createChartComposer(
   composer.callbackQuery(/^chart_compare:([0-9a-f-]{36})$/, async (ctx) => {
     const id = ctx.match[1];
     const messageId = ctx.callbackQuery.message?.message_id;
-    if (!ctx.chat || !ctx.from || !messageId) {
+    if (!ctx.chat || ctx.chat.type === "private" || !ctx.from || !messageId) {
       await ctx.answerCallbackQuery({
         text: "This chart is unavailable.",
         show_alert: true,
@@ -200,6 +204,12 @@ export function createChartComposer(
       await ctx.answerCallbackQuery({
         text: "This chart is unavailable in this chat.",
         show_alert: true,
+      });
+      return;
+    }
+    if (pending.has(id)) {
+      await ctx.answerCallbackQuery({
+        text: "A portfolio is being added. Please wait.",
       });
       return;
     }
@@ -218,21 +228,28 @@ export function createChartComposer(
       });
       return;
     }
-    await ctx.answerCallbackQuery();
-    const previous = pending.get(id) ?? Promise.resolve();
-    const task = previous.catch(() => {}).then(async () => {
-      const current = readChartSession(ctx.db, id, ctx.chat!.id, messageId);
-      if (!current) return;
-      const existing = JSON.parse(current.datasets) as AllTimeDataset[];
-      if (
-        existing.length >= MAX_PARTICIPANTS ||
-        existing.some((d) => d.userId === ctx.from.id)
-      ) return;
+    // Claim the chart before the first await so simultaneous clicks cannot queue.
+    pending.add(id);
+    try {
+      await ctx.answerCallbackQuery();
+      const name = [ctx.from.first_name, ctx.from.last_name].filter(Boolean)
+        .join(" ").slice(0, 60);
+      await ctx.editMessageReplyMarkup({
+        reply_markup: new InlineKeyboard().text(`Adding ${name}...`, `chart_compare:${id}`),
+      });
       // Existing curves are the snapshots their owners chose to publish. Only
       // the clicker's accounts are fetched; another user's credentials are never used here.
-      const next = [...existing, await runtime.dataset(ctx, null)].map((dataset) => {
+      const added = await runtime.dataset(ctx, null);
+      const original = datasets[0].points;
+      const start = original[0].date;
+      const end = original.at(-1)!.date;
+      const next = [...datasets, added].map((dataset) => {
         const { displayCurrency: _currency, displayRate: _rate, ...usdDataset } = dataset;
-        return usdDataset;
+        const points = dataset.points.filter((point) => point.date >= start && point.date <= end);
+        if (!points.length) {
+          throw new Error("Your portfolio has no performance history within this chart's date range.");
+        }
+        return { ...usdDataset, points };
       });
       const image = await runtime.render(ctx.db, next);
       await ctx.editMessageMedia({
@@ -246,14 +263,15 @@ export function createChartComposer(
       ctx.db.prepare(
         "UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?",
       ).run(JSON.stringify(next), id);
-    }).catch(async (error) => {
+    } catch (error) {
+      try {
+        await ctx.editMessageReplyMarkup({ reply_markup: button(id) });
+      } catch (restoreError) {
+        console.error("Failed to restore chart Compare button:", restoreError);
+      }
       await replyChartError(ctx, error);
-    });
-    pending.set(id, task);
-    try {
-      await task;
     } finally {
-      if (pending.get(id) === task) pending.delete(id);
+      pending.delete(id);
     }
   });
   return composer;
