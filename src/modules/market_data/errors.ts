@@ -1,4 +1,5 @@
 import { VONTOBEL_PREFIX } from "./vontobel.ts";
+import { MORGAN_STANLEY_PREFIX } from "./morgan_stanley.ts";
 
 export type FailedHistory = { ticker: string; symbol: string };
 
@@ -12,6 +13,10 @@ export class HistoricalDataError extends Error {
       f.symbol.startsWith(VONTOBEL_PREFIX)
         ? `${ticker}: Vontobel warrant history unavailable (${
           f.symbol.slice(VONTOBEL_PREFIX.length)
+        }).`
+        : f.symbol.startsWith(MORGAN_STANLEY_PREFIX)
+        ? `${ticker}: Morgan Stanley warrant history unavailable (${
+          f.symbol.slice(MORGAN_STANLEY_PREFIX.length)
         }).`
         : `/yahoo ${ticker} ${f.symbol}`
     );

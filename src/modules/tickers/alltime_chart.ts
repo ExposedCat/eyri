@@ -5,6 +5,10 @@ import { historicalQuoteMultiplier, yahooOptionContract } from "../market_data/o
 import { DATABENTO_PREFIX } from "../market_data/databento.ts";
 import { VONTOBEL_PREFIX, VontobelHistoryError } from "../market_data/vontobel.ts";
 import {
+  MORGAN_STANLEY_PREFIX,
+  MorganStanleyHistoryError,
+} from "../market_data/morgan_stanley.ts";
+import {
   type FailedHistory,
   HistoricalDataError,
 } from "../market_data/errors.ts";
@@ -589,6 +593,8 @@ export async function loadAllTimeDataset(
         );
         const symbol = (result.reason instanceof VontobelHistoryError
           ? VONTOBEL_PREFIX + result.reason.isin
+          : result.reason instanceof MorganStanleyHistoryError
+          ? MORGAN_STANLEY_PREFIX + result.reason.isin
           : undefined) ?? symbols.get(batch[index][0]) ??
           readYahooMapping(db, source.ticker) ??
           defaultYahooSymbols(source)[0] ?? source.ticker;

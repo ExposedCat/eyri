@@ -5,6 +5,13 @@ import { readYahooMapping } from "./mappings.ts";
 import { yahooOptionContract } from "./options.ts";
 import { DATABENTO_PREFIX, DatabentoHistoryCache } from "./databento.ts";
 import {
+  MORGAN_STANLEY_PREFIX,
+  morganStanleyIsin,
+  MorganStanleyHistoryCache,
+  MorganStanleyHistoryError,
+  NotMorganStanleyWarrantError,
+} from "./morgan_stanley.ts";
+import {
   NotVontobelWarrantError,
   VONTOBEL_PREFIX,
   vontobelIsin,
@@ -152,6 +159,7 @@ export class YahooHistoryCache {
     private now: () => Date = () => new Date(),
     private optionHistory = new DatabentoHistoryCache(db, request, now),
     private warrantHistory = new VontobelHistoryCache(db, request, now),
+    private morganStanleyHistory = new MorganStanleyHistoryCache(db, request, now),
   ) {
     ensureMarketDataSchema(db);
   }
@@ -230,6 +238,36 @@ export class YahooHistoryCache {
           ["WAR", "WARRANT"].includes(instrument.assetCategory?.toUpperCase() ?? "")
         ) {
           throw new VontobelHistoryError(isin, cause);
+        }
+      }
+    }
+    const morganIsin = !explicit && !sourceOption
+      ? morganStanleyIsin(instrument)
+      : undefined;
+    if (morganIsin) {
+      try {
+        const history = await this.morganStanleyHistory.get(
+          morganIsin,
+          requiredDate ? dayAfter(requiredDate, -7) : "1970-01-01",
+          requiredEnd,
+        );
+        if (
+          history.currency !== instrument.currency.trim().toUpperCase() ||
+          !history.bars.length ||
+          (requiredDate && !history.bars.some((bar) => bar.date <= requiredDate))
+        ) {
+          throw new Error("Morgan Stanley currency or purchase-date history does not match.");
+        }
+        this.db.prepare(
+          "INSERT OR REPLACE INTO yahoo_symbols(source_key,symbol) VALUES (?,?)",
+        ).run(sourceKey, history.symbol);
+        return history.symbol;
+      } catch (cause) {
+        if (
+          !(cause instanceof NotMorganStanleyWarrantError) ||
+          ["WAR", "WARRANT"].includes(instrument.assetCategory?.toUpperCase() ?? "")
+        ) {
+          throw new MorganStanleyHistoryError(morganIsin, cause);
         }
       }
     }
@@ -375,6 +413,11 @@ export class YahooHistoryCache {
     start: string,
     end?: string,
   ): Promise<PriceHistory> {
+    if (symbol.startsWith(MORGAN_STANLEY_PREFIX)) {
+      return this.morganStanleyHistory.get(
+        symbol.slice(MORGAN_STANLEY_PREFIX.length), start, end,
+      );
+    }
     if (symbol.startsWith(VONTOBEL_PREFIX)) {
       return this.warrantHistory.get(
         symbol.slice(VONTOBEL_PREFIX.length), start, end,

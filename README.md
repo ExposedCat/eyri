@@ -447,6 +447,15 @@ Sold positions can reuse cached finalized ranges without contacting Vontobel.
 No API key or manual symbol mapping is needed. The website endpoint is
 undocumented; provider failures report unavailable Vontobel warrant history.
 
+Morgan Stanley warrants (for example `MN03RW` / `DE000MN03RW5`) also resolve
+automatically after checking the issuer's product page for the ISIN, warrant
+type and currency. Its five-year chart supplies daily EUR bids per warrant;
+the underlying stock and exercise ratio are not substituted for warrant prices.
+Prices persist in SQLite and refresh after five minutes. History must cover the
+purchase date, and an unavailable feed reports a Morgan Stanley history error
+instead of suggesting an invalid `/yahoo` mapping. These website endpoints are
+undocumented; no API key is required.
+
 Freedom24 option names convert automatically to Yahoo/OCC contract symbols:
 `+AMD.15JAN2027.C280` becomes `AMD270115C00280000`. IBKR compact or padded OCC
 symbols are also accepted. Expiry dates and fractional strikes are validated;
