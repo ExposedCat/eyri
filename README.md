@@ -228,7 +228,7 @@ shows your current preference; `/currency USD` resets it to the default.
 All monetary reports, charts, RSU values and diagnostic dumps use your selected
 currency, including shared buckets viewed by you. GBX is treated as pence
 (100 GBX = 1 GBP) before conversion. Long portfolio and bucket messages continue across
-Telegram messages without changing transaction shortcut numbers.
+Telegram messages without changing transaction button numbers.
 The published API terms require Trading 212's written consent for applications
 intended for other end-users; this integration is for personal account tracking.
 
@@ -251,7 +251,7 @@ by an automatic database migration on startup.
 `/alltime`, `/allnumber`, `/dpnl`, `/history`, `/when`, bucket views and diagnostic
 dumps display amounts in your selected currency (default USD) using the latest
 Frankfurter rates. Prices supplied to `/when` use your selected currency. History prices and realized
-gains use the same current FX rates as holdings; FIFO matching and bucket shortcuts
+gains use the same current FX rates as holdings; FIFO matching and bucket buttons
 retain their original transaction identity. Price, cost and P&L calculations stay
 in instrument currency (including EUR warrant quotes); completed results are
 converted to your selected currency before reporting totals, sorting and rendering. `/when`
@@ -268,8 +268,9 @@ latest-price endpoint and keeps that quote's timestamp.
 If a required bid cannot be loaded, the report fails instead of using the broker
 mark. Diagnostic dumps include the quote source and timestamp.
 
-Rich integration controls use Telegram Bot API 10.3's `sendRichMessage`, inline
-`RichTextButton` and `InputRichBlockButtons`. A small typed raw API wrapper
+Rich integration and bucket controls use Telegram Bot API 10.3's `sendRichMessage`,
+inline `RichTextButton` and `InputRichBlockButtons` (bucket history uses rich HTML
+with `<tg-button>`). A small typed raw API wrapper
 allows these methods to work with the currently installed grammY version.
 
 Freedom24 holdings and book cost come from the live portfolio, preserving ticker
@@ -303,6 +304,25 @@ access by numeric Telegram user ID, even before that person starts the bot.
 The recipient must not already own or have access to a bucket with that name.
 Ownership and broker credentials remain with the original owner; recipients
 cannot change the bucket's trades or grant someone else access.
+
+Add a percentage to grant part of a bucket: `/bucket transfer NAME 50 TELEGRAM_ID`,
+or reply with `/bucket transfer NAME 50%` (the `%` is required when no ID follows,
+because a lone number is a Telegram ID). Decimals are allowed, from above 0 up to
+100. The recipient's bucket contains the given share of every quantity, cost,
+value, P&L, sale and history entry; unit prices and percentages are unchanged.
+The share is applied when reports are built, so the owner's later Move/Remove
+changes appear in the recipient's bucket at that share. The owner always sees
+100% of the bucket. For the recipient it works like any other shared bucket,
+including `/bucket include`. `/buckets` shows the share.
+
+Grants split the bucket: all recipients together can hold at most 100%. You can
+grant 50% and 50% to two users, but not 50% and 60%; a grant without a
+percentage is 100% and uses the whole bucket. The owner's `/buckets` shows how
+much has been transferred. Granting the same bucket to the same user again with a
+different percentage replaces their share, and a recipient's `/bucket remove NAME`
+frees it. Grants made before this limit existed are kept as they are. Included buckets from one
+owner must use the same share, because they are computed from the same broker
+history; including a bucket with a different share is rejected.
 
 Shared buckets appear in `/buckets` and work with named views such as
 `/perf NAME`, `/worth NAME`, `/worthnumber NAME`, `/options NAME`, `/alltime NAME`,
@@ -582,9 +602,27 @@ Use `/buckets` to list buckets, `/bucket new NAME` to create one, and
 `/bucket remove NAME` to delete one. Bucket names can contain up to 20 letters,
 numbers, and underscores, and must start with a letter.
 
-Use `/bucket move NAME` to render order history with `/move_NAME_IDX` and
-`/remove_NAME_IDX` shortcuts. Moving a transaction puts it in that bucket and
-removes it from any other bucket. Unbucketed `/perf`, `/number`, `/worth`,
+Use `/bucket move NAME` to render order history as a rich message with an inline
+button on each order: a red **Move** puts the order in the bucket, and once moved
+it becomes a green **Remove**. Each click edits the message in place instead of
+sending a new one. Long histories are split into messages of 100 orders. Only the
+user who ran the command can press the buttons. Moving a transaction puts it in
+that bucket and removes it from any other bucket.
+
+Use `/bucket move NAME TICKER AMOUNT` (e.g. `/bucket move Core AAPL 5`) to move
+part of a holding. `TICKER` can be the full broker ticker or its base (`AAPL` for
+`AAPL.US`); `AMOUNT` is a share count and may be fractional. Shares come from the
+oldest purchases still held in the portfolio (already sold quantities and
+bucketed orders are skipped), so the bucket's cost basis comes from those
+purchases. A split purchase appears in `/bucket move NAME` as two lines, the
+portfolio part and the bucket part, each with its own button; **Remove** on the
+bucket part returns those shares to the portfolio. Within a split purchase, later
+sales use the portfolio part first. Recipients of the bucket see partial parts
+like any other bucket content and lose them when they are returned. Removing the
+bucket returns all of its shares. Synthesized entries such as T212 CFD funding
+cannot be split.
+
+Unbucketed `/perf`, `/number`, `/worth`,
 `/worthnumber`, `/alltime`, `/allnumber`, `/stocks`, `/options`, `/dpnl`, and
 `/history` views exclude bucketed transactions; pass `NAME` to
 `/perf NAME`, `/number NAME`, `/worth NAME`, `/worthnumber NAME`, `/alltime NAME`,

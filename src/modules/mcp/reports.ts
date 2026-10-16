@@ -106,6 +106,7 @@ export async function runReport(
       buckets: getUserBuckets(db, user.userId).map((bucket) => ({
         name: bucket.name,
         ownerUserId: bucket.ownerUserId,
+        share: bucket.share,
         included: bucket.included,
       })),
     };

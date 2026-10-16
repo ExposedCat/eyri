@@ -2,8 +2,10 @@ import type { Database } from "../database/setup.ts";
 import {
   getUserBucket,
   getUserBuckets,
+  readBucketAllocations,
   readBucketAssignments,
 } from "../database/bucket.ts";
+import { applyBucketAllocations, scaleOrder } from "./bucket_allocations.ts";
 import { hasUserIntegrations } from "../database/integration.ts";
 import {
   fetchIntegratedAccountPerformances,
@@ -19,38 +21,79 @@ import {
   getOrderTransactionKey,
 } from "./portfolio.ts";
 import { portfolioValuations } from "../integrations/usd.ts";
+import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { adjustOrderForCorporateActions } from "../market_data/corporate_actions.ts";
 
+type PortfolioSource = {
+  ownerId: number;
+  share: number;
+  names: Set<string | null>;
+};
+
+// Sources are grouped per owner and share: a partial grant scales all of the
+// owner's orders and holdings, so FIFO and bucket allocation stay consistent.
 function portfolioSources(
   db: Database,
   userId: number,
   bucketName: string | null,
 ) {
-  const sources = new Map<number, Set<string | null>>();
-  const add = (ownerId: number, name: string | null) => {
-    const names = sources.get(ownerId) ?? new Set();
-    names.add(name);
-    sources.set(ownerId, names);
+  const sources = new Map<string, PortfolioSource>();
+  const add = (ownerId: number, share: number, name: string | null) => {
+    const key = `${ownerId}:${share}`;
+    const source = sources.get(key) ?? { ownerId, share, names: new Set() };
+    source.names.add(name);
+    sources.set(key, source);
   };
   if (bucketName !== null) {
     const bucket = getUserBucket(db, userId, bucketName);
     if (!bucket) throw new Error(`Bucket not found: ${bucketName}`);
-    add(bucket.ownerUserId, bucket.name);
+    add(bucket.ownerUserId, bucket.share, bucket.name);
   } else {
-    add(userId, null);
+    add(userId, 1, null);
     for (const bucket of getUserBuckets(db, userId)) {
-      if (bucket.included) add(bucket.ownerUserId, bucket.name);
+      if (bucket.included) add(bucket.ownerUserId, bucket.share, bucket.name);
     }
   }
-  return sources;
+  return [...sources.values()];
 }
+
+const scaleNullable = <T extends number | null | undefined>(
+  value: T,
+  share: number,
+) => (typeof value === "number" ? value * share : value) as T;
+
+export function scalePosition(
+  position: IntegrationPortfolioPosition,
+  share: number,
+): IntegrationPortfolioPosition {
+  if (share === 1) return position;
+  // Unit prices and percentages are unchanged; quantities and money scale.
+  return {
+    ...position,
+    amount: position.amount * share,
+    totalInput: scaleNullable(position.totalInput, share),
+    totalNow: scaleNullable(position.totalNow, share),
+    unrealizedPnl: scaleNullable(position.unrealizedPnl, share),
+    realizedPnl: scaleNullable(position.realizedPnl, share),
+    dailyPnl: scaleNullable(position.dailyPnl, share),
+    dailyPnlBaseline: scaleNullable(position.dailyPnlBaseline, share),
+    dailyPnlTotalBaseline: scaleNullable(position.dailyPnlTotalBaseline, share),
+    brokerValuations: position.brokerValuations?.map((valuation) => ({
+      ...valuation,
+      totalInput: scaleNullable(valuation.totalInput, share),
+      totalNow: scaleNullable(valuation.totalNow, share),
+      unrealizedPnl: scaleNullable(valuation.unrealizedPnl, share),
+    })),
+  };
+}
+
 
 export function hasPortfolioViewIntegrations(
   db: Database,
   userId: number,
   bucketName: string | null = null,
 ) {
-  return [...portfolioSources(db, userId, bucketName).keys()].some((ownerId) =>
+  return portfolioSources(db, userId, bucketName).some(({ ownerId }) =>
     hasUserIntegrations(db, ownerId)
   );
 }
@@ -82,8 +125,8 @@ export async function fetchPortfolioView(
   fetchers: Runtime = runtime,
 ) {
   const results = await Promise.all(
-    [...portfolioSources(db, userId, bucketName)].map(
-      async ([ownerId, names]) => {
+    portfolioSources(db, userId, bucketName).map(
+      async ({ ownerId, share, names }) => {
         if (
           [...names].some((name) => name !== null) &&
           !hasUserIntegrations(db, ownerId)
@@ -94,7 +137,7 @@ export async function fetchPortfolioView(
         let assignments = readBucketAssignments(db, ownerId);
         const needsOrders = options.history || options.displayHistory ||
           assignments.size > 0 || !names.has(null);
-        const [livePositions, sourceOrders] = await Promise.all([
+        const [ownerPositions, ownerOrders] = await Promise.all([
           options.positions === false
             ? []
             : fetchers.portfolio(db, ownerId, false),
@@ -105,6 +148,11 @@ export async function fetchPortfolioView(
             )
             : [],
         ]);
+        const livePositions = ownerPositions.map((p) => scalePosition(p, share));
+        const sourceOrders = applyBucketAllocations(
+          ownerOrders,
+          readBucketAllocations(db, ownerId),
+        ).map((o) => scaleOrder(o, share));
         // Broker imports can migrate legacy CFD assignments to purchase keys.
         assignments = readBucketAssignments(db, ownerId);
         const wholeAccount = bucketName === null && names.has(null) &&

@@ -71,10 +71,25 @@ export function ensureSchema(database: Database) {
     CREATE INDEX IF NOT EXISTS portfolio_bucket_transactions_bucket_idx
       ON portfolio_bucket_transactions(user_id, bucket_name);
 
+    CREATE TABLE IF NOT EXISTS portfolio_bucket_allocations (
+      user_id INTEGER NOT NULL,
+      transaction_key TEXT NOT NULL,
+      bucket_name TEXT NOT NULL,
+      quantity REAL NOT NULL CHECK (quantity > 0),
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (user_id, transaction_key, bucket_name),
+      FOREIGN KEY (user_id) REFERENCES users(user_id),
+      FOREIGN KEY (user_id, bucket_name)
+        REFERENCES portfolio_buckets(user_id, name)
+        ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS portfolio_bucket_access (
       user_id INTEGER NOT NULL REFERENCES users(user_id),
       bucket_name TEXT NOT NULL,
       owner_user_id INTEGER NOT NULL,
+      share REAL NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (user_id, bucket_name),
       FOREIGN KEY (owner_user_id, bucket_name)
@@ -90,6 +105,11 @@ export function ensureSchema(database: Database) {
         REFERENCES portfolio_buckets(user_id, name) ON DELETE CASCADE
     );
   `);
+  const accessColumns = database.prepare("PRAGMA table_info(portfolio_bucket_access)").all() as { name: string }[];
+  if (!accessColumns.some((column) => column.name === "share")) {
+    // Existing grants are full shares.
+    database.exec("ALTER TABLE portfolio_bucket_access ADD COLUMN share REAL NOT NULL DEFAULT 1");
+  }
   const userColumns = database.prepare("PRAGMA table_info(users)").all() as { name: string }[];
   if (!userColumns.some((column) => column.name === "currency")) {
     database.exec("ALTER TABLE users ADD COLUMN currency TEXT");

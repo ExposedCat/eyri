@@ -295,16 +295,12 @@ Deno.test("MCP honors shared buckets, included buckets and viewer currency witho
         recipientId: 2,
       }).success,
     );
-    ok(
-      transferBucketAccess({
-        database: h.db,
-        userId: 1,
-        name: "Core",
-        recipientId: 3,
-      }).success,
-    );
+    // A second full grant predates the 100% transfer cap; views still honor it.
+    h.db.prepare(
+      "INSERT INTO portfolio_bucket_access (user_id, bucket_name, owner_user_id) VALUES (3, 'Core', 1)",
+    ).run();
     deepStrictEqual(await call(h, "buckets", { userId: 2 }), {
-      buckets: [{ name: "Core", ownerUserId: 1, included: false }],
+      buckets: [{ name: "Core", ownerUserId: 1, share: 1, included: false }],
     });
     equal(
       (await call(h, "number", { userId: 2, bucketName: "Core" })).total,

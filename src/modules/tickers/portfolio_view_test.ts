@@ -189,14 +189,10 @@ Deno.test("included buckets merge holdings and sales using owner integrations an
         recipientId: 2,
       }).success,
     );
-    ok(
-      transferBucketAccess({
-        database: db,
-        userId: 1,
-        name: "Shared",
-        recipientId: 3,
-      }).success,
-    );
+    // A second full grant predates the 100% transfer cap; views still honor it.
+    db.prepare(
+      "INSERT INTO portfolio_bucket_access (user_id, bucket_name, owner_user_id) VALUES (3, 'Shared', 1)",
+    ).run();
     const calls: string[] = [];
     const runtime = {
       portfolio: (_db: Database, id: number) => {

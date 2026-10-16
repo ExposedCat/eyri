@@ -1756,7 +1756,20 @@ export async function buildIntegratedHistoryReport({
   return { sorted, groups };
 }
 
-export async function buildIntegratedHistory({
+export async function buildIntegratedHistory(
+  args: BuildIntegratedHistoryArgs,
+): Promise<string> {
+  const history = await buildIntegratedHistorySections(args);
+  if (!history) return "";
+  const yearBlocks = history.sections.map(({ header, lines }) =>
+    `${header}\n${lines.map(({ text }) => text).join("\n")}`
+  );
+  return `${yearBlocks.join("\n\n")}\n\n${history.total}`;
+}
+
+// Structured history lines keep their 1-based display index, which matches
+// buildIntegratedHistoryGroups order, so callers can attach per-line controls.
+export async function buildIntegratedHistorySections({
   orders,
   request,
   currency = "USD",
@@ -1765,10 +1778,10 @@ export async function buildIntegratedHistory({
   tickerLabelLinks,
   tickerEmojiMappings,
   formatLineSuffix,
-}: BuildIntegratedHistoryArgs): Promise<string> {
+}: BuildIntegratedHistoryArgs) {
   const { sorted, groups } = await buildIntegratedHistoryReport({ orders, request, currency });
-  if (sorted.length === 0) return "";
-  const grouped = new Map<number, string[]>();
+  if (sorted.length === 0) return null;
+  const grouped = new Map<number, { index: number; text: string }[]>();
   const yearTotals = new Map<number, { total: number; currency: string }>();
   let totalSpent = 0;
   let totalCurrency = currency;
@@ -1796,9 +1809,10 @@ export async function buildIntegratedHistory({
       )
     })`;
     const lineSuffix = formatLineSuffix?.(original, index + 1);
-    lines.push(
-      lineSuffix && lineSuffix.length > 0 ? `${line} ${lineSuffix}` : line,
-    );
+    lines.push({
+      index: index + 1,
+      text: lineSuffix && lineSuffix.length > 0 ? `${line} ${lineSuffix}` : line,
+    });
     grouped.set(year, lines);
 
     const yearTotal = yearTotals.get(year) ?? {
@@ -1811,20 +1825,18 @@ export async function buildIntegratedHistory({
     totalCurrency = group.currency;
   }
 
-  const yearBlocks = [...grouped.entries()].map(([year, lines]) => {
+  const sections = [...grouped.entries()].map(([year, lines]) => {
     const yearTotal = yearTotals.get(year);
     const header = yearTotal
       ? `${year} - ${formatWholeMoney(yearTotal.total, yearTotal.currency)}`
       : String(year);
-    return `${header}\n${lines.join("\n")}`;
+    return { header, lines };
   });
 
-  return `${yearBlocks.join("\n\n")}\n\nTotal ${
-    formatWholeMoney(
-      totalSpent,
-      totalCurrency,
-    )
-  }`;
+  return {
+    sections,
+    total: `Total ${formatWholeMoney(totalSpent, totalCurrency)}`,
+  };
 }
 
 export function parsePriceOverrides(

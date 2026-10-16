@@ -4,12 +4,22 @@ import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts"
 import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { splitMessageLines } from "../bot/message.ts";
+import { showRichMessage } from "../bot/rich.ts";
 import {
+  applyBucketAllocations,
+  findOpenPortfolioLots,
+  matchOrderTickers,
+} from "./bucket_allocations.ts";
+import {
+  allocateToBucket,
   createBucket,
   deleteBucket,
+  formatBucketShare,
+  getTransferredBucketShare,
   getUserBucket,
   getUserBuckets,
   moveTransactionToBucket,
+  readBucketAllocations,
   readBucketAssignments,
   removeTransactionFromBucket,
   setBucketIncluded,
@@ -46,6 +56,7 @@ import {
   buildIntegratedDailyPerformanceList,
   buildIntegratedHistoryGroups,
   buildIntegratedHistory,
+  buildIntegratedHistorySections,
   buildIntegratedPerformanceList,
   buildIntegratedSoldPerformanceList,
   buildIntegratedTickerList,
@@ -71,8 +82,9 @@ async function replyPortfolioText(ctx: CustomContext, text: string) {
 }
 
 const BUCKET_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,19}$/;
-const BUCKET_ACTION_PATTERN =
-  /^\/(move|remove)_([A-Za-z][A-Za-z0-9_]{0,19})_(\d+)(?:@[A-Za-z0-9_]+)?(?:\s|$)/;
+// bucket:OWNER_ID:ACTION:NAME:DISPLAY_INDEX, at most 64 bytes.
+const BUCKET_TOGGLE_PATTERN =
+  /^bucket:(\d+):(move|remove):([A-Za-z][A-Za-z0-9_]{0,19}):([1-9]\d{0,5})$/;
 
 function parseOptionalBucketName(input: unknown) {
   const name = typeof input === "string" ? input.trim() : "";
@@ -87,33 +99,84 @@ function formatBucketNameHelp() {
   return "Bucket names must be up to 20 characters, start with a letter, and contain only letters, numbers, and underscores.";
 }
 
+function parseTelegramId(value: string) {
+  return /^[1-9]\d*$/.test(value) && Number.isSafeInteger(Number(value))
+    ? Number(value)
+    : null;
+}
+
+// Accepts 50 or 50% (decimals allowed), above 0 and up to 100.
+function parseSharePercent(value: string) {
+  const match = value.match(/^(\d+(?:\.\d+)?)%?$/);
+  const percent = match ? Number(match[1]) : NaN;
+  return percent > 0 && percent <= 100 ? percent / 100 : null;
+}
+
+// /bucket transfer NAME [PERCENT] [TELEGRAM_ID]. A lone number stays a
+// Telegram ID for compatibility; a lone percentage needs the % sign.
 function parseBucketCommand(input: unknown) {
   const parts =
     typeof input === "string" ? input.trim().split(/\s+/).filter(Boolean) : [];
-  if (parts.length !== 2 && parts.length !== 3) {
+  const [action, name, ...rest] = parts;
+  if (
+    !name ||
+    !["new", "remove", "move", "transfer", "include", "exclude"].includes(action)
+  ) {
     return null;
   }
+  if (rest.length === 0) return { action, name };
+  if (action === "move") {
+    // /bucket move NAME TICKER AMOUNT moves part of a holding.
+    const [ticker, amountValue] = rest;
+    const amount = /^\d+(?:\.\d+)?$/.test(amountValue ?? "")
+      ? Number(amountValue)
+      : 0;
+    return rest.length === 2 && /^[A-Za-z0-9._-]{1,32}$/.test(ticker) &&
+        amount > 0
+      ? { action, name, ticker, amount }
+      : null;
+  }
+  if (action !== "transfer" || rest.length > 2) return null;
 
-  const [action, name, id] = parts;
-  if (!["new", "remove", "move", "transfer", "include", "exclude"].includes(action)) {
-    return null;
+  if (rest.length === 2) {
+    const share = parseSharePercent(rest[0]);
+    const recipientId = parseTelegramId(rest[1]);
+    return share === null || recipientId === null
+      ? null
+      : { action, name, share, recipientId };
   }
-  if (id !== undefined &&
-    (action !== "transfer" || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id)))) {
-    return null;
+  if (rest[0].endsWith("%")) {
+    const share = parseSharePercent(rest[0]);
+    return share === null ? null : { action, name, share };
   }
-  return { action, name, recipientId: id === undefined ? undefined : Number(id) };
+  const recipientId = parseTelegramId(rest[0]);
+  return recipientId === null ? null : { action, name, recipientId };
 }
 
-function formatBucketList(buckets: ReturnType<typeof getUserBuckets>) {
+function formatBucketList(
+  db: CustomContext["db"],
+  buckets: ReturnType<typeof getUserBuckets>,
+) {
   if (buckets.length === 0) {
     return "No buckets yet.";
   }
+  // Owners see how much of each bucket they have granted.
+  const transferred = new Map(
+    buckets.filter((bucket) => bucket.ownerUserId === bucket.userId)
+      .map((bucket) => [
+        bucket.name,
+        getTransferredBucketShare(db, bucket.userId, bucket.name),
+      ]),
+  );
 
   return buckets
     .map((bucket, index) => {
       const details = [
         bucket.ownerUserId !== bucket.userId ? `shared by ${bucket.ownerUserId}` : "",
+        bucket.share !== 1 ? formatBucketShare(bucket.share) : "",
+        transferred.get(bucket.name)
+          ? `transferred ${formatBucketShare(transferred.get(bucket.name) ?? 0)}`
+          : "",
         bucket.included ? "included" : "",
       ].filter(Boolean);
       return `${index + 1}. ${escapeHtml(bucket.name)}${details.length ? ` (${details.join(", ")})` : ""}`;
@@ -209,54 +272,143 @@ function createTickerFormatter({
     );
 }
 
+// Pages hold a fixed number of orders, so a button's display index always maps
+// to the same page and a click can re-render just the message it came from.
+// 100 lines plus headings stays well under rich message block and text limits.
+const BUCKET_MOVE_PAGE_SIZE = 100;
+
+function bucketMovePage(displayIndex: number) {
+  return Math.floor((displayIndex - 1) / BUCKET_MOVE_PAGE_SIZE);
+}
+
+async function buildBucketMovePages(
+  ctx: CustomContext,
+  userId: number,
+  bucketName: string,
+  orders: Awaited<ReturnType<typeof fetchIntegratedHistoryOrders>>,
+) {
+  const preferences = await readTickerDisplayPreferences(ctx.from?.id ?? userId);
+  const transactionBuckets = readBucketAssignments(ctx.db, userId);
+  const history = await buildIntegratedHistorySections({
+    currency: ctx.dbEntities.user?.currency ?? "USD",
+    orders,
+    ...preferences,
+    formatLineSuffix: (group, displayIndex) => {
+      const moved = transactionBuckets.get(group.transactionKey) === bucketName;
+      // Bucket names match BUCKET_NAME_PATTERN, so they are attribute-safe.
+      const data = `bucket:${userId}:${moved ? "remove" : "move"}:${bucketName}:${displayIndex}`;
+      return `<tg-button type="callback_data" style="${moved ? "success" : "danger"}" data="${data}">${moved ? "Remove" : "Move"}</tg-button>`;
+    },
+  });
+  if (!history) return [];
+
+  const pages: string[][] = [];
+  const pageHeaders: string[] = [];
+  for (const { header, lines } of history.sections) {
+    for (const line of lines) {
+      const page = bucketMovePage(line.index);
+      pages[page] ??= page === 0
+        ? [`<h2>Bucket ${escapeHtml(bucketName)}</h2>`]
+        : [];
+      // Repeat the year heading when a year continues onto a new page.
+      if (pageHeaders[page] !== header) {
+        pages[page].push(`<h3>${header}</h3>`);
+        pageHeaders[page] = header;
+      }
+      pages[page].push(`<p>${line.text}</p>`);
+    }
+  }
+  pages.at(-1)?.push(`<p><b>${history.total}</b></p>`);
+  return pages.map((blocks) => blocks.join("\n"));
+}
+
+// Owner orders with partial bucket parts split out, as reports see them.
+async function fetchAllocatedOrders(ctx: CustomContext, userId: number) {
+  return applyBucketAllocations(
+    await fetchIntegratedHistoryOrders(ctx.db, userId),
+    readBucketAllocations(ctx.db, userId),
+  );
+}
+
+const formatQuantity = (value: number) => String(Number(value.toFixed(6)));
+
+async function moveStocksToBucket(
+  ctx: CustomContext,
+  bucketName: string,
+  tickerInput: string,
+  amount: number,
+) {
+  const userId = ctx.dbEntities.user?.userId;
+  if (!userId) return;
+  if (!hasUserIntegrations(ctx.db, userId)) {
+    await ctx.text("no_integrations");
+    return;
+  }
+  const orders = await fetchAllocatedOrders(ctx, userId);
+  const tickers = matchOrderTickers(orders, tickerInput);
+  if (tickers.length !== 1) {
+    await ctx.reply(
+      tickers.length
+        ? `Several tickers match ${escapeHtml(tickerInput)}: ${tickers.map(escapeHtml).join(", ")}. Use the full ticker.`
+        : `No purchases found for ${escapeHtml(tickerInput)}.`,
+      htmlReplyOptions,
+    );
+    return;
+  }
+  const [ticker] = tickers;
+  const lots = findOpenPortfolioLots(
+    orders,
+    readBucketAssignments(ctx.db, userId),
+    ticker,
+  );
+  const available = lots.reduce((sum, lot) => sum + lot.quantity, 0);
+  if (amount > available + 1e-9) {
+    await ctx.reply(
+      `Only ${formatQuantity(available)} ${escapeHtml(ticker)} can be moved from your portfolio.`,
+      htmlReplyOptions,
+    );
+    return;
+  }
+  // Oldest open purchases move first, as FIFO matching would sell them.
+  const parts: { transactionKey: string; quantity: number }[] = [];
+  let remaining = amount;
+  for (const lot of lots) {
+    if (remaining <= 1e-9) break;
+    const quantity = Math.min(lot.quantity, remaining);
+    parts.push({ transactionKey: lot.transactionKey, quantity });
+    remaining -= quantity;
+  }
+  const result = allocateToBucket({ database: ctx.db, userId, bucketName, parts });
+  await ctx.reply(
+    result.success
+      ? `Moved ${formatQuantity(amount)} ${escapeHtml(ticker)} to ${escapeHtml(bucketName)}. Use /bucket move ${escapeHtml(bucketName)} to return them.`
+      : result.error ?? "Failed to move stocks",
+    htmlReplyOptions,
+  );
+}
+
 async function replyBucketMoveHistory(ctx: CustomContext, bucketName: string) {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
   }
 
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  const userId = ctx.dbEntities.user.userId;
+  if (!hasUserIntegrations(ctx.db, userId)) {
     await ctx.text("no_integrations");
     return;
   }
 
-  const {
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-    tickerEmojiMappings,
-  } = await readTickerDisplayPreferences(ctx.from.id);
-
-  const orders = await fetchIntegratedHistoryOrders(
-    ctx.db,
-    ctx.dbEntities.user.userId,
-  );
-  const transactionBuckets = readBucketAssignments(
-    ctx.db,
-    ctx.dbEntities.user.userId,
-  );
-  const history = await buildIntegratedHistory({
-      currency: ctx.dbEntities.user.currency ?? "USD",
-    orders,
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-    tickerEmojiMappings,
-    formatLineSuffix: (group, displayIndex) => {
-      const action =
-        transactionBuckets.get(group.transactionKey) === bucketName
-          ? "remove"
-          : "move";
-      return `/${action}_${bucketName}_${displayIndex}`;
-    },
-  });
-
-  if (history.length === 0) {
+  const orders = await fetchAllocatedOrders(ctx, userId);
+  const pages = await buildBucketMovePages(ctx, userId, bucketName, orders);
+  if (pages.length === 0) {
     await ctx.text("no_positions");
     return;
   }
 
-  await replyPortfolioText(ctx, history);
+  for (const html of pages) {
+    await showRichMessage(ctx, { html });
+  }
 }
 
 function formatPackSyncResult(
@@ -446,7 +598,7 @@ tickersComposer.command("buckets", async (ctx) => {
   }
 
   const buckets = getUserBuckets(ctx.db, ctx.dbEntities.user.userId);
-  await ctx.reply(formatBucketList(buckets), htmlReplyOptions);
+  await ctx.reply(formatBucketList(ctx.db, buckets), htmlReplyOptions);
 });
 
 tickersComposer.command("bucket", async (ctx) => {
@@ -459,7 +611,8 @@ tickersComposer.command("bucket", async (ctx) => {
   if (!parsed || !isValidBucketName(parsed.name)) {
     await ctx.reply(
       [
-        "Use /bucket new NAME, /bucket remove NAME, /bucket move NAME, /bucket transfer NAME [TELEGRAM_ID], /bucket include NAME, or /bucket exclude NAME.",
+        "Use /bucket new NAME, /bucket remove NAME, /bucket move NAME [TICKER AMOUNT], /bucket transfer NAME [PERCENT] [TELEGRAM_ID], /bucket include NAME, or /bucket exclude NAME.",
+        "For a partial share, use /bucket transfer NAME 50 TELEGRAM_ID, or reply with /bucket transfer NAME 50%.",
         formatBucketNameHelp(),
       ].join("\n\n"),
     );
@@ -513,15 +666,19 @@ tickersComposer.command("bucket", async (ctx) => {
       const recipientId = parsed.recipientId ??
         (replyUser && !replyUser.is_bot ? replyUser.id : undefined);
       if (!recipientId) {
-        await ctx.reply("Reply to the recipient's message with /bucket transfer NAME, or use /bucket transfer NAME TELEGRAM_ID.");
+        await ctx.reply("Reply to the recipient's message with /bucket transfer NAME [PERCENT%], or use /bucket transfer NAME [PERCENT] TELEGRAM_ID.");
         return;
       }
       const result = transferBucketAccess({
         database: ctx.db, userId: ctx.dbEntities.user.userId,
-        name: bucket.name, recipientId,
+        name: bucket.name, recipientId, share: parsed.share,
       });
+      const grantedShare = result.success ? result.data?.share ?? 1 : 1;
+      const share = grantedShare !== 1
+        ? ` (${formatBucketShare(grantedShare)})`
+        : "";
       await ctx.reply(result.success
-        ? `Bucket access granted: ${escapeHtml(bucket.name)} to ${recipientId}. They can use /bucket include ${escapeHtml(bucket.name)} to merge it into their portfolio.`
+        ? `Bucket access granted: ${escapeHtml(bucket.name)}${share} to ${recipientId}. They can use /bucket include ${escapeHtml(bucket.name)} to merge it into their portfolio.`
         : result.error ?? "Failed to transfer bucket access", htmlReplyOptions);
       return;
     }
@@ -540,90 +697,90 @@ tickersComposer.command("bucket", async (ctx) => {
       await ctx.reply("Only the bucket owner can change its trades.");
       return;
     }
+    if (parsed.ticker && parsed.amount) {
+      await moveStocksToBucket(ctx, bucket.name, parsed.ticker, parsed.amount);
+      return;
+    }
     await replyBucketMoveHistory(ctx, bucket.name);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }
 });
 
-tickersComposer.hears(BUCKET_ACTION_PATTERN, async (ctx) => {
-  if (!ctx.dbEntities.user) {
-    await ctx.text("start");
+tickersComposer.callbackQuery(BUCKET_TOGGLE_PATTERN, async (ctx) => {
+  const userId = ctx.dbEntities.user?.userId;
+  const [, owner, action, bucketName, displayIndexValue] = ctx.match;
+  if (!userId || Number(owner) !== userId) {
+    await ctx.answerCallbackQuery({
+      text: "This bucket menu belongs to another user.",
+    });
     return;
   }
 
-  const text = ctx.message?.text;
-  if (!text) {
+  const bucket = getUserBucket(ctx.db, userId, bucketName);
+  if (!bucket || bucket.ownerUserId !== userId) {
+    await ctx.answerCallbackQuery({
+      text: bucket
+        ? "Only the bucket owner can change its trades."
+        : `Bucket not found: ${bucketName}`,
+    });
     return;
   }
-
-  const match = text.match(BUCKET_ACTION_PATTERN);
-  if (!match) {
-    return;
-  }
-
-  const [, action, bucketName, displayIndexValue] = match;
-  const displayIndex = Number(displayIndexValue);
-  if (
-    !isValidBucketName(bucketName) ||
-    !Number.isInteger(displayIndex) ||
-    displayIndex < 1
-  ) {
-    await ctx.reply(formatBucketNameHelp());
-    return;
-  }
-
-  const bucket = getUserBucket(ctx.db, ctx.dbEntities.user.userId, bucketName);
-  if (!bucket) {
-    await ctx.reply(
-      `Bucket not found: ${escapeHtml(bucketName)}`,
-      htmlReplyOptions,
-    );
-    return;
-  }
-
-  if (bucket.ownerUserId !== ctx.dbEntities.user.userId) {
-    await ctx.reply("Only the bucket owner can change its trades.");
-    return;
-  }
-  if (!hasUserIntegrations(ctx.db, ctx.dbEntities.user.userId)) {
+  if (!hasUserIntegrations(ctx.db, userId)) {
+    await ctx.answerCallbackQuery();
     await ctx.text("no_integrations");
     return;
   }
 
+  const displayIndex = Number(displayIndexValue);
+  let answered = false;
   try {
-    const orders = await fetchIntegratedHistoryOrders(
-      ctx.db,
-      ctx.dbEntities.user.userId,
+    const rawOrders = await fetchIntegratedHistoryOrders(ctx.db, userId);
+    const orders = applyBucketAllocations(
+      rawOrders,
+      readBucketAllocations(ctx.db, userId),
     );
     const group = buildIntegratedHistoryGroups(orders)[displayIndex - 1];
     if (!group) {
-      await ctx.reply(`Transaction not found: ${displayIndex}`);
+      answered = true;
+      await ctx.answerCallbackQuery({
+        text: `Transaction not found: ${displayIndex}`,
+      });
       return;
     }
 
-    const result =
-      action === "move"
-        ? await moveTransactionToBucket({
-            database: ctx.db,
-            userId: ctx.dbEntities.user.userId,
-            bucketName: bucket.name,
-            transactionKey: group.transactionKey,
-          })
-        : await removeTransactionFromBucket({
-            database: ctx.db,
-            userId: ctx.dbEntities.user.userId,
-            bucketName: bucket.name,
-            transactionKey: group.transactionKey,
-          });
+    const args = {
+      database: ctx.db,
+      userId,
+      bucketName: bucket.name,
+      transactionKey: group.transactionKey,
+    };
+    const result = action === "move"
+      ? await moveTransactionToBucket(args)
+      : await removeTransactionFromBucket(args);
+    answered = true;
+    await ctx.answerCallbackQuery({
+      text: result.success
+        ? `${action === "move" ? "Moved to" : "Removed from"} ${bucket.name}`
+        : result.error ?? "Failed to update bucket",
+    });
+    if (!result.success) return;
 
-    if (!result.success) {
-      await ctx.reply(result.error ?? "Failed to update bucket");
-      return;
-    }
-
-    await replyBucketMoveHistory(ctx, bucket.name);
+    // Re-split: returning or moving a partial part changes the allocations.
+    const updatedOrders = applyBucketAllocations(
+      rawOrders,
+      readBucketAllocations(ctx.db, userId),
+    );
+    const pages = await buildBucketMovePages(
+      ctx,
+      userId,
+      bucket.name,
+      updatedOrders,
+    );
+    const html = pages[bucketMovePage(displayIndex)];
+    if (html) await showRichMessage(ctx, { html }, true);
   } catch (error) {
+    if (!answered) await ctx.answerCallbackQuery();
     await replyIntegrationError(ctx, error);
   }
 });

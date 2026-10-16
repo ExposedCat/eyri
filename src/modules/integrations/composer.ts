@@ -1,6 +1,6 @@
-import { Composer, GrammyError } from "grammy";
+import { Composer } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
-import { richApi, type RichMessage } from "../bot/rich.ts";
+import { type RichMessage, showRichMessage } from "../bot/rich.ts";
 import {
   clearIntegrationSetup,
   createIntegration,
@@ -50,36 +50,6 @@ export function buildIntegrationsMessage(
       },
     ],
   };
-}
-
-async function showRichMessage(
-  ctx: CustomContext,
-  richMessage: RichMessage,
-  edit = false,
-) {
-  if (!ctx.chat) return;
-  const api = richApi(ctx.api);
-  if (edit && ctx.callbackQuery?.message) {
-    try {
-      await api.editMessageText({
-        chat_id: ctx.chat.id,
-        message_id: ctx.callbackQuery.message.message_id,
-        rich_message: richMessage,
-      });
-    } catch (error) {
-      // Repeated clicks can request the same menu while it is already shown.
-      if (
-        !(error instanceof GrammyError && error.error_code === 400 &&
-          error.description.includes("message is not modified"))
-      ) throw error;
-    }
-  } else {
-    await api.sendRichMessage({
-      chat_id: ctx.chat.id,
-      rich_message: richMessage,
-      message_thread_id: ctx.msg?.message_thread_id,
-    });
-  }
 }
 
 async function showIntegrations(ctx: CustomContext, edit = false) {

@@ -1,5 +1,5 @@
 // Each rendered line contains complete HTML elements. Keep lines intact so
-// chunking cannot split links, custom emoji, or bucket command shortcuts.
+// chunking cannot split links or custom emoji.
 export function splitMessageLines(text: string, limit = 3500) {
   const chunks: string[] = [];
   let chunk = "";
