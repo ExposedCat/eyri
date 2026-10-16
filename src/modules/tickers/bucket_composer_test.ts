@@ -462,17 +462,25 @@ Deno.test("partial bucket transfers scale the recipient's view and follow owner 
     await h.command("/worth", recipient);
     match(h.lastText(), /\$275\.00/);
 
-    // Included buckets from one owner must share the same fraction.
+    // Buckets of one owner at different shares can be included together:
+    // Core keeps AAPL at 25% (1 share, $100 -> $200), Growth gets MSFT at 100%
+    // (2 shares, $100 -> $150).
+    assign("MSFT.US", "2025-01-03", "Growth");
     await h.command(`/bucket transfer Growth ${recipient}`);
     await h.command("/bucket include Growth", recipient);
-    match(h.lastText(), /already included at 25%/);
-    equal(getUserBucket(db, recipient, "Growth")?.included, false);
-    await h.command(`/bucket transfer Growth 25 ${recipient}`);
-    await h.command("/bucket include Growth", recipient);
+    match(h.lastText(), /included in your portfolio: Growth/);
     equal(getUserBucket(db, recipient, "Growth")?.included, true);
+    await h.command("/worth", recipient);
+    match(h.lastText(), /Total: \+66\.67% \$500\.00/);
+    await h.command("/worth Core", recipient);
+    match(h.lastText(), /Total: \+100\.00% \$200\.00/);
+    await h.command("/worth Growth", recipient);
+    match(h.lastText(), /Total: \+50\.00% \$300\.00/);
+    // Changing one share leaves the other bucket untouched.
     await h.command(`/bucket transfer Core 10 ${recipient}`);
-    match(h.lastText(), /must use the same share/);
-    equal(getUserBucket(db, recipient, "Core")?.share, 0.25);
+    match(h.lastText(), /Core \(10%\)/);
+    await h.command("/worth", recipient);
+    match(h.lastText(), /Total: \+58\.33% \$380\.00/);
 
     // Reply form takes a percentage with the % sign.
     await h.command("/bucket transfer Core 50%", owner, 1122334455);

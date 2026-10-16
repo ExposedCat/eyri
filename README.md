@@ -320,9 +320,8 @@ grant 50% and 50% to two users, but not 50% and 60%; a grant without a
 percentage is 100% and uses the whole bucket. The owner's `/buckets` shows how
 much has been transferred. Granting the same bucket to the same user again with a
 different percentage replaces their share, and a recipient's `/bucket remove NAME`
-frees it. Grants made before this limit existed are kept as they are. Included buckets from one
-owner must use the same share, because they are computed from the same broker
-history; including a bucket with a different share is rejected.
+frees it. Grants made before this limit existed are kept as they are. Buckets from one owner
+can be included together at any shares.
 
 Shared buckets appear in `/buckets` and work with named views such as
 `/perf NAME`, `/worth NAME`, `/worthnumber NAME`, `/options NAME`, `/alltime NAME`,

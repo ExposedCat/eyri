@@ -27,6 +27,9 @@ import { adjustOrderForCorporateActions } from "../market_data/corporate_actions
 type PortfolioSource = {
   ownerId: number;
   share: number;
+  // 0 for an owner's first share in this view; later shares of the same owner
+  // are separate copies of that owner's history.
+  copy: number;
   names: Set<string | null>;
 };
 
@@ -40,7 +43,9 @@ function portfolioSources(
   const sources = new Map<string, PortfolioSource>();
   const add = (ownerId: number, share: number, name: string | null) => {
     const key = `${ownerId}:${share}`;
-    const source = sources.get(key) ?? { ownerId, share, names: new Set() };
+    const copy = [...sources.values()].filter((item) => item.ownerId === ownerId)
+      .length;
+    const source = sources.get(key) ?? { ownerId, share, copy, names: new Set() };
     source.names.add(name);
     sources.set(key, source);
   };
@@ -126,7 +131,7 @@ export async function fetchPortfolioView(
 ) {
   const results = await Promise.all(
     portfolioSources(db, userId, bucketName).map(
-      async ({ ownerId, share, names }) => {
+      async ({ ownerId, share, copy, names }) => {
         if (
           [...names].some((name) => name !== null) &&
           !hasUserIntegrations(db, ownerId)
@@ -169,10 +174,18 @@ export async function fetchPortfolioView(
               bucketName: name,
             })
           );
+        // Buckets of one owner at different shares (e.g. one at 100%, another at
+        // 50%) each scale a copy of the owner's history. Give later copies their
+        // own account identity and keys so FIFO matching and bucket labels never
+        // mix copies. Real integration IDs are positive.
+        const integrationId = (id: number) =>
+          copy === 0 ? id : -(copy * 1_000_000_000 + id);
         const orders = sourceOrders.map((order) => {
           const originalKey = getOrderTransactionKey(order);
           // Preserve each owner's FIFO history without cross-owner bucket collisions.
-          const transactionKey = JSON.stringify([ownerId, originalKey]);
+          const transactionKey = JSON.stringify(
+            copy === 0 ? [ownerId, originalKey] : [ownerId, copy, originalKey],
+          );
           const selected = names.has(assignments.get(originalKey) ?? null);
           if (!selected || bucketName !== null) {
             transactionBuckets.set(
@@ -180,7 +193,11 @@ export async function fetchPortfolioView(
               selected ? bucketName! : "__excluded",
             );
           }
-          return { ...order, transactionKey };
+          return {
+            ...order,
+            integrationId: integrationId(order.integrationId),
+            transactionKey,
+          };
         });
         // A bucket does not own an account's cash or external contributions.
         // Apply the funding reconciliation only when the complete owner's
@@ -224,7 +241,15 @@ export async function fetchPortfolioView(
             })),
           );
         }
-        return { positions, orders, transactionBuckets, accountPerformances };
+        return {
+          positions: positions.map((position) => ({
+            ...position,
+            integrationId: integrationId(position.integrationId),
+          })),
+          orders,
+          transactionBuckets,
+          accountPerformances,
+        };
       },
     ),
   );

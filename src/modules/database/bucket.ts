@@ -167,19 +167,6 @@ export async function deleteBucket({
   }
 }
 
-// One owner's orders feed a view once per share, and FIFO lots are keyed by
-// integration, so a view cannot mix different shares of the same owner.
-function findShareConflict(
-  database: Database,
-  userId: number,
-  bucket: Pick<PortfolioBucket, "name" | "ownerUserId" | "share">,
-) {
-  return getUserBuckets(database, userId).find((other) =>
-    other.included && other.name !== bucket.name &&
-    other.ownerUserId === bucket.ownerUserId && other.share !== bucket.share
-  ) ?? null;
-}
-
 export function formatBucketShare(share: number) {
   return `${Number((share * 100).toFixed(4))}%`;
 }
@@ -240,15 +227,6 @@ export function transferBucketAccess({
   }
   if (existing) {
     // Granting the same bucket with another share changes the recipient's share.
-    const conflict = existing.included &&
-      findShareConflict(database, recipientId, { ...existing, share });
-    if (conflict) {
-      return {
-        success: false,
-        error:
-          `Recipient includes ${conflict.name} from you at ${formatBucketShare(conflict.share)}; included buckets from one owner must use the same share`,
-      };
-    }
     database.prepare(`
       UPDATE portfolio_bucket_access SET share = ?
       WHERE user_id = ? AND bucket_name = ? AND owner_user_id = ?
@@ -276,14 +254,6 @@ export function setBucketIncluded({
 }: CreateBucketArgs & { included: boolean }): ServiceResult<PortfolioBucket> {
   const bucket = getUserBucket(database, userId, name);
   if (!bucket) return { success: false, error: "Bucket not found" };
-  const conflict = included && findShareConflict(database, userId, bucket);
-  if (conflict) {
-    return {
-      success: false,
-      error:
-        `${conflict.name} from the same owner is already included at ${formatBucketShare(conflict.share)}; exclude it first or ask the owner for the same share`,
-    };
-  }
   if (included) {
     database.prepare(`
       INSERT OR REPLACE INTO portfolio_bucket_inclusions
