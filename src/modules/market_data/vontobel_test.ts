@@ -625,3 +625,61 @@ Deno.test("warrant chart uses bids per warrant with EUR conversion and preserves
   equal(series.at(-1)!.percentage, 100);
   equal(series.at(-1)!.gain, 22);
 });
+
+Deno.test("newer non-V Vontobel warrants get the issuer bid; other issuers keep the broker price", async () => {
+  const bdIsin = "DE000BD4BJ27";
+  for (const value of ["BD4BJ2", " bd4bj2 ", "BD4BJ2.DE", bdIsin]) {
+    equal(vontobelIsin({ ticker: value, currency: "EUR", assetCategory: "WAR" }), bdIsin);
+  }
+  // Only warrants are guessed, never stocks; M-prefixed WKNs are Morgan Stanley's.
+  equal(vontobelIsin({ ticker: "BD4BJ2", currency: "EUR" }), undefined);
+  equal(vontobelIsin({ ticker: "BD4BJ2", currency: "EUR", assetCategory: "STK" }), undefined);
+  equal(vontobelIsin({ ticker: "MN03RW", currency: "EUR", assetCategory: "WAR" }), undefined);
+  equal(vontobelIsin({ ticker: "BD4BJ2", currency: "USD", assetCategory: "WAR" }), undefined);
+  equal(vontobelIsin({ ticker: "DE000BD4BJ28", currency: "EUR", assetCategory: "WAR" }), undefined);
+
+  // Applied Materials C500: IB Gateway's mark was 8.61; the issuer bid is 6.84.
+  const holding = {
+    integrationId: 7,
+    integrationKind: "ibkr",
+    account: "one",
+    ticker: "BD4BJ2",
+    assetCategory: "WAR",
+    currency: "EUR",
+    amount: 13,
+    currentPrice: 8.61,
+    averageUnitPrice: 7.63,
+    totalInput: 99.19,
+    totalNow: 111.93,
+    unrealizedPnl: 12.74,
+    realizedPnl: null,
+    dailyPnl: null,
+    dailyPnlPercentage: null,
+    dailyPnlBaseline: null,
+    openedAt: null,
+  } as IntegrationPortfolioPosition;
+  const quote = latestQuote(6.84);
+  quote.payload.data.isin = bdIsin;
+  const [priced] = await enrichPortfolioWithVontobelQuotes([holding], async (input) => {
+    ok(String(input).includes(`productdetailpage/${bdIsin}`));
+    return Response.json(quote);
+  });
+  equal(priced.currentPrice, 6.84);
+  ok(Math.abs(priced.totalNow! - 88.92) < 1e-9);
+  ok(priced.unrealizedPnl! < 0);
+  equal(priced.currentPriceSource, "vontobel_bid");
+
+  // A guessed WKN from another issuer is not a Vontobel product.
+  const other = { ...holding, ticker: "HS7ABC" };
+  deepStrictEqual(
+    await enrichPortfolioWithVontobelQuotes([other], async () =>
+      new Response(null, { status: 404 })),
+    [other],
+  );
+  // A real Vontobel product without a quote still fails instead of using the broker mark.
+  await rejects(
+    enrichPortfolioWithVontobelQuotes([holding], async () =>
+      new Response(null, { status: 503 })),
+    /Vontobel bid quote unavailable/,
+  );
+});

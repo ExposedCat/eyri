@@ -24,25 +24,45 @@ function checksum(value: string) {
   }, 0);
 }
 
+const isWarrant = (assetCategory?: string | null) =>
+  ["WAR", "WARRANT"].includes(assetCategory?.trim().toUpperCase() ?? "");
+
 // German ISINs consist of DE000 + WKN + a Luhn check digit. A candidate
 // still needs issuer verification; a six-character stock must never be guessed.
+// Vontobel's older WKNs start with V. Newer Vontobel warrants use other
+// prefixes (e.g. BD4BJ2 = DE000BD4BJ27), so for warrants any WKN is a
+// candidate; M-prefixed WKNs are left to the Morgan Stanley lookup.
 export function vontobelIsin(
-  instrument: { ticker: string; isin?: string; currency: string },
+  instrument: {
+    ticker: string;
+    isin?: string;
+    currency: string;
+    assetCategory?: string | null;
+  },
 ) {
+  const wknPattern = isWarrant(instrument.assetCategory)
+    ? /^[A-LN-Z][A-Z0-9]{5}$/
+    : /^V[A-Z0-9]{5}$/;
   const ticker = instrument.ticker.trim().toUpperCase();
   const supplied = instrument.isin?.trim().toUpperCase();
   const isin = supplied ??
-    (/^DE000V[A-Z0-9]{5}\d$/.test(ticker) ? ticker : undefined);
+    (/^DE000[A-Z0-9]{6}\d$/.test(ticker) ? ticker : undefined);
   if (isin) {
-    if (!/^DE000V[A-Z0-9]{5}\d$/.test(isin)) return undefined;
+    const wkn = isin.match(/^DE000([A-Z0-9]{6})\d$/)?.[1];
+    if (!wkn || !wknPattern.test(wkn)) return undefined;
     const expected = (10 - checksum(isin.slice(0, -1)) % 10) % 10;
     return Number(isin.at(-1)) === expected ? isin : undefined;
   }
   if (instrument.currency.trim().toUpperCase() !== "EUR") return undefined;
-  const wkn = ticker.match(/^(V[A-Z0-9]{5})(?:\.(?:DE|F|SG))?$/)?.[1];
-  if (!wkn) return undefined;
+  const wkn = ticker.match(/^([A-Z0-9]{6})(?:\.(?:DE|F|SG))?$/)?.[1];
+  if (!wkn || !wknPattern.test(wkn)) return undefined;
   const base = "DE000" + wkn;
   return base + (10 - checksum(base) % 10) % 10;
+}
+
+// Non-V candidates are guesses: another issuer's warrant may share the format.
+export function isGuessedVontobelIsin(isin: string) {
+  return !isin.startsWith("DE000V");
 }
 
 export class VontobelHistoryError extends Error {
@@ -193,6 +213,14 @@ export async function enrichPortfolioWithVontobelQuotes(
       quotes.set(isin, quote);
     }
     try {
+      await quote;
+    } catch (cause) {
+      // Another issuer's warrant keeps its broker price.
+      if (cause instanceof NotVontobelWarrantError && isGuessedVontobelIsin(isin)) {
+        return position;
+      }
+    }
+    try {
       const { bid, currency, timestamp } = await quote;
       if (currency !== position.currency.trim().toUpperCase()) {
         throw new Error("Vontobel quote currency does not match the holding.");
@@ -286,7 +314,10 @@ export class VontobelHistoryCache {
     start: string,
     requestedEnd?: string,
   ): Promise<PriceHistory> {
-    if (vontobelIsin({ ticker: isin, currency: "EUR" }) !== isin) {
+    if (
+      vontobelIsin({ ticker: isin, currency: "EUR", assetCategory: "WAR" }) !==
+        isin
+    ) {
       throw new Error("Invalid Vontobel ISIN.");
     }
     const stored = this.db.prepare(

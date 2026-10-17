@@ -12,6 +12,7 @@ import {
   NotMorganStanleyWarrantError,
 } from "./morgan_stanley.ts";
 import {
+  isGuessedVontobelIsin,
   NotVontobelWarrantError,
   VONTOBEL_PREFIX,
   vontobelIsin,
@@ -233,9 +234,11 @@ export class YahooHistoryCache {
       } catch (cause) {
         // A stock can coincidentally have six letters starting with V. Only a
         // definite product mismatch may fall back; unavailable warrant data cannot.
+        // A guessed non-V WKN may belong to another issuer's warrant.
         if (
           !(cause instanceof NotVontobelWarrantError) ||
-          ["WAR", "WARRANT"].includes(instrument.assetCategory?.toUpperCase() ?? "")
+          (["WAR", "WARRANT"].includes(instrument.assetCategory?.toUpperCase() ?? "") &&
+            !isGuessedVontobelIsin(isin))
         ) {
           throw new VontobelHistoryError(isin, cause);
         }
