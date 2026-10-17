@@ -7,6 +7,7 @@ import { getDatabase } from "../storage/sqlite.ts";
 import {
   ensureTickerDisplaySchema,
   formatDecoratedTicker,
+  parseLabelCommand,
   readTickerDecorations,
   readTickerEmojiMappings,
   readTickerLabelLinks,
@@ -315,5 +316,27 @@ Deno.test("ticker display defaults are shared until a user overrides them", asyn
     if (previous === undefined) Deno.env.delete("EYRI_DATABASE_PATH");
     else Deno.env.set("EYRI_DATABASE_PATH", previous);
     await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("label commands accept quoted tickers with spaces", () => {
+  deepStrictEqual(parseLabelCommand("AAPL Apple Inc"), {
+    ticker: "AAPL",
+    label: "Apple Inc",
+  });
+  deepStrictEqual(
+    parseLabelCommand(' "nvs Dec17\'27 230 Call"  Novartis call '),
+    { ticker: "NVS DEC17'27 230 CALL", label: "Novartis call" },
+  );
+  deepStrictEqual(parseLabelCommand("“SMH C575 Dec27” Semis"), {
+    ticker: "SMH C575 DEC27",
+    label: "Semis",
+  });
+  deepStrictEqual(parseLabelCommand('"MU WAR" false'), {
+    ticker: "MU WAR",
+    label: false,
+  });
+  for (const input of ['"MU WAR"', '"" label', '"  " label', ""]) {
+    equal(parseLabelCommand(input), null, input);
   }
 });

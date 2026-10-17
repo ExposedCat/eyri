@@ -287,7 +287,9 @@ first value set for each ticker and command becomes the global default. Once a
 default exists, subsequent changes apply only to the user issuing the command,
 including the user who originally set the default. Other users keep the default.
 `/label TICKER false` hides the label and `/link TICKER false` removes the link
-for that scope, overriding any inherited or automatic link.
+for that scope, overriding any inherited or automatic link. Quote a ticker that
+contains spaces: `/label "NVS Dec17'27 230 Call" Novartis call` (typographic
+quotes also work).
 
 Existing global icons remain defaults. Older personal icon assignments migrate
 to one shared set per ticker; if they differ, the most recently updated complete

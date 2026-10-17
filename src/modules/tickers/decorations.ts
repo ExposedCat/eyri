@@ -772,14 +772,18 @@ export function parseLabelCommand(input: string): {
   label: string | false;
 } | null {
   const trimmedInput = input.trim();
-  const tickerMatch = trimmedInput.match(/^\S+/);
+  // A ticker containing spaces can be quoted: /label "NVS Dec17'27 230 Call" Novartis.
+  // Phone keyboards may substitute typographic quotes.
+  const tickerMatch = /^["“„]/.test(trimmedInput)
+    ? trimmedInput.match(/^["“„]([^"“”„]+)["”“]/)
+    : trimmedInput.match(/^\S+/);
   if (!tickerMatch) {
     return null;
   }
 
-  const ticker = tickerMatch[0];
-  const label = trimmedInput.slice(ticker.length).trim();
-  if (!label) {
+  const ticker = tickerMatch[1] ?? tickerMatch[0];
+  const label = trimmedInput.slice(tickerMatch[0].length).trim();
+  if (!ticker.trim() || !label) {
     return null;
   }
 
