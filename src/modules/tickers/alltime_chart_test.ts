@@ -487,6 +487,32 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
   }
 });
 
+Deno.test("chart retains trade classification when holding metadata omits it", async () => {
+  const db = new Database(":memory:");
+  const categories: (string | null | undefined)[] = [];
+  const cache = {
+    resolve: (source: { ticker: string; assetCategory?: string | null }) => {
+      categories.push(source.assetCategory);
+      return Promise.resolve(source.ticker);
+    },
+    get: () => Promise.resolve(history()),
+  };
+  try {
+    for (const assetCategory of [undefined, null]) {
+      await loadAllTimeDataset(db, {
+        positions: [{ ...holding(1, 100, 130), assetCategory }],
+        orders: [{ ...trade(1, 100, "2025-01-02"), assetCategory: "WAR" }],
+        transactionBuckets: new Map(),
+        bucketName: null,
+        now,
+      }, 1, "Test", cache as never);
+    }
+    deepStrictEqual(categories, ["WAR", "WAR"]);
+  } finally {
+    db.close();
+  }
+});
+
 Deno.test("any failed or empty historical fetch rejects the entire chart and reports every affected instrument", async () => {
   const db = new Database(":memory:");
   const fetched: string[] = [];

@@ -506,6 +506,7 @@ export async function loadAllTimeDataset(
     const key = instrumentKey(p), previous = sources.get(key);
     sources.set(key, {
       ...p,
+      assetCategory: p.assetCategory ?? previous?.assetCategory ?? null,
       yahooSymbol: p.yahooSymbol ?? previous?.yahooSymbol,
       isin: p.isin ?? previous?.isin,
     });

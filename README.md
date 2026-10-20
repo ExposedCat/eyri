@@ -478,6 +478,9 @@ Vontobel warrants resolve automatically from their German WKN (for example
 `VY8GR5` or `VY8GTE`), a German exchange suffix (`.DE`, `.F`, `.SG`), or a
 broker-provided ISIN. Eyri derives and validates the ISIN check digit, then checks
 Vontobel's product metadata for the issuer, warrant type and quote currency.
+Warrants with newer WKN prefixes (such as `BD4BJ2`) also use this lookup.
+When broker classification is missing, WKN-shaped codes containing digits are
+checked with the issuer; explicitly classified stocks are not guessed this way.
 Global `/yahoo` mappings and administrator Yahoo overrides remain authoritative.
 The issuer's lifetime chart supplies daily bid quotes in EUR per warrant; the
 underlying stock series and warrant exercise ratio are not used as prices.

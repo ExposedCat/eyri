@@ -28,7 +28,8 @@ const isWarrant = (assetCategory?: string | null) =>
   ["WAR", "WARRANT"].includes(assetCategory?.trim().toUpperCase() ?? "");
 
 // German ISINs consist of DE000 + WKN + a Luhn check digit. A candidate
-// still needs issuer verification; a six-character stock must never be guessed.
+// still needs issuer verification. With missing broker classification, only
+// codes containing digits qualify; ordinary alphabetic stock symbols do not.
 // Vontobel's older WKNs start with V. Newer Vontobel warrants use other
 // prefixes (e.g. BD4BJ2 = DE000BD4BJ27), so for warrants any WKN is a
 // candidate; M-prefixed WKNs are left to the Morgan Stanley lookup.
@@ -40,8 +41,11 @@ export function vontobelIsin(
     assetCategory?: string | null;
   },
 ) {
-  const wknPattern = isWarrant(instrument.assetCategory)
+  const category = instrument.assetCategory?.trim();
+  const wknPattern = isWarrant(category)
     ? /^[A-LN-Z][A-Z0-9]{5}$/
+    : !category
+    ? /^(?:V[A-Z0-9]{5}|(?=.*\d)[A-LN-Z][A-Z0-9]{5})$/
     : /^V[A-Z0-9]{5}$/;
   const ticker = instrument.ticker.trim().toUpperCase();
   const supplied = instrument.isin?.trim().toUpperCase();

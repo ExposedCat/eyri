@@ -479,14 +479,12 @@ Deno.test("six-character stock lookalikes can still resolve through Yahoo after 
         },
       }));
     }, clock);
-    equal(
-      await cache.resolve({
-        ticker: "VABCDE",
-        currency: "EUR",
-        assetCategory: "STK",
-      }),
-      "VABCDE",
-    );
+    for (const instrument of [
+      { ticker: "VABCDE", currency: "EUR", assetCategory: "STK" },
+      { ticker: "BD4BJ2", currency: "EUR" },
+    ]) {
+      equal(await cache.resolve(instrument), instrument.ticker);
+    }
   } finally {
     db.close();
   }
@@ -631,8 +629,8 @@ Deno.test("newer non-V Vontobel warrants get the issuer bid; other issuers keep 
   for (const value of ["BD4BJ2", " bd4bj2 ", "BD4BJ2.DE", bdIsin]) {
     equal(vontobelIsin({ ticker: value, currency: "EUR", assetCategory: "WAR" }), bdIsin);
   }
-  // Only warrants are guessed, never stocks; M-prefixed WKNs are Morgan Stanley's.
-  equal(vontobelIsin({ ticker: "BD4BJ2", currency: "EUR" }), undefined);
+  // Missing classification permits a candidate; known stocks are not guessed.
+  equal(vontobelIsin({ ticker: "BD4BJ2", currency: "EUR" }), bdIsin);
   equal(vontobelIsin({ ticker: "BD4BJ2", currency: "EUR", assetCategory: "STK" }), undefined);
   equal(vontobelIsin({ ticker: "MN03RW", currency: "EUR", assetCategory: "WAR" }), undefined);
   equal(vontobelIsin({ ticker: "BD4BJ2", currency: "USD", assetCategory: "WAR" }), undefined);
@@ -682,4 +680,56 @@ Deno.test("newer non-V Vontobel warrants get the issuer bid; other issuers keep 
       new Response(null, { status: 503 })),
     /Vontobel bid quote unavailable/,
   );
+});
+
+Deno.test("BD warrant histories resolve without broker classification and persist across restarts", async () => {
+  const warrants = [
+    ["BD0DVQ", "DE000BD0DVQ9"],
+    ["BD1JA6", "DE000BD1JA62"],
+    ["BD1Z2U", "DE000BD1Z2U0"],
+    ["BD2HSF", "DE000BD2HSF5"],
+    ["BD3G1A", "DE000BD3G1A5"],
+    ["BD4BJ2", "DE000BD4BJ27"],
+  ];
+  const db = new Database(":memory:");
+  const calls: URL[] = [];
+  const request: typeof fetch = async (input, init) => {
+    const url = new URL(String(input));
+    const productIsin = url.pathname.split("/").find((part) => part.startsWith("DE000"))!;
+    const response = await market(calls)(input, init);
+    const data = await response.json();
+    if (url.pathname.includes("productdetailpage")) {
+      data.payload.data.isin = productIsin;
+    } else {
+      data.payload.series[1].priceIdentifier = productIsin;
+    }
+    return Response.json(data);
+  };
+  try {
+    const cache = new YahooHistoryCache(db, request, clock);
+    for (const [ticker, isin] of warrants) {
+      for (const assetCategory of [undefined, null, "", "WAR", "WARRANT"]) {
+        equal(
+          await cache.resolve({ ticker, currency: "EUR", assetCategory }, "2026-06-24"),
+          "VONTOBEL:" + isin,
+        );
+      }
+      const history = await cache.get("VONTOBEL:" + isin, "2026-06-24");
+      equal(history.priceBasis, "BID");
+      equal(history.currency, "EUR");
+      equal(history.bars[0].close, 2.03);
+    }
+    equal(calls.length, warrants.length * 2);
+    const restarted = new YahooHistoryCache(db, () => {
+      throw new Error("Unexpected network request");
+    }, clock);
+    for (const [ticker, isin] of warrants) {
+      equal(await restarted.resolve({ ticker, currency: "EUR" }, "2026-06-24"), "VONTOBEL:" + isin);
+    }
+    // Unclassified alphabetic stocks and explicitly classified stocks are not guessed.
+    equal(vontobelIsin({ ticker: "ABCDEF", currency: "EUR" }), undefined);
+    equal(vontobelIsin({ ticker: "BD4BJ2", currency: "EUR", assetCategory: "STK" }), undefined);
+  } finally {
+    db.close();
+  }
 });
