@@ -31,6 +31,7 @@ Deno.test("IBKR Flex keeps polling the same report while generation is in progre
   ];
   const urls: URL[] = [];
   const sleeps: number[] = [];
+  let time = 0;
 
   const statement = await getFlexStatement(
     "token",
@@ -42,8 +43,10 @@ Deno.test("IBKR Flex keeps polling the same report while generation is in progre
     },
     (milliseconds) => {
       sleeps.push(milliseconds);
+      time += milliseconds;
       return Promise.resolve();
     },
+    () => time,
   );
 
   equal(statement, report);
@@ -60,5 +63,33 @@ Deno.test("IBKR Flex keeps polling the same report while generation is in progre
       ["GetStatement", "reference", null, null],
     ],
   );
-  deepStrictEqual(sleeps, [3_000]);
+  deepStrictEqual(sleeps, [6_100, 3_000, 3_100]);
+});
+
+Deno.test("IBKR Flex shares request pacing across concurrent queries with the same token", async () => {
+  let time = 0;
+  const starts: number[] = [];
+  const request: typeof fetch = (input) => {
+    starts.push(time);
+    return Promise.resolve(
+      new Response(
+        String(input).includes("SendRequest")
+          ? "<FlexStatementResponse><Status>Success</Status><ReferenceCode>reference</ReferenceCode></FlexStatementResponse>"
+          : '<FlexQueryResponse type="AF" />',
+      ),
+    );
+  };
+  const sleep = (milliseconds: number) => {
+    time += milliseconds;
+    return Promise.resolve();
+  };
+  const range = getFlexStatementRange(0);
+  await Promise.all([
+    getFlexStatement("shared", "trades", range, request, sleep, () => time),
+    getFlexStatement("shared", "funding", range, request, sleep, () => time),
+  ]);
+  equal(starts.length, 4);
+  for (let index = 1; index < starts.length; index++) {
+    equal(starts[index] - starts[index - 1] >= 6_100, true);
+  }
 });

@@ -1018,6 +1018,7 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 				);
 			}
 		} else notes.push("Configure /ibkr to fetch current RSU prices.");
+		if (notes.length && vestings.length) throw new Error(notes.join("\n"));
 		const currency = ctx.dbEntities.user.currency ?? "USD";
 		const displayRate = (await fetchConversionRates(["USD"], currency)).get("USD")!;
 		const groups = buildRsuGroups(view.upcoming, prices, formatTicker, now, currency, displayRate);

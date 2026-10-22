@@ -1,4 +1,4 @@
-import { deepStrictEqual, equal, match, ok } from "node:assert/strict";
+import { deepStrictEqual, equal, match, ok, rejects } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -220,9 +220,9 @@ Deno.test("MCP returns concise numerical reports matching Telegram totals and hy
     const perf = await call(h, "perf");
     equal(perf.positions[0].pnl, 120);
     equal(perf.total.returnPct, 20);
-    const alltime = await call(h, "alltime");
-    equal(alltime.total.pnl, 320);
-    equal(alltime.total.returnPct, 32);
+    const alltime = await h.client.callTool({ name: "alltime", arguments: { userId: 1 } });
+    equal(alltime.isError, true);
+    match(JSON.stringify(alltime.structuredContent), /percentage.*requires deposits/);
     match(
       await buildIntegratedPerformanceList({
         positions: [position],
@@ -230,14 +230,9 @@ Deno.test("MCP returns concise numerical reports matching Telegram totals and hy
       }),
       /Total: \+20.00% \+\$120.00/,
     );
-    match(
-      await buildIntegratedAllTimePerformanceList({
-        positions: [position],
-        orders,
-        formatTicker: (s) => s,
-      }),
-      /Total: \+32.00% \+\$320.00/,
-    );
+    await rejects(buildIntegratedAllTimePerformanceList({
+      positions: [position], orders, formatTicker: (s) => s,
+    }), /percentage.*requires deposits/);
     equal((await call(h, "worth")).total.value, 720);
     equal((await call(h, "sold")).total.pnl, 200);
     deepStrictEqual((await call(h, "dpnl")).total, { pnl: 12, returnPct: 2 });
@@ -266,6 +261,34 @@ Deno.test("MCP returns concise numerical reports matching Telegram totals and hy
     equal(allocation.holdings[0].weightPct, 100);
     equal(allocation.holdings[0].returnPct, 20);
     equal((await call(h, "chart")).points[0].pnl, 320);
+  } finally {
+    await h.close();
+  }
+});
+
+Deno.test("MCP alltime uses funding minus cash and propagates missing quotes as errors", async () => {
+  const h = await harness();
+  try {
+    const view = h.runtime.view;
+    h.runtime.view = async (...args) => ({
+      ...await view(...args),
+      accountPerformances: [{
+        integrationId: 1, currency: "USD", totalValue: 1420,
+        deposits: 1200, withdrawals: 100, netContributions: 1100,
+        cash: 700, ledgerCash: { USD: 700 }, pnl: 320,
+        openedAt: new Date("2025-01-01"), historyThrough: new Date(),
+        positionValue: 720, investmentValue: 720,
+        reportedComponents: [{ currency: "USD", cost: 1000, pnl: 320 }],
+      }],
+    });
+    const report = await call(h, "alltime");
+    equal(report.total.pnl, 320);
+    equal(report.total.returnPct, 80);
+    equal((await call(h, "allnumber")).total, 320);
+    h.runtime.view = async () => { throw new Error("Broker quote request failed"); };
+    const result = await h.client.callTool({ name: "alltime", arguments: { userId: 1 } });
+    equal(result.isError, true);
+    match(JSON.stringify(result.structuredContent), /Broker quote request failed/);
   } finally {
     await h.close();
   }
@@ -329,7 +352,7 @@ Deno.test("MCP honors shared buckets, included buckets and viewer currency witho
   }
 });
 
-Deno.test("MCP preserves empty/unknown values, masked integration details and RSU cutoff totals", async () => {
+Deno.test("MCP preserves empty results, rejects missing metrics, and reports RSU cutoff totals", async () => {
   const h = await harness();
   try {
     deepStrictEqual(await call(h, "number", { userId: 2 }), {
@@ -345,10 +368,11 @@ Deno.test("MCP preserves empty/unknown values, masked integration details and RS
       bucketName: null,
       accountPerformances: [],
     });
-    equal((await call(h, "number")).total, null);
-    const daily = await call(h, "dpnl");
-    equal(daily.positions[0].pnl, 12);
-    equal(daily.total.pnl, null); // Same missing-price guard as the Telegram total.
+    for (const name of ["number", "dpnl"]) {
+      const result = await h.client.callTool({ name, arguments: { userId: 1 } });
+      equal(result.isError, true);
+      match(JSON.stringify(result.structuredContent), /unavailable/);
+    }
     ok(
       createIntegration({
         database: h.db,

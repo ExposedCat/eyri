@@ -105,7 +105,8 @@ Deno.test("whole included accounts retain wallet holdings and funding; partial b
     deepStrictEqual(view.positions[0].brokerValuations, live.brokerValuations);
     const report = await buildIntegratedAllTimeReport(view);
     equal(report?.total.change, 105);
-    equal(report?.total.cost, 300);
+    equal(report?.total.cost, 295);
+    equal(report?.totalReturnPercentage, 105 / 295 * 100);
     await fetchPortfolioView(db, 1, "Included", {
       history: true,
       accountPerformance: true,
@@ -266,9 +267,10 @@ Deno.test("included buckets merge holdings and sales using owner integrations an
     match(
       await buildIntegratedAllTimePerformanceList({
         ...merged,
+        numberOnly: true,
         formatTicker: (s) => s,
       }),
-      /Total: \+90\.00% \+\$450\.00/,
+      /\+\$450\.00/,
     );
     const series = buildAllTimeSeries(
       { ...merged, now: new Date("2025-01-03") },

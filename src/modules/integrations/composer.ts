@@ -68,9 +68,9 @@ export function parseIntegrationCredentials(
 ): Record<string, unknown> | null {
   const params = input.trim().split(/\s+/);
   if (kind === "ibkr") {
-    if (params.length !== 3) return null;
-    const [instanceUrl, flexToken, flexQueryId] = params;
-    return { instanceUrl, flexToken, flexQueryId };
+    if (params.length !== 3 && params.length !== 4) return null;
+    const [instanceUrl, flexToken, flexQueryId, fundingFlexQueryId] = params;
+    return { instanceUrl, flexToken, flexQueryId, ...(fundingFlexQueryId ? { fundingFlexQueryId } : {}) };
   }
   if (kind === "t212") {
     if (params.length !== 2) return null;
@@ -89,7 +89,7 @@ function credentialPrompt(kind: IntegrationKind) {
     return "Send your Trading 212 credentials in this format:\n\n<code>[api_key] [secret_key]</code>\n\nGenerate the key and secret in your live account. Enable read-only Portfolio, History - Orders and History - Transactions permissions; leave trading permissions disabled.\n\nUse /cancel to cancel.";
   }
   return kind === "ibkr"
-    ? "Send your IBKR credentials in this format:\n\n<code>[instance_url] [flex_token] [flex_query_id]</code>\n\nUse /cancel to cancel."
+    ? "Send your IBKR credentials in this format:\n\n<code>[instance_url] [flex_token] [flex_query_id] [funding_flex_query_id]</code>\n\nThe optional fourth value selects a separate Activity Flex Query for funding. Otherwise the trade query must also include Account Information, Cash Transactions, Cash Report and Change in NAV.\n\nUse /cancel to cancel."
     : "Send your Freedom24 credentials in this format:\n\n<code>[api_key] [secret_key] [history_years]</code>\n\n<code>history_years</code> is optional and defaults to 10.\n\nUse /cancel to cancel.";
 }
 

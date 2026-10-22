@@ -1,4 +1,5 @@
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
+import { requireReportNumber } from "../../utils/report_value.ts";
 import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
 import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { isStockPosition } from "./portfolio.ts";
@@ -48,12 +49,14 @@ export async function buildPortfolioAllocation(
 				? null
 				: position.averageUnitPrice * position.amount);
 		const cost = nativeCost;
+		requireReportNumber(cost, `${ticker} purchase cost`);
 		const nativeChange = position.brokerValuations || nativeCost === null
 			? position.unrealizedPnl === null
 				? null
 				: position.unrealizedPnl
 			: nativeValue - nativeCost;
 		const change = nativeChange;
+		requireReportNumber(change, `${ticker} P/L`);
 		const existing = entries.get(ticker);
 		entries.set(
 			ticker,
@@ -91,8 +94,8 @@ export async function buildPortfolioAllocation(
 			weight: Math.abs(holding.value) / grossValue * 100,
 			value: holding.value,
 			change: holding.change,
-			returnPct: holding.change === null || holding.cost === null || holding.cost === 0
-				? null : holding.change / holding.cost * 100,
+			returnPct: holding.cost === 0 ? 0
+				: requireReportNumber(holding.change, `${ticker} P/L`) / requireReportNumber(holding.cost, `${ticker} purchase cost`) * 100,
 		})),
 	};
 }
@@ -116,14 +119,8 @@ export async function buildPortfolioChart(
 			weight: holding.weight,
 			value: formatMoney(holding.value, currency, 0),
 			change: holding.change,
-			changeLabel:
-				holding.change === null
-					? "?"
-					: formatMoneyChange(holding.change, "$", 2, currency),
-			returnLabel:
-				holding.returnPct === null
-					? "?"
-					: formatMoneyChange(holding.returnPct, "%", 1),
+			changeLabel: formatMoneyChange(requireReportNumber(holding.change, `${holding.ticker} P/L`), "$", 2, currency),
+			returnLabel: formatMoneyChange(requireReportNumber(holding.returnPct, `${holding.ticker} percentage`), "%", 1),
 		})),
 	};
 }

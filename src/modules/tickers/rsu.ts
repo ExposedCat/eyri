@@ -1,4 +1,5 @@
 import type { RsuAward } from "../database/rsu.ts";
+import { requireReportNumber } from "../../utils/report_value.ts";
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 
 const DAY_MS = 86_400_000;
@@ -148,11 +149,14 @@ function rsuValue(
 	cost: number,
 	displayRate: number,
 ) {
-	const pnl = value === undefined ? null : value - cost;
+	value = requireReportNumber(value, "RSU market value (requires a current quote for every ticker)");
+	requireReportNumber(cost, "RSU cost");
+	requireReportNumber(displayRate, "RSU exchange rate");
+	const pnl = value - cost;
 	return {
-		value: value === undefined ? null : value * displayRate,
-		pnl: pnl === null ? null : pnl * displayRate,
-		returnPct: pnl === null ? null : cost === 0 ? 0 : (pnl / cost) * 100,
+		value: requireReportNumber(value * displayRate, "RSU market value"),
+		pnl: requireReportNumber(pnl * displayRate, "RSU P/L"),
+		returnPct: requireReportNumber(cost === 0 ? 0 : (pnl / cost) * 100, "RSU percentage"),
 	};
 }
 
@@ -163,8 +167,6 @@ function formatRsuValue(
 	displayRate: number,
 ) {
 	const report = rsuValue(value, cost, displayRate);
-	if (report.value === null || report.pnl === null || report.returnPct === null)
-		return "? (? ?)";
 	return `${formatMoney(report.value, currency)} (${formatMoneyChange(report.pnl, "$", 2, currency)} ${formatMoneyChange(report.returnPct, "%")})`;
 }
 
@@ -174,14 +176,12 @@ function rsuSummaryValue(
 ) {
 	let value = 0;
 	let cost = 0;
-	let complete = true;
 	for (const vesting of vestings) {
-		const price = prices.get(vesting.ticker);
-		if (price === undefined) complete = false;
-		else value += vesting.amount * price;
+		const price = requireReportNumber(prices.get(vesting.ticker), `${vesting.ticker} RSU quote`);
+		value += vesting.amount * price;
 		cost += vesting.amount * vesting.awardPrice;
 	}
-	return { value: complete ? value : undefined, cost };
+	return { value, cost };
 }
 
 export function buildRsuSummary(

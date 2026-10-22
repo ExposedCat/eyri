@@ -1,4 +1,7 @@
+import { requireReportNumber } from "./report_value.ts";
+
 export function formatMoney(value: number, currency = "USD", points = 2) {
+	requireReportNumber(value, "monetary value");
 	const amount = Math.abs(value).toLocaleString("en-US", {
 		minimumFractionDigits: points,
 		maximumFractionDigits: points,
@@ -15,6 +18,7 @@ export function formatMoneyChange(
 	points = 2,
 	currency = "USD",
 ) {
+	requireReportNumber(change, "monetary change");
 	const rounded = Number(change.toFixed(points));
 	const sign = rounded > 0 ? "+" : rounded < 0 ? "-" : "";
 	return `${sign}${

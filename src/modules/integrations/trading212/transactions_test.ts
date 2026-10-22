@@ -152,9 +152,9 @@ Deno.test("CFD purchases, full sales and open funding flow through every portfol
       await buildIntegratedSoldPerformanceList({ orders }),
       /CFD \+100\.00% \+\$500\.00/,
     );
-    match(
-      await buildIntegratedAllTimePerformanceList({ orders, positions }),
-      /CFD \+71\.43% \+\$500\.00/,
+    await rejects(
+      buildIntegratedAllTimePerformanceList({ orders, positions }),
+      /percentage.*requires deposits/,
     );
     match(
       await buildIntegratedAllTimePerformanceList({
@@ -226,8 +226,11 @@ Deno.test("CFD purchases, full sales and open funding flow through every portfol
       resolve: () => {
         throw new Error("CFD must never resolve a market symbol");
       },
-      get: () => {
-        throw new Error("CFD must never fetch market prices");
+      get: (symbol: string) => {
+        equal(symbol, "CSPX.L");
+        return Promise.resolve({ symbol, currency: "USD", instrumentType: "ETF", splits: [], bars: [
+          { date: "2025-12-31", close: 100 }, { date: "2026-01-05", close: 101 },
+        ] });
       },
     };
     const dataset = await loadAllTimeDataset(

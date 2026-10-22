@@ -275,7 +275,9 @@ Deno.test("shared reporting commands work without a recipient integration and ne
       await h.command(command, recipient);
       equal(h.lastText().includes("PRIVATE"), false, command);
       equal(h.lastText().includes("No integrations"), false, command);
-      equal(h.lastText().includes("Failed to fetch"), false, command);
+      if (command === "/alltime") match(h.lastText(), /percentage.*requires deposits/);
+      else equal(h.lastText().includes("Failed to fetch"), false, command);
+      equal(h.lastText().includes("?"), false, command);
       if (command === "/worth") match(h.lastText(), /Total: \+100\.00% \$800\.00/);
       if (command === "/worthnumber") match(h.lastText(), /\n\$800\.00$/);
     }
@@ -284,7 +286,8 @@ Deno.test("shared reporting commands work without a recipient integration and ne
     match(h.lastText(), /Total: \+100\.00% 640\.00 EUR/);
     for (const command of ["/perf", "/alltime", "/allnumber", "/number", "/worth", "/worthnumber", "/history", "/stocks", "/when AAPL.US=200"]) {
       await h.command(command, recipient);
-      match(h.lastText(), / EUR/, command);
+      if (command === "/alltime") match(h.lastText(), /percentage.*requires deposits/);
+      else match(h.lastText(), / EUR/, command);
       equal(h.lastText().includes("$"), false, command);
       equal(h.lastText().includes("PRIVATE"), false, command);
     }

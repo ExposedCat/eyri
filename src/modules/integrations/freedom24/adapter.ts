@@ -15,6 +15,7 @@ import {
   makeTradernetApiRequest,
 } from "./api.ts";
 import { parseFreedom24Credentials } from "./credentials.ts";
+import { fetchFreedom24AccountPerformance } from "./ledger.ts";
 import {
   historicalQuoteMultiplier,
   yahooOptionContract,
@@ -481,6 +482,9 @@ function mapIntegrationOrderHistory(
 }
 
 export const freedom24Adapter: IntegrationAdapter = {
+  fetchAccountPerformance(_database, integration, positions) {
+    return fetchFreedom24AccountPerformance(integration, positions);
+  },
   async fetchPortfolio(_database: Database, integration: Integration) {
     const [portfolioResponse, rawOrders] = await Promise.all([
       fetchPortfolioResponse(integration),

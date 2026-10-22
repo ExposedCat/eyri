@@ -1,11 +1,13 @@
 import { deepStrictEqual, equal, match, ok, rejects } from "node:assert/strict";
 import type {
+  IntegrationAccountPerformance,
   IntegrationOrder,
   IntegrationPortfolioPosition,
 } from "../integrations/types.ts";
 import {
   buildBucketedPortfolioPositions,
   buildIntegratedAllTimePerformanceList,
+  buildIntegratedAllTimeReport,
   buildIntegratedDailyPerformanceList,
   buildIntegratedHistory,
   buildIntegratedHistoryGroups,
@@ -82,7 +84,7 @@ Deno.test("all monetary reports use preferred currency and normalize target pric
   const positions = [position({ dailyPnl: 10, dailyPnlPercentage: 2, dailyPnlBaseline: 500 })];
   const orders = [order("AAPL", 10, 100, "2025-01-01"), order("AAPL", -4, 150, "2025-06-01")];
   const args = { positions, orders, currency: "EUR", request: fxRequest, formatTicker };
-  for (const report of [buildIntegratedTickerList, buildIntegratedPerformanceList, buildIntegratedAllTimePerformanceList, buildIntegratedSoldPerformanceList, buildIntegratedDailyPerformanceList, buildIntegratedHistory]) {
+  for (const report of [buildIntegratedTickerList, buildIntegratedPerformanceList, buildIntegratedSoldPerformanceList, buildIntegratedDailyPerformanceList, buildIntegratedHistory]) {
     const text = await report(args);
     match(text, / EUR/);
     ok(!text.includes("$"), text);
@@ -180,39 +182,22 @@ Deno.test("worth converts values to USD and honors USD price overrides", async (
   }), /Could not load USD exchange rate for EUR/);
 });
 
-Deno.test("worth preserves unknown and zero values and can show value without purchase cost", async () => {
+Deno.test("worth rejects incomplete valuations and preserves valid zero values", async () => {
   const args = { showCurrentValue: true, formatTicker };
   equal(await buildIntegratedPerformanceList({ ...args, positions: [] }), "");
-  const unknown = position({ currentPrice: null, totalNow: null });
-  const output = await buildIntegratedPerformanceList({
-    ...args,
-    positions: [position(), unknown],
-  });
-  match(output, /AAPL \? \?/);
-  match(output, /Total: \? \?/);
-  equal(await buildIntegratedPerformanceList({
-    ...args,
-    positions: [position(), unknown],
-    numberOnly: true,
-  }), `${numberSeparator}\n?`);
   for (const holding of [
+    position({ currentPrice: null, totalNow: null }),
     position({ totalInput: null, averageUnitPrice: null }),
     position({ currentPrice: null }),
   ]) {
-    match(await buildIntegratedPerformanceList({
-      ...args,
-      positions: [holding],
-    }), /Total: \? \$720\.00/);
-    equal(await buildIntegratedPerformanceList({
-      ...args,
-      positions: [holding],
-      numberOnly: true,
-    }), `${numberSeparator}\n$720.00`);
+    for (const numberOnly of [false, true]) {
+      await rejects(buildIntegratedPerformanceList({
+        ...args, positions: [position(), holding], numberOnly,
+      }), /Cannot build report/);
+    }
   }
   equal(await buildIntegratedPerformanceList({
-    ...args,
-    positions: [position({ currentPrice: 0 })],
-    numberOnly: true,
+    ...args, positions: [position({ currentPrice: 0 })], numberOnly: true,
   }), `${numberSeparator}\n$0.00`);
 });
 
@@ -265,11 +250,11 @@ Deno.test("number summaries preserve empty results, missing values and USD conve
     ]
   ) {
     equal(await build({ positions: [], orders: [], numberOnly: true }), "");
-    equal(await build({
+    await rejects(build({
       positions: [position({ currentPrice: null })],
       orders: [],
       numberOnly: true,
-    }), `${numberSeparator}\n?`);
+    }), /Cannot build report/);
     equal(await build({
       positions: [position({ currentPrice: 100 })],
       orders: [],
@@ -290,34 +275,108 @@ Deno.test("number summaries preserve empty results, missing values and USD conve
   }
 });
 
-Deno.test("alltime merges partial sales and current gains with a weighted total", async () => {
+Deno.test("alltime merges partial sales and current gains without treating turnover as funding", async () => {
   const orders = [
     order("aapl", 10, 100, "2025-01-01"),
     order("aapl", -4, 150, "2025-02-01"),
     order("MSFT", 2, 100, "2025-01-01"),
     order("MSFT", -2, 50, "2025-02-01"),
   ];
-  const output = await buildIntegratedAllTimePerformanceList({
-    positions: [position()],
-    orders,
-    formatTicker,
-  });
-  equal(output.match(/AAPL/g)?.length, 1);
-  match(output, /^AAPL \+32\.00% \+\$320\.00/);
-  match(output, /MSFT -50\.00% -\$100\.00 \(1\.0 month\)/);
-  match(output, /Total: \+18\.33% \+\$220\.00/);
+  const args = { positions: [position()], orders, formatTicker };
+  const report = await buildIntegratedAllTimeReport(args);
+  equal(report?.performances.length, 2);
+  equal(report?.performances.find((p) => p.ticker.toUpperCase() === "AAPL")?.change, 320);
+  equal(report?.performances.find((p) => p.ticker === "MSFT")?.change, -100);
+  equal(report?.total.change, 220);
+  await rejects(buildIntegratedAllTimePerformanceList(args), /percentage.*requires deposits/);
+  match(await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true }), /\+\$220\.00$/);
   // The broker's realizedPnl field must not count sales a second time.
 });
 
-Deno.test("alltime preserves perf-only and sold-only output and handles empty history", async () => {
+Deno.test("alltime account return subtracts current cash from funding and requires every account", async () => {
+  const orders = [
+    order("AAPL", 1, 100, "2025-01-01"),
+    order("AAPL", -1, 110, "2025-02-01"),
+    order("AAPL", 1, 110, "2025-03-01"),
+    order("AAPL", -1, 90, "2025-04-01"),
+  ];
+  const account: IntegrationAccountPerformance = {
+    integrationId: 1, currency: "USD", totalValue: 90,
+    netContributions: 100, pnl: -10, deposits: 150, withdrawals: 50,
+    cash: 90, ledgerCash: { USD: 90 },
+    openedAt: new Date("2025-01-01"), historyThrough: new Date(),
+    positionValue: 0, investmentValue: 0,
+    reportedComponents: [{ currency: "USD", cost: 210, pnl: -10 }],
+  };
+  const args = { positions: [], orders, accountPerformances: [account], formatTicker };
+  const report = await buildIntegratedAllTimeReport(args);
+  equal(report?.total.change, account.totalValue - account.netContributions);
+  equal(report?.total.cost, 10);
+  equal(report?.totalReturnPercentage, -100);
+  match(await buildIntegratedAllTimePerformanceList(args), /Total: -100\.00% -\$10\.00/);
+  // FX conversion applies to funding, current cash and P/L together.
+  equal((await buildIntegratedAllTimeReport({ ...args, currency: "EUR", request: fxRequest }))?.totalReturnPercentage, -100);
+  for (const cash of [100, Number.NaN]) {
+    await rejects(buildIntegratedAllTimePerformanceList({
+      ...args, accountPerformances: [{ ...account, cash }],
+    }), /percentage.*requires deposits/);
+  }
+  equal((await buildIntegratedAllTimeReport({ ...args, accountPerformances: [{ ...account, cash: 110 }] }))?.totalReturnPercentage, 100);
+  for (const netContributions of [0, -100]) {
+    const output = await buildIntegratedAllTimePerformanceList({
+      ...args, accountPerformances: [{ ...account, netContributions }],
+    });
+    ok(!output.includes("?"));
+    match(output, /Total: \+\d+\.\d+% -\$10\.00/);
+  }
+  for (const extra of [
+    { positions: [position({ integrationId: 2 })], orders },
+    { positions: [], orders: [...orders, ...orders.map((o) => ({ ...o, integrationId: 2 }))] },
+  ]) {
+    const mixed = await buildIntegratedAllTimeReport({ ...args, ...extra });
+    equal(mixed?.totalReturnPercentage, null);
+    ok(mixed?.total.change !== null);
+  }
+  const missing = await buildIntegratedAllTimeReport({ ...args, accountPerformances: [] });
+  equal(missing?.totalReturnPercentage, null);
+  equal(missing?.total.change, -10);
+});
+
+Deno.test("missing daily metrics fail the whole report and optional dates never render placeholders", async () => {
+  const dailyPosition = position({ dailyPnl: 0, dailyPnlPercentage: 0, dailyPnlBaseline: 720 });
+  for (const overrides of [
+    { dailyPnl: null }, { dailyPnl: Number.NaN }, { dailyPnlPercentage: null },
+  ]) {
+    await rejects(buildIntegratedDailyPerformanceList({
+      positions: [dailyPosition, { ...dailyPosition, ...overrides }], formatTicker,
+    }), /daily.*unavailable/);
+  }
+  match(await buildIntegratedDailyPerformanceList({ positions: [dailyPosition], formatTicker }), /Total: 0\.00% \$0\.00 today/);
+  for (const build of [buildIntegratedTickerList, buildIntegratedPerformanceList]) {
+    const text = await build({ positions: [position({ openedAt: null })], formatTicker });
+    ok(!text.includes("?"));
+    ok(!text.includes("()"));
+    match(text, /\+\$120\.00/);
+  }
+});
+
+Deno.test("missing execution prices fail reports instead of dropping trades from totals", async () => {
+  const orders = [{ ...order("AAPL", 1, 100, "2025-01-01"), price: null }];
+  for (const build of [buildIntegratedHistory, buildIntegratedSoldPerformanceList, buildIntegratedAllTimePerformanceList]) {
+    await rejects(build({ positions: [], orders }), /AAPL execution price is unavailable/);
+  }
+});
+
+Deno.test("alltime preserves perf-only and sold-only gains and handles empty history", async () => {
   const positions = [position()];
   equal(
     await buildIntegratedAllTimePerformanceList({
       positions,
       orders: [],
       formatTicker,
+      numberOnly: true,
     }),
-    await buildIntegratedPerformanceList({ positions, formatTicker }),
+    `${numberSeparator}\n+$120.00`,
   );
   const orders = [
     order("AAPL", 1, 100, "2025-01-01"),
@@ -328,8 +387,9 @@ Deno.test("alltime preserves perf-only and sold-only output and handles empty hi
       positions: [],
       orders,
       formatTicker,
+      numberOnly: true,
     }),
-    await buildIntegratedSoldPerformanceList({ orders, formatTicker }),
+    `${numberSeparator}\n+$50.00`,
   );
   equal(
     await buildIntegratedAllTimePerformanceList({
@@ -360,13 +420,11 @@ Deno.test("alltime propagates missing prices and costs to ticker and total retur
       averageUnitPrice: null,
     }]
   ) {
-    const output = await buildIntegratedAllTimePerformanceList({
-      positions: [position(overrides)],
-      orders,
-      formatTicker,
-    });
-    match(output, /^AAPL \? \?/);
-    match(output, /Total: \? \?/);
+    for (const numberOnly of [false, true]) {
+      await rejects(buildIntegratedAllTimePerformanceList({
+        positions: [position(overrides)], orders, formatTicker, numberOnly,
+      }), /Cannot build report/);
+    }
   }
 });
 
@@ -392,9 +450,9 @@ Deno.test("alltime attributes sold FIFO lots to purchase buckets while consuming
     "Core",
   ]]);
   for (
-    const [bucketName, expected] of [[null, "Total: +29.17% +$350.00"], [
+    const [bucketName, expected] of [[null, `${numberSeparator}\n+$350.00`], [
       "Core",
-      "Total: +200.00% +$800.00",
+      `${numberSeparator}\n+$800.00`,
     ]] as const
   ) {
     const positions = buildBucketedPortfolioPositions({
@@ -404,13 +462,14 @@ Deno.test("alltime attributes sold FIFO lots to purchase buckets while consuming
       bucketName,
     });
     const output = await buildIntegratedAllTimePerformanceList({
+      numberOnly: true,
       positions,
       orders,
       transactionBuckets,
       bucketName,
       formatTicker,
     });
-    equal(output.split("\n\n").at(-1)?.startsWith(expected), true);
+    equal(output, expected);
   }
 });
 
@@ -458,12 +517,13 @@ Deno.test("portfolio summaries convert every currency to USD with one weighted t
   equal(/EUR|GBP|GBX/.test(performance), false);
   equal(
     await buildIntegratedAllTimePerformanceList({
+      numberOnly: true,
       positions,
       orders: [],
       formatTicker,
       request: fxRequest,
     }),
-    performance,
+    `${numberSeparator}\n+$87.70`,
   );
   for (
     const build of [buildIntegratedTickerList, buildIntegratedPerformanceList]
@@ -512,12 +572,13 @@ Deno.test("sold and history summaries use one USD total without renumbering buck
   equal(/EUR|GBP|GBX/.test(sold), false);
   equal(
     await buildIntegratedAllTimePerformanceList({
+      numberOnly: true,
       positions: [],
       orders,
       formatTicker,
       request: fxRequest,
     }),
-    sold,
+    `${numberSeparator}\n+$75.10`,
   );
   const history = await buildIntegratedHistory({
     orders,
@@ -640,10 +701,12 @@ Deno.test("EUR warrant returns use native bid and cost, then USD results for sor
   }
   const daily = await buildIntegratedDailyPerformanceList({ ...args, positions: [positions[0]] });
   match(daily, /Total: \+2\.04% \+\$11\.67 today/);
-  const alltime = await buildIntegratedAllTimePerformanceList({ ...args, orders: [] });
-  match(alltime, /ARTEM \+2\.04% \+\$11\.67/);
-  match(alltime, /MICRON \+20\.30% \+\$205\.71/);
-  ok(alltime.indexOf("MICRON") < alltime.indexOf("USD_GAIN"));
+  const alltime = await buildIntegratedAllTimeReport({ ...args, orders: [] });
+  const artem = alltime!.performances.find((p) => p.ticker === "ARTEM")!;
+  const micron = alltime!.performances.find((p) => p.ticker === "MICRON")!;
+  ok(Math.abs(artem.change! - 11.67) < .01);
+  ok(Math.abs(micron.change! - 205.71) < .01);
+  ok(alltime!.performances.indexOf(micron) < alltime!.performances.findIndex((p) => p.ticker === "USD_GAIN"));
   deepStrictEqual(positions, original);
 });
 
@@ -677,9 +740,9 @@ Deno.test("USD alltime and history preserve native FIFO and bucket transaction i
     }),
   ];
   for (
-    const [bucketName, expected] of [["Core", /Total: \+100\.00% \+\$25\.00/], [
+    const [bucketName, expected] of [["Core", 25], [
       null,
-      /Total: \+20\.00% \+\$4\.00/,
+      4,
     ]] as const
   ) {
     const positions = buildBucketedPortfolioPositions({
@@ -688,7 +751,7 @@ Deno.test("USD alltime and history preserve native FIFO and bucket transaction i
       transactionBuckets,
       bucketName,
     });
-    const output = await buildIntegratedAllTimePerformanceList({
+    const output = await buildIntegratedAllTimeReport({
       positions,
       orders,
       transactionBuckets,
@@ -696,8 +759,8 @@ Deno.test("USD alltime and history preserve native FIFO and bucket transaction i
       formatTicker,
       request: fxRequest,
     });
-    match(output, expected);
-    equal(output.match(/SAME/g)?.length, 1);
+    equal(output?.total.change, expected);
+    equal(output?.performances.filter((p) => p.ticker === "SAME").length, 1);
   }
   const keys: string[] = [];
   const history = await buildIntegratedHistory({

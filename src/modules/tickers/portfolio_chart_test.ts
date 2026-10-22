@@ -93,19 +93,16 @@ Deno.test("portfolio chart converts currencies to USD before merging tickers", a
 });
 
 Deno.test("portfolio chart handles unknown cost and short positions without inventing returns", async () => {
+	await rejects(buildPortfolioChart([position("UNKNOWN", 10000, null)]), /UNKNOWN purchase cost/);
 	const chart = await buildPortfolioChart([
-		position("UNKNOWN", 10000, null),
 		position("SHORT", 8000, -10000, { amount: -1 }),
 	]);
 	ok(chart);
-	equal(chart.total, "$2,000.00");
-	equal(chart.holdings[0].returnLabel, "?");
-	equal(chart.holdings[0].change, null);
-	equal(chart.holdings[0].changeLabel, "?");
-	equal(chart.holdings[1].change, 2000);
-	equal(chart.holdings[1].returnLabel, "+20.0%");
-	equal(chart.holdings[1].value, "-$8,000");
-	equal(chart.holdings[1].changeLabel, "+$2,000.00");
+	equal(chart.total, "-$8,000.00");
+	equal(chart.holdings[0].change, 2000);
+	equal(chart.holdings[0].returnLabel, "+20.0%");
+	equal(chart.holdings[0].value, "-$8,000");
+	equal(chart.holdings[0].changeLabel, "+$2,000.00");
 	await rejects(
 		() =>
 			buildPortfolioChart([
@@ -124,7 +121,7 @@ Deno.test("one USD chart combines USD, EUR, GBP and pence with weights based on 
 		position("EU", 8, 6, { currency: "EUR" }),
 		position("POUNDS", 4, 5, { currency: "GBP" }),
 		position("PENCE", 400, 500, { currency: "GBX" }),
-		position("BROKER", 0, null, {
+		position("BROKER", 0, 150, {
 			currency: "GBX",
 			currentPrice: null,
 			totalNow: 200,
@@ -163,7 +160,7 @@ Deno.test("one USD chart combines USD, EUR, GBP and pence with weights based on 
 	}
 	equal(chart.holdings[4].value, "$4");
 	equal(chart.holdings[4].changeLabel, "+$1.00");
-	equal(chart.holdings[4].returnLabel, "?");
+	equal(chart.holdings[4].returnLabel, "+33.3%");
 	equal(calls.filter((url) => url.endsWith("gbp")).length, 1);
 });
 
@@ -187,16 +184,16 @@ Deno.test("USD charts skip FX for excluded holdings and never return a partial c
 	);
 });
 
-Deno.test("monetary returns retain known broker gains without cost and zero changes", async () => {
-	const chart = await buildPortfolioChart([
+Deno.test("monetary returns reject missing cost and preserve valid zero changes", async () => {
+	await rejects(buildPortfolioChart([
 		position("UNKNOWN_COST", 1000, null, { unrealizedPnl: 12.5 }),
+	]), /UNKNOWN_COST purchase cost/);
+	const chart = await buildPortfolioChart([
 		position("FLAT", 100, 100),
 	]);
 	ok(chart);
-	equal(chart.holdings[0].returnLabel, "?");
-	equal(chart.holdings[0].changeLabel, "+$12.50");
-	equal(chart.holdings[1].returnLabel, "0.0%");
-	equal(chart.holdings[1].changeLabel, "$0.00");
+	equal(chart.holdings[0].returnLabel, "0.0%");
+	equal(chart.holdings[0].changeLabel, "$0.00");
 });
 
 Deno.test("portfolio renderer produces a high-resolution PNG for the approved layout", async () => {

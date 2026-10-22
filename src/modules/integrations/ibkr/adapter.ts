@@ -15,8 +15,15 @@ import type {
 } from "../types.ts";
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
 import { readFlexOrders } from "./flex.ts";
+import {
+  fetchIbkrAccountPerformance,
+  type IbkrAccountSnapshot,
+} from "./ledger.ts";
 import { logFetch } from "../../../utils/fetch_logging.ts";
-import { connectIbkr as connect, type IbkrConnectionConfig } from "./connection.ts";
+import {
+  connectIbkr as connect,
+  type IbkrConnectionConfig,
+} from "./connection.ts";
 
 const EXECUTION_SYNC_INTERVAL_MS = 15 * 1000;
 const EXECUTION_CLIENT_ID_OFFSET = 1000;
@@ -126,16 +133,16 @@ function normalizeNumber(value: number | undefined) {
 
 function normalizePnlNumber(value: number | undefined) {
   return value === undefined ||
-    !Number.isFinite(value) ||
-    value === Number.MAX_VALUE
+      !Number.isFinite(value) ||
+      value === Number.MAX_VALUE
     ? null
     : value;
 }
 
 function normalizeExecutionNumber(value: number | undefined) {
   return value === undefined ||
-    !Number.isFinite(value) ||
-    value === Number.MAX_VALUE
+      !Number.isFinite(value) ||
+      value === Number.MAX_VALUE
     ? null
     : value;
 }
@@ -332,27 +339,30 @@ async function syncIntegrationExecutions(
   database: Database,
   integration: Integration,
 ) {
-  return logFetch(`IBKR execution sync integration=${integration.id}`, async () => {
-    const { config } = getConnectionConfig(integration);
-    const executionConfig = {
-      ...config,
-      clientId: config.clientId + EXECUTION_CLIENT_ID_OFFSET,
-    };
-    const api = await connect(executionConfig);
+  return logFetch(
+    `IBKR execution sync integration=${integration.id}`,
+    async () => {
+      const { config } = getConnectionConfig(integration);
+      const executionConfig = {
+        ...config,
+        clientId: config.clientId + EXECUTION_CLIENT_ID_OFFSET,
+      };
+      const api = await connect(executionConfig);
 
-    try {
-      const accountId = await getManagedAccount(api, executionConfig);
-      const orders = await fetchTodayExecutions(
-        api,
-        integration,
-        accountId,
-        executionConfig,
-      );
-      writeExecutionOrders(database, integration, orders);
-    } finally {
-      api.disconnect();
-    }
-  });
+      try {
+        const accountId = await getManagedAccount(api, executionConfig);
+        const orders = await fetchTodayExecutions(
+          api,
+          integration,
+          accountId,
+          executionConfig,
+        );
+        writeExecutionOrders(database, integration, orders);
+      } finally {
+        api.disconnect();
+      }
+    },
+  );
 }
 
 function toPortfolioPosition(
@@ -369,14 +379,13 @@ function toPortfolioPosition(
   const currentPrice = normalizeNumber(marketPrice);
   const totalNow = normalizeNumber(marketValue);
   const averageUnitPrice = normalizeNumber(averageCost);
-  const resolvedCurrentPrice =
-    currentPrice ??
+  const resolvedCurrentPrice = currentPrice ??
     (totalNow !== null && amount !== 0 ? totalNow / amount : null);
-  const resolvedTotalNow =
-    totalNow ??
+  const resolvedTotalNow = totalNow ??
     (resolvedCurrentPrice !== null ? resolvedCurrentPrice * amount : null);
-  const totalInput =
-    averageUnitPrice === null ? null : averageUnitPrice * amount;
+  const totalInput = averageUnitPrice === null
+    ? null
+    : averageUnitPrice * amount;
 
   return {
     integrationId: integration.id,
@@ -590,8 +599,9 @@ async function enrichPortfolioWithDailyPnl(
     const marketValue = position.conId
       ? (dailyPnlByConId.get(position.conId)?.marketValue ?? null)
       : null;
-    const baseline =
-      dailyPnl === null || marketValue === null ? null : marketValue - dailyPnl;
+    const baseline = dailyPnl === null || marketValue === null
+      ? null
+      : marketValue - dailyPnl;
 
     return {
       ...position,
@@ -670,7 +680,7 @@ async function getAccountPortfolio(
   }
 
   return [...positions.values()].sort((a, b) =>
-    a.ticker.localeCompare(b.ticker),
+    a.ticker.localeCompare(b.ticker)
   );
 }
 
@@ -791,7 +801,161 @@ function readIbkrOrders(database: Database, integration: Integration) {
   );
 }
 
+export async function readIbkrAccountSnapshot(
+  api: IBApi,
+  accountId: string,
+  timeoutMs: number,
+): Promise<IbkrAccountSnapshot> {
+  const requestId = 91_000;
+  const values = new Map<string, { value: number; currency: string }>();
+  let rejectRequest!: (error: Error) => void;
+  let resolveRequest!: () => void;
+  const onSummary = (
+    id: number,
+    account: string,
+    tag: string,
+    value: string,
+    currency: string,
+  ) => {
+    if (id !== requestId || account !== accountId) return;
+    if (
+      !value.trim() || !Number.isFinite(Number(value)) ||
+      Number(value) === Number.MAX_VALUE
+    ) {
+      rejectRequest(
+        new Error(`IBKR account summary returned an invalid ${tag}`),
+      );
+      return;
+    }
+    values.set(tag, { value: Number(value), currency: currency.toUpperCase() });
+  };
+  const onEnd = (id: number) => {
+    if (id === requestId) resolveRequest();
+  };
+  const onError = (error: unknown, code?: number) => {
+    if (code !== undefined && code >= 2100 && code <= 2199) return;
+    rejectRequest(normalizeError(error));
+  };
+  try {
+    await withTimeout(
+      new Promise<void>((resolve, reject) => {
+        resolveRequest = resolve;
+        rejectRequest = reject;
+        api.on(EventName.accountSummary, onSummary);
+        api.on(EventName.accountSummaryEnd, onEnd);
+        api.on(EventName.error, onError);
+        api.reqAccountSummary(
+          requestId,
+          "All",
+          "NetLiquidation,TotalCashValue",
+        );
+      }),
+      timeoutMs,
+      "Timed out waiting for IBKR account net liquidation and cash",
+    );
+  } finally {
+    api.off(EventName.accountSummary, onSummary);
+    api.off(EventName.accountSummaryEnd, onEnd);
+    api.off(EventName.error, onError);
+    api.cancelAccountSummary(requestId);
+  }
+  const nav = values.get("NetLiquidation"), cash = values.get("TotalCashValue");
+  if (
+    !nav || !cash || nav.currency !== cash.currency ||
+    !/^[A-Z]{3}$/.test(nav.currency)
+  ) {
+    throw new Error(
+      "IBKR account summary is missing matching base-currency net liquidation and total cash",
+    );
+  }
+  return {
+    accountId,
+    currency: nav.currency,
+    totalValue: nav.value,
+    cash: cash.value,
+  };
+}
+
+export async function readIbkrCashBalances(
+  api: IBApi,
+  accountId: string,
+  timeoutMs: number,
+) {
+  const balances: Record<string, number> = {};
+  let resolveRequest!: () => void, rejectRequest!: (error: Error) => void;
+  const onValue = (
+    key: string,
+    value: string,
+    currency: string,
+    account: string,
+  ) => {
+    if (
+      account !== accountId || key !== "CashBalance" ||
+      !/^[A-Z]{3}$/.test(currency)
+    ) return;
+    if (
+      !value.trim() || !Number.isFinite(Number(value)) ||
+      Number(value) === Number.MAX_VALUE
+    ) {
+      rejectRequest(new Error("IBKR returned invalid native cash"));
+    } else balances[currency] = Number(value);
+  };
+  const onEnd = (account: string) => {
+    if (account === accountId) resolveRequest();
+  };
+  const onError = (error: unknown, code?: number) => {
+    if (code !== undefined && code >= 2100 && code <= 2199) return;
+    rejectRequest(normalizeError(error));
+  };
+  try {
+    await withTimeout(
+      new Promise<void>((resolve, reject) => {
+        resolveRequest = resolve;
+        rejectRequest = reject;
+        api.on(EventName.updateAccountValue, onValue);
+        api.on(EventName.accountDownloadEnd, onEnd);
+        api.on(EventName.error, onError);
+        api.reqAccountUpdates(true, accountId);
+      }),
+      timeoutMs,
+      "Timed out waiting for IBKR cash by currency",
+    );
+  } finally {
+    api.off(EventName.updateAccountValue, onValue);
+    api.off(EventName.accountDownloadEnd, onEnd);
+    api.off(EventName.error, onError);
+    api.reqAccountUpdates(false, accountId);
+  }
+  if (!Object.keys(balances).length) {
+    throw new Error("IBKR returned no cash balances by currency");
+  }
+  return balances;
+}
+
 export const ibkrAdapter: IntegrationAdapter = {
+  async fetchAccountPerformance(database, integration) {
+    const { config } = getConnectionConfig(integration);
+    config.clientId = 10_000 +
+      crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000_000;
+    const api = await connect(config);
+    let snapshot: IbkrAccountSnapshot;
+    try {
+      const accountId = await getManagedAccount(api, config);
+      snapshot = await readIbkrAccountSnapshot(
+        api,
+        accountId,
+        config.timeoutMs,
+      );
+      snapshot.cashByCurrency = await readIbkrCashBalances(
+        api,
+        accountId,
+        config.timeoutMs,
+      );
+    } finally {
+      api.disconnect();
+    }
+    return fetchIbkrAccountPerformance(database, integration, snapshot);
+  },
   async fetchPortfolio(database: Database, integration: Integration) {
     const { config } = getConnectionConfig(integration);
     // Independent requests may share a gateway. Avoid competing for client 0.

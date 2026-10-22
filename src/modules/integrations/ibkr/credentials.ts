@@ -5,6 +5,7 @@ export type IbkrCredentials = {
   timeoutMs: number;
   flexToken?: string;
   flexQueryId?: string;
+  fundingFlexQueryId?: string;
 };
 
 const DEFAULT_CLIENT_ID = 0;
@@ -54,6 +55,7 @@ export function parseIbkrCredentials(
     timeoutMs: readNumber(credentials, "timeoutMs", DEFAULT_TIMEOUT_MS),
     flexToken: readString(credentials, "flexToken"),
     flexQueryId: readString(credentials, "flexQueryId"),
+    fundingFlexQueryId: readString(credentials, "fundingFlexQueryId"),
   };
 }
 

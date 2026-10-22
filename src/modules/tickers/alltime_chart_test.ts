@@ -157,7 +157,7 @@ Deno.test("chart endpoint uses funding-based account return, including broker wa
   equal(points.at(-1)?.percentage, -10);
 });
 
-Deno.test("all-time series replays purchases and FIFO sales, carries weekends, and ends at /alltime", async () => {
+Deno.test("all-time series replays purchases and FIFO sales, carries weekends, and matches /alltime gains", async () => {
   const orders = [trade(10, 100, "2025-01-02"), trade(-4, 120, "2025-01-03")];
   const positions = [holding(6, 600, 130)];
   const args = {
@@ -184,10 +184,11 @@ Deno.test("all-time series replays purchases and FIFO sales, carries weekends, a
     ],
   );
   const text = await buildIntegratedAllTimePerformanceList({
+    numberOnly: true,
     ...args,
     formatTicker: (t) => t,
   });
-  match(text, /Total: \+26\.00% \+\$260\.00/);
+  match(text, /\+\$260\.00/);
 });
 
 Deno.test("all-time series retains sold-only gains and isolates same-ticker FIFO lots per account", () => {
@@ -213,7 +214,7 @@ Deno.test("all-time series retains sold-only gains and isolates same-ticker FIFO
   ok(Math.abs(points.at(-1)!.percentage + 20 / 300 * 100) < 1e-9);
 });
 
-Deno.test("live chart endpoint uses FX-inclusive broker valuation and agrees with alltime", async () => {
+Deno.test("live chart endpoint uses FX-inclusive broker valuation and agrees with alltime gains", async () => {
   const orders = [trade(2, 100, "2025-01-02")];
   const positions = [{
     ...holding(2, 200, 110),
@@ -239,11 +240,12 @@ Deno.test("live chart endpoint uses FX-inclusive broker valuation and agrees wit
   equal(points.at(-1)!.gain, 27.99 * 1.25);
   equal(points.at(-1)!.percentage, 27.99 / 170 * 100);
   const text = await buildIntegratedAllTimePerformanceList({
+    numberOnly: true,
     ...args,
     request: async () => Response.json({ base: "USD", quote: "EUR", rate: .8 }),
     formatTicker: (ticker) => ticker,
   });
-  match(text, /Total: \+16\.46% \+\$34\.99/);
+  match(text, /\+\$34\.99/);
 });
 
 Deno.test("bucket all-time curves consume earlier unselected purchases before selected lots", () => {
@@ -569,7 +571,7 @@ Deno.test("any failed or empty historical fetch rejects the entire chart and rep
   }
 });
 
-Deno.test("Freedom24 option series uses per-contract premiums, retains sold gains and ends at alltime", async () => {
+Deno.test("Freedom24 option series uses per-contract premiums, retains sold gains and matches alltime gains", async () => {
   const ticker = "+AMD.15JAN2027.C280";
   const orders = [trade(2, 100, "2025-01-02"), trade(-1, 150, "2025-01-03")]
     .map((o) => ({ ...o, ticker, integrationKind: "f24" }));
@@ -600,10 +602,11 @@ Deno.test("Freedom24 option series uses per-contract premiums, retains sold gain
   equal(points.at(-1)!.percentage, 40);
   match(
     await buildIntegratedAllTimePerformanceList({
+      numberOnly: true,
       ...args,
       formatTicker: (t) => t,
     }),
-    /Total: \+40.00% \+\$80.00/,
+    /\+\$80.00/,
   );
 });
 
@@ -765,6 +768,7 @@ Deno.test("chart stitches APH option predecessors across the split without using
     equal(dataset.points.at(-1)!.gain, 300);
     equal(dataset.points.at(-1)!.percentage, 50);
     const text = await buildIntegratedAllTimePerformanceList({
+    numberOnly: true,
       orders: [buy, sell],
       positions: [{
         ...holding(1, 300, 500),
@@ -775,7 +779,7 @@ Deno.test("chart stitches APH option predecessors across the split without using
       bucketName: "investing",
       formatTicker: (ticker) => ticker,
     });
-    match(text, /Total: \+50\.00% \+\$300\.00/);
+    match(text, /\+\$300\.00/);
   } finally {
     db.close();
   }

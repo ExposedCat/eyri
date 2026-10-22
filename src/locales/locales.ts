@@ -16,7 +16,7 @@ export const locales: Record<string, Record<string, string>> = {
     no_integrations:
       `No integrations are configured yet.\n\nUse /integrations to add an account, or /ibkr, /f24 and /t212 to enter credentials directly.`,
     ibkr:
-      `To set up Interactive Brokers, use this format:\n\n<code>/ibkr [instance_url] [flex_token] [flex_query_id]</code>\n\nExample:\n<code>/ibkr ib_gateway:4003 FLEX_TOKEN FLEX_QUERY_ID</code>`,
+      `To set up Interactive Brokers, use this format:\n\n<code>/ibkr [instance_url] [flex_token] [flex_query_id] [funding_flex_query_id]</code>\n\nThe fourth query ID is optional and selects a separate Activity Flex Query for funding.\n\nExample:\n<code>/ibkr ib_gateway:4003 FLEX_TOKEN FLEX_QUERY_ID</code>`,
     f24:
       `To set up Freedom24, use this format:\n\n<code>/f24 [api_key] [secret_key] [history_years]</code>\n\n<code>history_years</code> is optional and defaults to 10.\n\nCreate API credentials at Freedom24/Tradernet Auth API and do not enable trading permissions.`,
     t212:

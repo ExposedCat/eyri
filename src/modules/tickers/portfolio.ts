@@ -1,3 +1,4 @@
+import { requireReportNumber } from "../../utils/report_value.ts";
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import { isCfdAllocation } from "./cfd_history.ts";
@@ -280,7 +281,7 @@ export function getElapsedPeriod(startDate: Date | null | undefined, endDate: Da
     return {
       days: null,
       months: null,
-      label: "?",
+      label: "",
     };
   }
 
@@ -291,6 +292,10 @@ export function getElapsedPeriod(startDate: Date | null | undefined, endDate: Da
     months: Math.max(months, 0.1),
     label: formatElapsedPeriodFromMonths(months),
   };
+}
+
+function periodSuffix(period: ReturnType<typeof getElapsedPeriod>) {
+  return period.label ? ` (${period.label})` : "";
 }
 
 function getPriceOverride(
@@ -801,7 +806,23 @@ export async function buildIntegratedPositionReport(
     ),
     daily ? (performance) => performance.position.dailyPnl : undefined,
   );
+  for (const performance of performances) {
+    const ticker = performance.position.ticker;
+    if (daily) {
+      requireReportNumber(performance.position.dailyPnl, `${ticker} daily P/L`);
+      requireReportNumber(performance.position.dailyPnlPercentage, `${ticker} daily percentage`);
+    } else {
+      requireReportNumber(performance.currentValue, `${ticker} current value`);
+      requireReportNumber(performance.totalInput, `${ticker} purchase cost`);
+      requireReportNumber(performance.totalChange, `${ticker} P/L`);
+      requireReportNumber(performance.totalPercentageChange, `${ticker} percentage`);
+    }
+  }
   const totals = buildIntegratedPortfolioTotals(performances, now);
+  if (daily && performances.length) {
+    requireReportNumber(totals.dailyChange, "total daily P/L");
+    requireReportNumber(totals.dailyPercentageChange, "total daily percentage");
+  }
   const currentValue = performances.reduce<number | null>(
     (total, performance) =>
       total === null || performance.currentValue === null
@@ -852,15 +873,11 @@ export async function buildIntegratedTickerList({
       performance.totalNow === null ||
       performance.currentVsAverageChange === null
     ) {
-      return [
-        `${tickerName} ? ?`,
-        `? x ${formatAmount(position.amount)} (? ?)`,
-        `? -> ? x ${performance.elapsedPeriod.label}`,
-      ].join("\n");
+      throw new Error(`Cannot build report: incomplete valuation for ${position.ticker}.`);
     }
 
     const monthlySummary = performance.elapsedPeriod.months === null
-      ? "? ?"
+      ? ""
       : `${
         formatCurrencyChange(
           performance.totalChange / performance.elapsedPeriod.months,
@@ -898,7 +915,7 @@ export async function buildIntegratedTickerList({
           performance.totalNow,
           position.currency,
         )
-      } x ${performance.elapsedPeriod.label} (${monthlySummary})`,
+      }${performance.elapsedPeriod.label ? ` x ${performance.elapsedPeriod.label} (${monthlySummary})` : ""}`,
     ].join("\n");
   };
   const tickerLines = separateGainersLosers
@@ -910,11 +927,9 @@ export async function buildIntegratedTickerList({
     : performances.map(renderTickerLine);
 
   const totalReturn =
-    totals.totalChange === null || totals.totalPercentageChange === null
-      ? "? ?"
-      : `${formatCurrencyChange(totals.totalChange, currency)} ${
-        formatMoneyChange(totals.totalPercentageChange, "%")
-      }`;
+    `${formatCurrencyChange(requireReportNumber(totals.totalChange, "total P/L"), currency)} ${
+      formatMoneyChange(requireReportNumber(totals.totalPercentageChange, "total percentage"), "%")
+    }`;
   const monthlyReturn =
     totals.monthlyChange === null || totals.monthlyPercentageChange === null
       ? ""
@@ -922,7 +937,7 @@ export async function buildIntegratedTickerList({
         formatCurrencyChange(totals.monthlyChange, currency)
       } ${formatMoneyChange(totals.monthlyPercentageChange, "%")}`;
   const totalSummary =
-    `${totalReturn}${monthlyReturn} (${totals.elapsedPeriod.label})`;
+    `${totalReturn}${monthlyReturn}${periodSuffix(totals.elapsedPeriod)}`;
 
   return [...tickerLines, totalSummary].join("\n\n");
 }
@@ -955,9 +970,9 @@ export async function buildIntegratedPerformanceList({
     ? currentValue
     : totals.totalChange;
   const formatValue = (value: number | null) =>
-    value === null
-      ? "?"
-      : showCurrentValue ? formatMoney(value, currency) : formatCurrencyChange(value, currency);
+    showCurrentValue
+      ? formatMoney(requireReportNumber(value, "current value"), currency)
+      : formatCurrencyChange(requireReportNumber(value, "P/L"), currency);
   if (numberOnly) {
     return buildNumberSummary(
       performances.map((p) => p.position.ticker),
@@ -980,21 +995,17 @@ export async function buildIntegratedPerformanceList({
         tickerEmojiMappings,
         formatTicker,
       );
-      const percentage = performance.totalPercentageChange === null
-        ? "?"
-        : formatMoneyChange(performance.totalPercentageChange, "%");
+      const percentage = formatMoneyChange(requireReportNumber(performance.totalPercentageChange, `${position.ticker} percentage`), "%");
       return `${tickerName} ${percentage} ${
         formatValue(getValue(performance))
-      } (${performance.elapsedPeriod.label})`;
+      }${periodSuffix(performance.elapsedPeriod)}`;
     },
   );
 
-  const totalPercentage = totals.totalPercentageChange === null
-    ? "?"
-    : formatMoneyChange(totals.totalPercentageChange, "%");
+  const totalPercentage = formatMoneyChange(requireReportNumber(totals.totalPercentageChange, "total percentage"), "%");
   const totalLine = `Total: ${totalPercentage} ${
     formatValue(totalValue)
-  } (${totals.elapsedPeriod.label})`;
+  }${periodSuffix(totals.elapsedPeriod)}`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -1066,7 +1077,7 @@ export async function buildIntegratedSoldPerformanceList({
         )
       } ${
         formatCurrencyChange(performance.realizedPnl, performance.currency)
-      } (${elapsedPeriod.label})`;
+      }${periodSuffix(elapsedPeriod)}`;
     },
   );
 
@@ -1081,7 +1092,7 @@ export async function buildIntegratedSoldPerformanceList({
     )
   } ${
     formatCurrencyChange(totals.realizedPnl, performances[0].currency)
-  } (${elapsedPeriod.label})`;
+  }${periodSuffix(elapsedPeriod)}`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -1169,6 +1180,8 @@ export async function buildIntegratedAllTimeReport({
       priceOverrides,
       currency,
     );
+    requireReportNumber(performance.totalInput, `${position.ticker} purchase cost`);
+    requireReportNumber(performance.totalChange, `${position.ticker} P/L`);
     add(getPositionDisplayKey(position.ticker, currency), {
       ticker: position.ticker,
       currency,
@@ -1232,7 +1245,7 @@ export async function buildIntegratedAllTimeReport({
       openedAt: account.openedAt, endedAt: now, accountAdjustment: true,
     }));
     // Reinvesting sales must not multiply the percentage denominator.
-    fundingCostAdjustment += account.netContributions * factor - reported.cost;
+    fundingCostAdjustment += (account.netContributions - account.cash) * factor - reported.cost;
   }
   const performances = [...display.values()].sort(
     (a, b) =>
@@ -1248,8 +1261,31 @@ export async function buildIntegratedAllTimeReport({
     openedAt: null,
     endedAt: new Date(0),
   } as Performance);
-  if (total.cost !== null) total.cost += fundingCostAdjustment;
-  return { performances, total, accounts: accountPerformances };
+  if (total.cost !== null) {
+    total.cost += fundingCostAdjustment;
+    if (!Number.isFinite(total.cost)) total.cost = null;
+  }
+  requireReportNumber(total.change, "total all-time P/L");
+  // Trade costs count the same money again whenever sale proceeds are reinvested.
+  // Every selected integration must supply external funding and current cash.
+  const selectedIntegrationIds = new Set(positions.map((p) => p.integrationId));
+  for (const order of orders) {
+    if (order.quantity > 0 &&
+      (transactionBuckets?.get(getOrderTransactionKey(order)) ?? null) === bucketName) {
+      selectedIntegrationIds.add(order.integrationId);
+    }
+  }
+  const hasCompleteFunding = accountPerformances.length > 0 &&
+    [...selectedIntegrationIds].every((id) => ids.has(id));
+  const investedCapital = accountPerformances.reduce((sum, account) => {
+    const factor = account.currency === currency ? 1 : conversionFactor(account.currency, rates);
+    return sum + (account.netContributions - account.cash) * factor;
+  }, 0);
+  const totalReturnPercentage = hasCompleteFunding &&
+      Number.isFinite(investedCapital) && investedCapital !== 0 && total.change !== null
+    ? total.change / investedCapital * 100
+    : null;
+  return { performances, total, totalReturnPercentage, accounts: accountPerformances };
 }
 
 export async function buildIntegratedAllTimePerformanceList({
@@ -1277,25 +1313,30 @@ export async function buildIntegratedAllTimePerformanceList({
   if (numberOnly) {
     return buildNumberSummary(
       performances.map((p) => p.ticker),
-      total.change === null ? "?" : formatCurrencyChange(total.change, currency),
+      formatCurrencyChange(requireReportNumber(total.change, "total P/L"), currency),
       tickerDecorations,
       tickerEmojiMappings,
     );
   }
-  const render = (name: string, performance: Performance) => {
+  const render = (
+    name: string,
+    performance: Performance,
+    returnPercentage?: number | null,
+  ) => {
     const elapsed = getElapsedPeriod(performance.openedAt, performance.endedAt);
     if (performance.accountAdjustment) {
-      return `${name} ${performance.change === null ? "?" : formatCurrencyChange(performance.change, performance.currency)}`;
+      return `${name} ${formatCurrencyChange(requireReportNumber(performance.change, `${name} P/L`), performance.currency)}`;
     }
-    if (performance.cost === null || performance.change === null) {
-      return `${name} ? ? (${elapsed.label})`;
+    if (performance.change === null) {
+      throw new Error(`Cannot build report: P/L is unavailable for ${name}.`);
     }
-    const percentage = performance.cost === 0
-      ? 0
-      : performance.change / performance.cost * 100;
-    return `${name} ${formatMoneyChange(percentage, "%")} ${
+    const percentage = returnPercentage !== undefined
+      ? returnPercentage
+      : performance.cost === null ? null
+      : performance.cost === 0 ? 0 : performance.change / performance.cost * 100;
+    return `${name} ${formatMoneyChange(requireReportNumber(percentage, `${name} percentage (requires deposits, withdrawals and current cash for every selected account, and a nonzero basis)`), "%")} ${
       formatCurrencyChange(performance.change, performance.currency)
-    } (${elapsed.label})`;
+    }${periodSuffix(elapsed)}`;
   };
   const lines = buildSeparatedChangeLines(
     performances,
@@ -1313,7 +1354,7 @@ export async function buildIntegratedAllTimePerformanceList({
         p,
       ),
   );
-  return [...lines, render("Total:", total)].join("\n\n");
+  return [...lines, render("Total:", total, report.totalReturnPercentage)].join("\n\n");
 }
 
 export async function buildIntegratedDailyPerformanceList({
@@ -1349,25 +1390,19 @@ export async function buildIntegratedDailyPerformanceList({
         formatTicker,
       );
       if (position.dailyPnl === null) {
-        return `${tickerName} ? ? today`;
+        throw new Error(`Cannot build report: daily P/L is unavailable for ${position.ticker}.`);
       }
 
-      const percentage = position.dailyPnlPercentage === null
-        ? "?"
-        : formatMoneyChange(position.dailyPnlPercentage, "%");
+      const percentage = formatMoneyChange(requireReportNumber(position.dailyPnlPercentage, `${position.ticker} daily percentage`), "%");
       return `${tickerName} ${percentage} ${
         formatCurrencyChange(position.dailyPnl, position.currency)
       } today`;
     },
   );
 
-  const totalLine = totals.dailyChange === null
-    ? "Total: ? ? today"
-    : `Total: ${
-      totals.dailyPercentageChange === null
-        ? "?"
-        : formatMoneyChange(totals.dailyPercentageChange, "%")
-    } ${formatCurrencyChange(totals.dailyChange, currency)} today`;
+  const totalLine = `Total: ${
+    formatMoneyChange(requireReportNumber(totals.dailyPercentageChange, "total daily percentage"), "%")
+  } ${formatCurrencyChange(requireReportNumber(totals.dailyChange, "total daily P/L"), currency)} today`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -1418,7 +1453,9 @@ function isCurrencyConversionOrder(order: IntegrationOrder) {
 export function isDisplayableOrder(
   order: IntegrationOrder,
 ): order is IntegrationOrder & { price: number } {
-  return order.price !== null && !isCurrencyConversionOrder(order);
+  if (isCurrencyConversionOrder(order)) return false;
+  requireReportNumber(order.price, `${order.ticker} execution price`);
+  return true;
 }
 
 export function filterHistoryOrdersByBucket(

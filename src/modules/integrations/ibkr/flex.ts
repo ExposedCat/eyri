@@ -59,6 +59,36 @@ type FlexBatchCandidate = {
 let isFlexSyncRunning = false;
 let flexSyncTimer: ReturnType<typeof setInterval> | null = null;
 
+// Share pacing between trade imports and funding requests using the same token.
+// Spacing requests also keeps annual history scans below IBKR's 10/min limit.
+const flexRequestQueues = new WeakMap<
+  typeof fetch,
+  Map<string, { ready: Promise<void>; nextAt: number }>
+>();
+async function paceFlexRequest<T>(
+  request: typeof fetch,
+  token: string,
+  sleep: (milliseconds: number) => Promise<unknown>,
+  clock: () => number,
+  perform: () => Promise<T>,
+) {
+  let tokens = flexRequestQueues.get(request);
+  if (!tokens) flexRequestQueues.set(request, tokens = new Map());
+  let state = tokens.get(token);
+  if (!state) {
+    state = { ready: Promise.resolve(), nextAt: 0 };
+    tokens.set(token, state);
+  }
+  const pending = state.ready.then(async () => {
+    const delay = state.nextAt - clock();
+    if (delay > 0) await sleep(delay);
+    state.nextAt = clock() + 6_100;
+    return await perform();
+  });
+  state.ready = pending.then(() => {}, () => {});
+  return await pending;
+}
+
 function ensureFlexSchema(database: Database) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS ibkr_flex_trades (
@@ -137,7 +167,7 @@ function parseXmlAttributes(source: string) {
   return attrs;
 }
 
-function getXmlElements(xml: string, tagNames: string[]) {
+export function getXmlElements(xml: string, tagNames: string[]) {
   const elements: XmlElement[] = [];
   for (const tagName of tagNames) {
     const escapedTagName = escapeRegExp(tagName);
@@ -213,14 +243,22 @@ export async function getFlexStatement(
   request: typeof fetch = fetch,
   sleep = (milliseconds: number) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  clock = Date.now,
 ) {
-  const sendXml = await fetchFlexXml(request, "/SendRequest", {
-    t: token,
-    q: queryId,
-    fd: formatFlexDate(range.from),
-    td: formatFlexDate(range.to),
-    v: "3",
-  });
+  const sendXml = await paceFlexRequest(
+    request,
+    token,
+    sleep,
+    clock,
+    () =>
+      fetchFlexXml(request, "/SendRequest", {
+        t: token,
+        q: queryId,
+        fd: formatFlexDate(range.from),
+        td: formatFlexDate(range.to),
+        v: "3",
+      }),
+  );
   const status = getXmlText(sendXml, "Status");
   if (status !== "Success") {
     const code = getXmlText(sendXml, "ErrorCode");
@@ -242,11 +280,18 @@ export async function getFlexStatement(
       await sleep(3_000);
     }
 
-    const statementXml = await fetchFlexXml(request, "/GetStatement", {
-      t: token,
-      q: referenceCode,
-      v: "3",
-    });
+    const statementXml = await paceFlexRequest(
+      request,
+      token,
+      sleep,
+      clock,
+      () =>
+        fetchFlexXml(request, "/GetStatement", {
+          t: token,
+          q: referenceCode,
+          v: "3",
+        }),
+    );
     const statementStatus = getXmlText(statementXml, "Status");
     if (!statementStatus || statementStatus === "Success") {
       return statementXml;
@@ -277,7 +322,7 @@ function getAttr(element: XmlElement, names: string[]) {
   return null;
 }
 
-function parseDate(value: string | null) {
+export function parseDate(value: string | null) {
   if (!value) {
     return null;
   }

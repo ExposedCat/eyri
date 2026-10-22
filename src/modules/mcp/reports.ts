@@ -1,4 +1,5 @@
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
+import { requireReportNumber } from "../../utils/report_value.ts";
 import { getUserBucket, getUserBuckets } from "../database/bucket.ts";
 import { getUserIntegrations } from "../database/integration.ts";
 import { getRsuAwards } from "../database/rsu.ts";
@@ -155,6 +156,9 @@ export async function runReport(
         );
       }
     } else notes.push("Configure /ibkr to fetch current RSU prices.");
+    if (notes.length && (view.upcoming.length || view.total.length || view.missed.length)) {
+      throw new Error(notes.join("\n"));
+    }
     const rate = conversionFactor(
       "USD",
       await fetchConversionRates(["USD"], currency, runtime.request),
@@ -268,12 +272,17 @@ export async function runReport(
   if (name === "alltime" || name === "allnumber") {
     const report = await buildIntegratedAllTimeReport(input);
     const performances = report?.performances ?? [];
+    const accounts = report?.accounts.map((account) => ({
+      ...account,
+      openedAt: account.openedAt.toISOString(),
+      historyThrough: account.historyThrough.toISOString(),
+    })) ?? [];
     if (name === "allnumber")
       return {
         ...context,
         tickers: performances.map((p) => p.ticker),
         total: report?.total.change ?? null,
-        ...(report?.accounts.length ? { accounts: report.accounts } : {}),
+        ...(accounts.length ? { accounts } : {}),
       };
     const item = (p: NonNullable<typeof report>["total"]) => ({
       pnl: p.change,
@@ -288,8 +297,11 @@ export async function runReport(
     return {
       ...context,
       positions: performances.map((p) => ({ ticker: p.ticker, ...item(p) })),
-      total: report ? item(report.total) : null,
-      ...(report?.accounts.length ? { accounts: report.accounts } : {}),
+      total: report ? {
+        ...item(report.total),
+        returnPct: requireReportNumber(report.totalReturnPercentage, "total percentage (requires deposits, withdrawals and current cash for every selected account, and a nonzero basis)"),
+      } : null,
+      ...(accounts.length ? { accounts } : {}),
     };
   }
   if (name === "sold") {

@@ -42,7 +42,9 @@ bucket behavior as Telegram. `when` takes a nonempty `prices` object, e.g.
 
 Results contain compact JSON text and the same object in MCP `structuredContent`.
 Monetary values use the saved `/currency` preference (USD by default), percentage
-values use percentage points (`20` means 20%), and unavailable values are `null`.
+values use percentage points (`20` means 20%). Missing required numeric data
+fails the report with `isError: true`; it is never rendered as a placeholder.
+Empty reports and optional metadata can still use `null`.
 Number tools return `{currency,tickers,total}`; detailed reports return positions
 and a total. `portfolio` returns allocation weights and values; `chart` returns
 daily `{date,pnl,returnPct}` points instead of a PNG. Integration descriptions
@@ -126,7 +128,12 @@ file to its actual Gateway server and restart the PM3 project; see the controlle
 
 The new user must configure an XML Activity Flex Query with Trades at Executions
 level only, including Symbol, Trade Date, Buy/Sell, Quantity, Trade Price,
-Currency, and Asset Category. Select only the account served by this Gateway,
+Currency, and Asset Category. For account returns, also include Account Information
+(Account ID, Currency, Date Opened, Date Funded), Cash Transactions (Account ID, Currency,
+FX Rate to Base, Report Date, Date/Time, Amount, Type, Transaction ID), Cash Report (Base Currency
+Summary, Starting Cash, Ending Cash, Deposits, Withdrawals), and Change in NAV
+(Starting Value, Deposits/Withdrawals). Include all cash types without filters.
+Select only the account served by this Gateway,
 leave symbol filters empty, and choose date format `yyyyMMdd`. Enable Flex Web
 Service and obtain its token and the query ID. Then, from their own private
 Telegram chat with Eyri, send:
@@ -141,10 +148,31 @@ annual batch every five minutes and defaults to five batches per integration.
 The API stays on the private container network; only the health endpoint is
 published on the server's loopback interface. VNC is not published.
 
+An optional fourth argument, `FUNDING_QUERY_ID`, selects a separate Activity Flex
+Query for funding when the existing trade query is a Trade Confirmation query.
+Funding loads consecutive annual statements back to Date Funded (or Date Opened
+when Date Funded is absent), anchoring full annual batches at that date so
+a late-night first deposit and its report day stay together. It validates cash
+continuity and reconciles Cash Transactions against Cash Report and Change in NAV.
+Requests using the same token are paced together, including trade imports.
+Historical transaction FX rates convert contributions into account base currency;
+Gateway NetLiquidation and TotalCashValue supply the live balance and cash.
+Flex only publishes completed days. If live cash differs from the latest statement,
+the report fails with an explicit reconciliation error until the next daily statement;
+it does not treat an unverified same-day deposit as profit. Missing sections,
+truncated history, unsupported asset transfers and failed broker requests are errors.
+
 ### Other integrations
 
 Use `/f24 [api_key] [secret_key] [history_years]` to persist a Freedom24
 integration. `history_years` is optional and defaults to 10.
+
+Freedom24 account returns use a complete `getBrokerReport` from 1970 through today,
+independently of `history_years`. Approved, unreversed bank/card/crypto funding and
+account transfers use the broker's historical USD values. Dividends, interest,
+taxes and fees remain in account P/L. Opposite account transfers cancel when both
+accounts are selected. The report's current cash, including debit balances, and
+net assets supply the account result; quantities must match the live portfolio.
 
 Use `/t212 [api_key] [secret_key]` to persist a read-only Trading 212
 integration. It always uses the live API. Generate a key and secret in your live
@@ -169,7 +197,7 @@ costs; historical chart points are estimates, not a historical cash ledger.
 
 For whole Trading 212 accounts, `/alltime` and `/allnumber` use current broker
 account value minus external net contributions. The percentage denominator is
-net contributions, not cumulative purchase turnover. Complete CSV exports
+deposits minus withdrawals minus current cash, not cumulative purchase turnover. Complete CSV exports
 distinguish true deposits/withdrawals from internal transfers, conversions and
 tax adjustments that the cash API labels as deposits. Cash and share quantities
 must reconcile with fresh broker data, and imported execution IDs must match the
@@ -178,8 +206,9 @@ never deducted twice. An explicit **Account adjustments** row reconciles the
 holding and sold-trade rows with account return, including cash FX, dividends,
 fees, tax adjustments and differences in broker valuation endpoints. MCP reports
 also expose the account value, funding and separate position/summary values.
-The live chart endpoint uses the same reconciled total as `/alltime`; earlier
-chart points retain the estimate described above.
+The live chart endpoint uses the same reconciled monetary total as `/alltime`;
+its percentage uses net contributions including cash. Earlier chart points retain
+the estimate described above.
 
 Exports are cached while event history is unchanged and cash/share checks pass.
 On first use or after new activity, T212 may need a minute to prepare an export;
@@ -348,10 +377,22 @@ bucket. If the owner removes the bucket, all grants and inclusions are removed.
 
 Use `/alltime` (or `/alltime BUCKET`) to combine `/perf` and `/sold` into one
 line per ticker and a single Total. Gains include current holdings and realized
-FIFO gains from available order history. Percentages use their combined cost
-basis. Sold lots follow the bucket of their purchase transaction; unbucketed
+FIFO gains from available order history. Per-ticker percentages use their combined
+cost basis. The Total percentage is P/L divided by deposits minus withdrawals
+minus current cash, only when funding and cash are available for every selected
+account. Missing funding or cash, or a zero denominator, fails the detailed report
+with an explicit error. Negative nonzero bases use the requested formula.
+Reinvested sale proceeds are not new funding.
+Whole Trading 212 and Freedom24 accounts supply this reconciliation. Whole IBKR
+accounts require the Activity Flex funding sections described above. Partial
+buckets and mixed views containing an unreconciled account fail `/alltime` with
+a funding-data error.
+`/allnumber` requires only monetary P/L and can still succeed without funding data.
+Sold lots follow the bucket of their purchase transaction; unbucketed
 views exclude bucketed lots unless explicitly included. Periods run from the earliest purchase to today for
-current holdings, or the final sale for fully sold holdings.
+current holdings, or the final sale for fully sold holdings. Unknown purchase dates
+omit the optional holding period and monthly rates. Missing required prices, costs,
+daily P/L or RSU quotes fails the relevant report instead of showing partial totals.
 
 Use `/number` or `/allnumber` for the same totals as `/perf` or `/alltime`
 in a compact format: available ticker icons on one line, a separator, and only
@@ -383,7 +424,10 @@ The container includes DejaVu Sans fonts; local runs use installed system fonts.
 
 Use `/chart` (or `/chart BUCKET`) for a daily time series of current plus realized
 performance. The percentage is gain divided by the cost of open holdings plus
-FIFO-matched sold lots, as in `/alltime`. The graph starts at the first purchase;
+FIFO-matched sold lots. This is a return on cumulative trade cost, not external
+funding; reinvestments count toward its denominator. The monetary endpoint matches
+`/alltime`, whose Total percentage requires complete funding data. For reconciled
+whole accounts, the live endpoint uses net contributions instead. The graph starts at the first purchase;
 sales retain their realized gains, weekends carry the last close, and stock splits
 adjust historical quantities and unit costs. Today's endpoint uses broker prices
 and book cost. All amounts use the latest exchange rates consistently across

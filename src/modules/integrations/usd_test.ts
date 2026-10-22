@@ -84,7 +84,13 @@ Deno.test("T212 reporting preserves supplied wallet return, cost and value, incl
   equal(eur.averageUnitPrice, 85);
   const args = { positions: [position], request, currency: "EUR", formatTicker: (ticker: string) => ticker };
   match(await buildIntegratedPerformanceList(args), /AAPL \+16\.46% \+27\.99 EUR/);
-  match(await buildIntegratedAllTimePerformanceList({ ...args, orders: [] }), /Total: \+16\.46% \+27\.99 EUR/);
+  match(await buildIntegratedAllTimePerformanceList({ ...args, orders: [], accountPerformances: [{
+    integrationId: 1, currency: "EUR", totalValue: 197.99,
+    netContributions: 170, pnl: 27.99, deposits: 170, withdrawals: 0,
+    cash: 0, ledgerCash: { EUR: 0 }, openedAt: new Date("2025-01-01"),
+    historyThrough: new Date(), positionValue: 197.99, investmentValue: 197.99,
+    reportedComponents: [{ currency: "EUR", cost: 170, pnl: 27.99 }],
+  }] }), /Total: \+16\.46% \+27\.99 EUR/);
   match(await buildIntegratedPerformanceList({ ...args, showCurrentValue: true }), /198\.00 EUR/);
   match(await buildIntegratedTickerList({ ...args, priceOverrides: { AAPL: 120 } }), /\+70\.00 EUR \+41\.18%/);
   const chart = await buildPortfolioChart([position], request, "EUR");
