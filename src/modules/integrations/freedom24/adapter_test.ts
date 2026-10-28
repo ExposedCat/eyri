@@ -467,7 +467,7 @@ Deno.test("Freedom24 imports BOTZ partial and cancelled fills at execution times
       new Map([["USD", 1]]),
     );
     equal(points.at(-1)!.gain, 10);
-    ok(Math.abs(points.at(-1)!.percentage - 100 / 3) < 1e-9);
+    equal(points.at(-1)!.percentage, null);
   });
 });
 

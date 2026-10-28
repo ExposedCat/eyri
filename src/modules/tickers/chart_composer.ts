@@ -40,7 +40,9 @@ const buttons = (
   if (!isPrivate && datasets.length < MAX_PARTICIPANTS) {
     keyboard.text(compareLabel, `chart_compare:${id}`);
   }
-  return keyboard.text(indexLabel ?? CHART_BENCHMARKS[index].name, `chart_index:${id}:${index}`);
+  return datasets.every(dataset => dataset.benchmark)
+    ? keyboard.text(indexLabel ?? CHART_BENCHMARKS[index].name, `chart_index:${id}:${index}`)
+    : keyboard;
 };
 const pending = new Set<string>();
 
@@ -185,7 +187,7 @@ export function createChartComposer(
       try {
         const message = await ctx.replyWithPhoto(
           new InputFile(image, "alltime.png"),
-          { reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
+          { caption: dataset.notes?.join("\n").slice(0, 1024), reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
         );
         ctx.db.prepare(
           "UPDATE alltime_chart_sessions SET message_id = ? WHERE id = ?",
@@ -218,20 +220,20 @@ export function createChartComposer(
       return;
     }
     const datasets = JSON.parse(session.datasets) as AllTimeDataset[];
-    if (datasets.some((dataset) => !dataset.benchmark)) {
+    if (datasets.some((dataset) => dataset.fundingReturnVersion !== 1)) {
       await ctx.answerCallbackQuery({
-        text: "This chart predates personal benchmarks. Create a new chart with /chart.",
+        text: "This chart uses an older return calculation. Create a new chart with /chart.",
         show_alert: true,
       });
       return;
     }
-    const current = chartBenchmarkIndex(datasets[0].benchmark!.symbol);
+    const current = chartBenchmarkIndex(datasets[0].benchmark?.symbol);
     if (switching) {
       if (ctx.match[3] !== current) {
         await ctx.answerCallbackQuery({ text: "The index has already changed. Use the updated button." });
         return;
       }
-      if (datasets.some((dataset) => !dataset.benchmarkPurchases)) {
+      if (datasets.some((dataset) => !dataset.benchmark || !dataset.benchmarkPurchases)) {
         await ctx.answerCallbackQuery({
           text: "This chart predates index switching. Create a new chart with /chart.",
           show_alert: true,
@@ -283,13 +285,13 @@ export function createChartComposer(
           );
           return { ...usdDataset, points, benchmark, ...(benchmarkSnapshots && { benchmarkSnapshots }) };
         });
-        if (chartBenchmarkIndex(next.at(-1)!.benchmark?.symbol) !== current) {
+        if (next.at(-1)!.benchmark && chartBenchmarkIndex(next.at(-1)!.benchmark?.symbol) !== current) {
           const [added] = await switchBenchmarks(ctx.db, [next.at(-1)!], current);
           next[next.length - 1] = added;
         }
       }
       const image = await runtime.render(ctx.db, next);
-      await ctx.editMessageMedia({ type: "photo", media: new InputFile(image, "alltime.png") }, {
+      await ctx.editMessageMedia({ type: "photo", media: new InputFile(image, "alltime.png"), caption: [...new Set(next.flatMap(dataset => dataset.notes ?? []))].join("\n").slice(0, 1024) }, {
         reply_markup: buttons(id, next, isPrivate),
       });
       ctx.db.prepare("UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?")

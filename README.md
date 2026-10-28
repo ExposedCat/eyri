@@ -197,7 +197,7 @@ costs; historical chart points are estimates, not a historical cash ledger.
 
 For whole Trading 212 accounts, `/alltime` and `/allnumber` use current broker
 account value minus external net contributions. The percentage denominator is
-deposits minus withdrawals minus current cash, not cumulative purchase turnover. Complete CSV exports
+gross external deposits; reinvested gains do not count as new deposits. Complete CSV exports
 distinguish true deposits/withdrawals from internal transfers, conversions and
 tax adjustments that the cash API labels as deposits. Cash and share quantities
 must reconcile with fresh broker data, and imported execution IDs must match the
@@ -237,7 +237,7 @@ the returned cash as total sale proceeds. Sending $500 and returning $1,000
 therefore gives $500 cost and $500 realized profit (+100%), using the same FIFO,
 bucket, performance and chart paths as ordinary purchases and sales. `/history`
 shows the $500 purchase, as it does for other purchased instruments.
-Outstanding allocations appear in `/stocks`, `/portfolio`, `/perf`, `/worth`
+Outstanding allocations appear in `/perf stocks`, `/portfolio`, `/perf`, `/worth`
 and their bucket views at funding cost until a return closes them. `/sold`,
 `/alltime`, `/allnumber` and `/chart` include realized CFD results. Whole-account
 reconciliation includes returned CFD cash through the actual cash ledger rather
@@ -276,7 +276,7 @@ preserved. If any account fails, the command identifies it instead of displaying
 an incomplete total. Existing accounts and cached broker history are preserved
 by an automatic database migration on startup.
 
-`/stocks`, `/options`, `/perf`, `/number`, `/worth`, `/worthnumber`, `/sold`,
+`/perf`, `/number`, `/worth`, `/worthnumber`, `/sold`,
 `/alltime`, `/allnumber`, `/dpnl`, `/history`, `/when`, bucket views and diagnostic
 dumps display amounts in your selected currency (default USD) using the latest
 Frankfurter rates. Prices supplied to `/when` use your selected currency. History prices and realized
@@ -355,13 +355,13 @@ frees it. Grants made before this limit existed are kept as they are. Buckets fr
 can be included together at any shares.
 
 Shared buckets appear in `/buckets` and work with named views such as
-`/perf NAME`, `/worth NAME`, `/worthnumber NAME`, `/options NAME`, `/alltime NAME`,
+`/perf NAME`, `/worth NAME`, `/worthnumber NAME`, `/perf options NAME`, `/alltime NAME`,
 `/history NAME`, and `/chart NAME`.
 The owner's integrations provide the holdings and purchase/sale history. The
 recipient does not need an integration of their own to view a shared bucket.
 
 Use `/bucket include NAME` to merge an accessible bucket into your default
-portfolio reports, including `/portfolio`, `/stocks`, `/options`, `/perf`,
+portfolio reports, including `/portfolio`, `/perf`,
 `/alltime`, `/sold`, `/dpnl`, `/history`, `/number`, `/worth`, `/worthnumber`,
 `/when`, and `/chart`.
 Repeated inclusion does not duplicate holdings. Matching holdings are combined;
@@ -373,21 +373,35 @@ removing access. Owners can also include their own buckets in their default view
 bucket. If the owner removes the bucket, all grants and inclusions are removed.
 `/integrations` and `/restart` continue to manage only the sender's own accounts.
 
+## Performance commands
+
+Use `/KIND[@bot_username] [s/o/stocks/options] [BUCKET]`, where `KIND` is
+`perf`, `dpnl`, `alltime`, or `worth`. Both arguments are optional; put the
+asset filter before the bucket. `s` and `stocks` select stocks/CFDs; `o` and
+`options` select options and warrants. Without a filter, both are included.
+For example: `/perf s`, `/dpnl options Core`, `/worth Core`, or
+`/alltime@eyri_bot stocks Core`. `/number`, `/allnumber`, and `/worthnumber`
+also accept these filters. Filter words in the first argument are reserved.
+The separate `/stocks` and `/options` commands have been removed.
+
+Filtered `/alltime` and bucket views show selected open and sold P/L. Their
+lifetime percentage is unavailable because they have no allocated deposits or cash.
+
 ## All-time performance
 
 Use `/alltime` (or `/alltime BUCKET`) to combine `/perf` and `/sold` into one
 line per ticker and a single Total. Gains include current holdings and realized
-FIFO gains from available order history. Per-ticker percentages use their combined
-cost basis. The Total percentage is P/L divided by deposits minus withdrawals
-minus current cash, only when funding and cash are available for every selected
-account. Missing funding or cash, or a zero denominator, fails the detailed report
-with an explicit error. Negative nonzero bases use the requested formula.
-Reinvested sale proceeds are not new funding.
+FIFO gains from available order history. Ticker rows show monetary P/L without a
+lifetime percentage. The whole-account Total uses
+`(cash + portfolio + withdrawals - deposits) / deposits * 100`, including cash in
+account equity and using gross deposits as the denominator. Reinvestments are not
+new deposits. Withdrawals preserve previously earned profit. Zero deposits or
+incomplete funding leave the percentage unavailable while preserving monetary P/L.
 Whole Trading 212 and Freedom24 accounts supply this reconciliation. Whole IBKR
-accounts require the Activity Flex funding sections described above. Partial
-buckets and mixed views containing an unreconciled account fail `/alltime` with
-a funding-data error.
-`/allnumber` requires only monetary P/L and can still succeed without funding data.
+accounts require the Activity Flex funding sections described above. Filtered,
+partial bucket and unreconciled views have no capital-return percentage. Combined
+accounts containing unclassified internal transfers also omit the percentage so
+those transfers cannot inflate deposits. `/allnumber` continues to show monetary P/L.
 Sold lots follow the bucket of their purchase transaction; unbucketed
 views exclude bucketed lots unless explicitly included. Periods run from the earliest purchase to today for
 current holdings, or the final sale for fully sold holdings. Unknown purchase dates
@@ -423,29 +437,32 @@ The container includes DejaVu Sans fonts; local runs use installed system fonts.
 ## All-time chart
 
 Use `/chart` (or `/chart BUCKET`) for a daily time series of current plus realized
-performance. The percentage is gain divided by the cost of open holdings plus
-FIFO-matched sold lots. This is a return on cumulative trade cost, not external
-funding; reinvestments count toward its denominator. The monetary endpoint matches
-`/alltime`, whose Total percentage requires complete funding data. For reconciled
-whole accounts, the live endpoint uses net contributions instead. The graph starts at the first purchase;
-sales retain their realized gains, weekends carry the last close, and stock splits
-adjust historical quantities and unit costs. Today's endpoint uses broker prices
-and book cost. All amounts use the latest exchange rates consistently across
-the series, excluding historical FX effects, dividends and fees.
+performance in monetary terms. Historical points show reconstructed trade P/L;
+we do not have daily account cash balances to calculate historical lifetime
+percentages. The legend shows the current lifetime return on gross deposits when
+complete funding exists, otherwise it marks that percentage unavailable. The
+monetary endpoint matches `/alltime`. Sales retain realized gains, weekends carry
+the last close, and splits adjust historical quantities and unit costs. Historical
+trade P/L uses the latest exchange rates and excludes historical FX effects,
+dividends and fees; current reconciled account P/L includes those adjustments.
 
 The chart is sent as a Telegram photo using the portfolio's dark background.
-Every participant keeps one color for their solid actual-performance line and a
-semi-transparent dashed **if S&P 500** line. The dashed line invests each selected
-purchase's amount into fractional shares of **CSPX.L**, the accumulating USD iShares
-S&P 500 ETF, using the closing price on that date (the preceding close on weekends
-and holidays). It then holds those hypothetical shares, including when the actual
-instrument was sold; each later purchase adds another hypothetical investment.
-Its percentage is hypothetical gain divided by cumulative purchase cost. Zero-cost
-awards add no hypothetical investment. Purchase costs use the same latest USD FX
-rates as the actual curve, including conversion from GBX; fees are excluded.
+Single-portfolio charts use a solid mint actual-performance line and an opaque
+gold dashed **if S&P 500** line. Comparisons keep each participant's own color
+for their solid and opaque dashed lines. Benchmark lines draw behind actual
+lines; hollow circles draw on top. They mark turning points and the endpoint, with a
+minimum spacing to avoid crowding.
+The dashed line invests each external deposit into fractional shares of
+**CSPX.L**, the accumulating USD iShares S&P 500 ETF, at that date's closing price
+(or the preceding close). Withdrawals sell hypothetical units and remain part of
+lifetime proceeds. Actual purchases and reinvestments add no benchmark capital.
+Benchmark return is `(remaining value + withdrawals - deposits) / deposits * 100`.
+Benchmarks require complete dated external funding and are omitted when it is
+unavailable or the hypothetical fund cannot cover a withdrawal. Existing chart
+sessions made with purchase-cost returns must be recreated with `/chart`.
 The two curves and monetary gains appear together in the participant legend.
 The **S&P 500** button beside Compare switches the index to **Momentum**, using
-the USD **IUMO.L** ETF with the same personal purchase schedule. Clicking
+the USD **IUMO.L** ETF with the same external funding schedule. Clicking
 **Momentum** switches back to S&P 500. The button names the current selection,
 changes every participant's benchmark together, and also appears on its own in DMs.
 Joining an existing chart uses that chart's selected index.
@@ -671,10 +688,10 @@ bucket returns all of its shares. Synthesized entries such as T212 CFD funding
 cannot be split.
 
 Unbucketed `/perf`, `/number`, `/worth`,
-`/worthnumber`, `/alltime`, `/allnumber`, `/stocks`, `/options`, `/dpnl`, and
+`/worthnumber`, `/alltime`, `/allnumber`, `/dpnl`, and
 `/history` views exclude bucketed transactions; pass `NAME` to
 `/perf NAME`, `/number NAME`, `/worth NAME`, `/worthnumber NAME`, `/alltime NAME`,
-`/allnumber NAME`, `/stocks NAME`, `/options NAME`, `/dpnl NAME`, or `/history NAME`
+`/allnumber NAME`, `/dpnl NAME`, or `/history NAME`
 to view a bucket.
 
 ## Restarting IB Gateway

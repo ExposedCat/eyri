@@ -31,14 +31,14 @@ export const reportDescriptions = {
     "Total realized plus unrealized profit/loss and tickers, like /allnumber.",
   perf: "Open-position profit/loss, percentage returns and holding periods, like /perf.",
   alltime:
-    "Realized plus unrealized profit/loss, percentage returns and holding periods, like /alltime.",
+    "Lifetime profit/loss and total return on gross deposits. Ticker returns and unallocated bucket returns are unavailable, like /alltime.",
   worth:
     "Current position values, percentage returns and holding periods, like /worth.",
   worthnumber: "Total current portfolio value and tickers, like /worthnumber.",
   stocks:
-    "Stock/CFD positions, prices, quantities, costs, values and monthly returns, like /stocks.",
+    "Stock/CFD positions, prices, quantities, costs, values and monthly returns.",
   options:
-    "Option positions, prices, quantities, costs, values and monthly returns, like /options.",
+    "Option positions, prices, quantities, costs, values and monthly returns.",
   sold: "FIFO realized profit/loss, percentage returns and holding periods, like /sold.",
   dpnl: "Today's position and portfolio profit/loss and percentage returns, like /dpnl.",
   history:
@@ -47,7 +47,7 @@ export const reportDescriptions = {
   portfolio:
     "Stock/CFD allocation weights, current values and returns, like /portfolio.",
   chart:
-    "All-time daily profit/loss and percentage series, like /chart, without an image.",
+    "Historical trade P/L and current lifetime return on deposits, like /chart, without an image. Historical returnPct is unavailable without daily account cash balances.",
   buckets:
     "Accessible portfolio buckets, their owners and inclusion flags, like /buckets.",
   integrations:
@@ -215,6 +215,7 @@ export async function runReport(
     );
     return {
       ...context,
+      notes: dataset.notes ?? [],
       points: dataset.points.map((p) => ({
         date: p.date,
         pnl: p.gain * rate,
@@ -286,12 +287,7 @@ export async function runReport(
       };
     const item = (p: NonNullable<typeof report>["total"]) => ({
       pnl: p.change,
-      returnPct:
-        p.accountAdjustment || p.cost === null || p.change === null
-          ? null
-          : p.cost === 0
-            ? 0
-            : (p.change / p.cost) * 100,
+      returnPct: null,
       period: p.openedAt ? getElapsedPeriod(p.openedAt, p.endedAt).label : null,
     });
     return {
@@ -299,8 +295,9 @@ export async function runReport(
       positions: performances.map((p) => ({ ticker: p.ticker, ...item(p) })),
       total: report ? {
         ...item(report.total),
-        returnPct: requireReportNumber(report.totalReturnPercentage, "total percentage (requires deposits, withdrawals and current cash for every selected account, and a nonzero basis)"),
+        returnPct: report.totalReturnPercentage,
       } : null,
+      ...(report?.returnUnavailableReason ? { returnUnavailableReason: report.returnUnavailableReason } : {}),
       ...(accounts.length ? { accounts } : {}),
     };
   }

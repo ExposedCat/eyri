@@ -77,6 +77,10 @@ Deno.test("IBKR funding parses external flows with historical FX and validates i
   );
   equal(parsed.deposits, 120);
   equal(parsed.withdrawals, 20);
+  equal(parsed.fundingHistory.length, 2);
+  equal(parsed.fundingHistory[0].date, "2026-01-03");
+  equal(parsed.fundingHistory[0].amount, 120);
+  equal(parsed.fundingHistory[1].amount, -20);
   equal(parsed.endingCash, 300);
   equal(parsed.openedAt, "2025-01-01T00:00:00.000Z");
   throws(
@@ -191,6 +195,7 @@ Deno.test("IBKR funding scans back to account opening, caches completed batches 
     equal(result.deposits, 620);
     equal(result.withdrawals, 120);
     equal(result.netContributions, 500);
+    equal(result.fundingHistory?.reduce((sum, flow) => sum + flow.amount, 0), 500);
     equal(result.pnl, 300);
     equal(result.cash, 300);
     equal(result.historyThrough.toISOString().slice(0, 10), "2026-10-21");

@@ -173,14 +173,14 @@ Deno.test("all-time series replays purchases and FIFO sales, carries weekends, a
     new Map([["USD", 1]]),
   );
   deepStrictEqual(
-    series.map((p) => [p.date, p.gain, Number(p.percentage.toFixed(8))]),
+    series.map((p) => [p.date, p.gain, p.percentage]),
     [
-      ["2025-01-01", 0, 0],
-      ["2025-01-02", 0, 0],
-      ["2025-01-03", 140, 14],
-      ["2025-01-04", 140, 14],
-      ["2025-01-05", 140, 14],
-      ["2025-01-06", 260, 26],
+      ["2025-01-01", 0, null],
+      ["2025-01-02", 0, null],
+      ["2025-01-03", 140, null],
+      ["2025-01-04", 140, null],
+      ["2025-01-05", 140, null],
+      ["2025-01-06", 260, null],
     ],
   );
   const text = await buildIntegratedAllTimePerformanceList({
@@ -211,7 +211,7 @@ Deno.test("all-time series retains sold-only gains and isolates same-ticker FIFO
   );
   equal(points[2].gain, -40);
   equal(points.at(-1)!.gain, -20);
-  ok(Math.abs(points.at(-1)!.percentage + 20 / 300 * 100) < 1e-9);
+  equal(points.at(-1)!.percentage, null);
 });
 
 Deno.test("live chart endpoint uses FX-inclusive broker valuation and agrees with alltime gains", async () => {
@@ -238,7 +238,7 @@ Deno.test("live chart endpoint uses FX-inclusive broker valuation and agrees wit
     new Map([["USD", 1], ["EUR", 1.25]]),
   );
   equal(points.at(-1)!.gain, 27.99 * 1.25);
-  equal(points.at(-1)!.percentage, 27.99 / 170 * 100);
+  equal(points.at(-1)!.percentage, null);
   const text = await buildIntegratedAllTimePerformanceList({
     numberOnly: true,
     ...args,
@@ -271,7 +271,7 @@ Deno.test("bucket all-time curves consume earlier unselected purchases before se
     new Map([["USD", 1]]),
   );
   equal(core.at(-1)!.gain, 800);
-  equal(core.at(-1)!.percentage, 200);
+  equal(core.at(-1)!.percentage, null);
   const rest = buildAllTimeSeries(
     {
       positions: [holding(5, 1000, 250)],
@@ -284,7 +284,7 @@ Deno.test("bucket all-time curves consume earlier unselected purchases before se
     new Map([["USD", 1]]),
   );
   equal(rest.at(-1)!.gain, 350);
-  ok(Math.abs(rest.at(-1)!.percentage - 350 / 1200 * 100) < 1e-9);
+  equal(rest.at(-1)!.percentage, null);
 });
 
 Deno.test("chart prices in pounds and broker prices in GBX use their own USD factors", () => {
@@ -307,9 +307,9 @@ Deno.test("chart prices in pounds and broker prices in GBX use their own USD fac
     new Map([["GBX", .02], ["GBP", 2]]),
   );
   equal(points[1].gain, 2);
-  equal(points[1].percentage, 10);
+  equal(points[1].percentage, null);
   equal(points.at(-1)!.gain, 4);
-  equal(points.at(-1)!.percentage, 20);
+  equal(points.at(-1)!.percentage, null);
 });
 
 Deno.test("EUR warrant history and live endpoints compare native bids to native FIFO cost", () => {
@@ -346,7 +346,7 @@ Deno.test("EUR warrant history and live endpoints compare native bids to native 
     const nativeGain = 1042 * .50 - 1042 * .49 + 100 * (.52 - .49);
     for (const point of points.slice(2)) {
       ok(Math.abs(point.gain - nativeGain * factor) < 1e-9);
-      ok(Math.abs(point.percentage - nativeGain / (1142 * .49) * 100) < 1e-9);
+      equal(point.percentage, null);
     }
   }
   deepStrictEqual({ orders, positions }, original);
@@ -372,7 +372,7 @@ Deno.test("historical splits preserve lot cost and adjust shares without inventi
   );
   equal(points[2].gain, 0);
   equal(points.at(-1)!.gain, 40);
-  equal(points.at(-1)!.percentage, 20);
+  equal(points.at(-1)!.percentage, null);
 });
 
 Deno.test("incomplete trades, unmatched sales, missing closes and unreconciled holdings fail explicitly", () => {
@@ -476,7 +476,7 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
       label: "Other",
       points: first.points.map((p) => ({
         ...p,
-        percentage: -p.percentage / 2,
+        percentage: p.percentage === null ? null : -p.percentage / 2,
         gain: -p.gain / 2,
       })),
     };
@@ -599,7 +599,7 @@ Deno.test("Freedom24 option series uses per-contract premiums, retains sold gain
   );
   equal(points[2].gain, 90);
   equal(points.at(-1)!.gain, 80);
-  equal(points.at(-1)!.percentage, 40);
+  equal(points.at(-1)!.percentage, null);
   match(
     await buildIntegratedAllTimePerformanceList({
       numberOnly: true,
@@ -691,7 +691,7 @@ Deno.test("chart follows VSCO purchases through the VSXY rename and preserves th
     );
     deepStrictEqual(calls, ["VSXY.US"]);
     equal(dataset.points.at(-1)!.gain, 30);
-    equal(dataset.points.at(-1)!.percentage, 75);
+    equal(dataset.points.at(-1)!.percentage, null);
   } finally {
     db.close();
   }
@@ -766,7 +766,7 @@ Deno.test("chart stitches APH option predecessors across the split without using
     equal(dataset.points.find((p) => p.date === "2026-09-03")!.gain, 200);
     equal(dataset.points.find((p) => p.date === "2026-09-04")!.gain, 250);
     equal(dataset.points.at(-1)!.gain, 300);
-    equal(dataset.points.at(-1)!.percentage, 50);
+    equal(dataset.points.at(-1)!.percentage, null);
     const text = await buildIntegratedAllTimePerformanceList({
     numberOnly: true,
       orders: [buy, sell],
@@ -845,7 +845,7 @@ Deno.test("a referral stock with no purchase adds its full value at zero cost on
     deepStrictEqual(calls, [["AAPL", "2025-01-02"], ["IBKR", "2025-01-06"]]);
     equal(dataset.points.find((p) => p.date === "2025-01-05")!.gain, 10);
     equal(dataset.points.at(-1)!.gain, 38.09);
-    equal(dataset.points.at(-1)!.percentage, 38.09);
+    equal(dataset.points.at(-1)!.percentage, null);
     equal(args.orders.length, 1);
     equal(gift.totalInput, 5);
     equal(args.transactionBuckets.size, 0);
@@ -880,7 +880,7 @@ Deno.test("a bucket containing only free stock charts without recorded orders an
   equal(series[0].gain, 0);
   equal(series[1].date, "2025-01-06");
   equal(Number(series[1].gain.toFixed(8)), 99);
-  equal(series[1].percentage, 0);
+  equal(series[1].percentage, null);
   equal(args.transactionBuckets.size, 0);
 });
 
@@ -982,7 +982,7 @@ Deno.test("a post-split APH purchase fetches only the new contract; later failur
   }
 });
 
-Deno.test("personal benchmark uses selected USD/GBP/GBX/option purchase costs and holds through actual sales", async () => {
+Deno.test("bucket charts never invent benchmark deposits from USD/GBP/GBX/option purchase costs", async () => {
   const db = new Database(":memory:");
   const usd = trade(10, 100, "2025-01-02");
   const gbp = trade(1, 100, "2025-01-03", "GBP");
@@ -1020,15 +1020,11 @@ Deno.test("personal benchmark uses selected USD/GBP/GBX/option purchase costs an
       transactionBuckets: new Map([usd, gbp, gbx, option].map(o => [getOrderTransactionKey(o), "Core"])),
       bucketName: "Core", now,
     }, 1, "Person", cache as never, async () => Response.json({ base: "USD", quote: "GBP", rate: .5 }));
-    const benchmark = dataset.benchmark!;
-    // USD 1000 bought at 100; USD 600 bought at 110; all shares now at 121.
-    ok(Math.abs(benchmark.points.at(-1)!.gain - 270) < 1e-8);
-    ok(Math.abs(benchmark.points.at(-1)!.percentage - 16.875) < 1e-8);
-    ok(Math.abs(benchmark.points.find(p => p.date === "2025-01-03")!.percentage - 6.25) < 1e-8);
-    equal(calls.filter(s => s === "CSPX.L").length, 1);
+    equal(dataset.benchmark, undefined);
+    equal(calls.filter(symbol => symbol === "CSPX.L").length, 0);
     ok(!calls.some(s => s.startsWith("OTHER")));
     // The snapshot is serializable without broker credentials or raw orders.
-    deepStrictEqual(JSON.parse(JSON.stringify(dataset)).benchmark, benchmark);
+    equal(JSON.parse(JSON.stringify(dataset)).benchmark, undefined);
   } finally { db.close(); }
 });
 
@@ -1042,6 +1038,7 @@ Deno.test("switching index replays saved purchases before the visible window and
     { date: "2025-01-02", amountUsd: 1000 }, { date: "2025-01-03", amountUsd: 1000 },
   ];
   const first: AllTimeDataset = {
+      fundingReturnVersion: 1,
     userId: 1, label: "First", bucketName: null, displayCurrency: "EUR", displayRate: .8,
     points: [{ date: "2025-01-03", percentage: 5, gain: 100 }, { date: "2025-01-06", percentage: 15.5, gain: 310 }],
     benchmarkPurchases: purchases,

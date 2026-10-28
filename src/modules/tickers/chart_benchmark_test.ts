@@ -101,7 +101,7 @@ Deno.test("benchmark rejects wrong listings and invalid prices or purchase amoun
   ]) {
     throws(() => buildChartBenchmark({ ...history, ...change }, purchases, "2026-01-02", "2026-05-01"));
   }
-  for (const amountUsd of [-1, NaN, Infinity]) {
+  for (const amountUsd of [NaN, Infinity]) {
     throws(() => buildChartBenchmark(history, [{ ...purchases[0], amountUsd }], "2026-01-02", "2026-05-01"), /Invalid.*purchase/);
   }
 });

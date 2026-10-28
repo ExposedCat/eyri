@@ -1,3 +1,4 @@
+import { accountReturn } from "./account_return.ts";
 import { requireReportNumber } from "../../utils/report_value.ts";
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
@@ -139,13 +140,13 @@ export function isOptionTicker(ticker: string) {
   return ticker.trim().startsWith("+");
 }
 
-export function isOptionPosition(position: IntegrationPortfolioPosition) {
+export function isOptionPosition(position: Pick<IntegrationPortfolioPosition, "ticker" | "assetCategory">) {
   const category = position.assetCategory?.trim().toUpperCase();
   return isOptionTicker(position.ticker) || category === "OPT" ||
     category === "WAR";
 }
 
-export function isStockPosition(position: IntegrationPortfolioPosition) {
+export function isStockPosition(position: Pick<IntegrationPortfolioPosition, "ticker" | "assetCategory">) {
   return !isOptionPosition(position);
 }
 
@@ -1222,7 +1223,6 @@ export async function buildIntegratedAllTimeReport({
       }),
     );
   }
-  let fundingCostAdjustment = 0;
   if (bucketName !== null && accountPerformances.length) {
     throw new Error("Account funding cannot be assigned to an individual bucket");
   }
@@ -1244,8 +1244,6 @@ export async function buildIntegratedAllTimeReport({
       change: account.pnl * factor - reported.pnl,
       openedAt: account.openedAt, endedAt: now, accountAdjustment: true,
     }));
-    // Reinvesting sales must not multiply the percentage denominator.
-    fundingCostAdjustment += (account.netContributions - account.cash) * factor - reported.cost;
   }
   const performances = [...display.values()].sort(
     (a, b) =>
@@ -1261,10 +1259,6 @@ export async function buildIntegratedAllTimeReport({
     openedAt: null,
     endedAt: new Date(0),
   } as Performance);
-  if (total.cost !== null) {
-    total.cost += fundingCostAdjustment;
-    if (!Number.isFinite(total.cost)) total.cost = null;
-  }
   requireReportNumber(total.change, "total all-time P/L");
   // Trade costs count the same money again whenever sale proceeds are reinvested.
   // Every selected integration must supply external funding and current cash.
@@ -1275,17 +1269,8 @@ export async function buildIntegratedAllTimeReport({
       selectedIntegrationIds.add(order.integrationId);
     }
   }
-  const hasCompleteFunding = accountPerformances.length > 0 &&
-    [...selectedIntegrationIds].every((id) => ids.has(id));
-  const investedCapital = accountPerformances.reduce((sum, account) => {
-    const factor = account.currency === currency ? 1 : conversionFactor(account.currency, rates);
-    return sum + (account.netContributions - account.cash) * factor;
-  }, 0);
-  const totalReturnPercentage = hasCompleteFunding &&
-      Number.isFinite(investedCapital) && investedCapital !== 0 && total.change !== null
-    ? total.change / investedCapital * 100
-    : null;
-  return { performances, total, totalReturnPercentage, accounts: accountPerformances };
+  const funding = accountReturn(accountPerformances, selectedIntegrationIds, rates, currency);
+  return { performances, total, totalReturnPercentage: funding.percentage, returnUnavailableReason: funding.reason, accounts: accountPerformances };
 }
 
 export async function buildIntegratedAllTimePerformanceList({
@@ -1330,13 +1315,9 @@ export async function buildIntegratedAllTimePerformanceList({
     if (performance.change === null) {
       throw new Error(`Cannot build report: P/L is unavailable for ${name}.`);
     }
-    const percentage = returnPercentage !== undefined
-      ? returnPercentage
-      : performance.cost === null ? null
-      : performance.cost === 0 ? 0 : performance.change / performance.cost * 100;
-    return `${name} ${formatMoneyChange(requireReportNumber(percentage, `${name} percentage (requires deposits, withdrawals and current cash for every selected account, and a nonzero basis)`), "%")} ${
-      formatCurrencyChange(performance.change, performance.currency)
-    }${periodSuffix(elapsed)}`;
+    const percentage = returnPercentage == null ? ""
+      : `${formatMoneyChange(returnPercentage, "%")} `;
+    return `${name} ${percentage}${formatCurrencyChange(performance.change, performance.currency)}${periodSuffix(elapsed)}`;
   };
   const lines = buildSeparatedChangeLines(
     performances,
@@ -1354,7 +1335,7 @@ export async function buildIntegratedAllTimePerformanceList({
         p,
       ),
   );
-  return [...lines, render("Total:", total, report.totalReturnPercentage)].join("\n\n");
+  return [...lines, render("Total:", total, report.totalReturnPercentage), ...(report.returnUnavailableReason ? [report.returnUnavailableReason] : [])].join("\n\n");
 }
 
 export async function buildIntegratedDailyPerformanceList({

@@ -105,8 +105,8 @@ Deno.test("whole included accounts retain wallet holdings and funding; partial b
     deepStrictEqual(view.positions[0].brokerValuations, live.brokerValuations);
     const report = await buildIntegratedAllTimeReport(view);
     equal(report?.total.change, 105);
-    equal(report?.total.cost, 295);
-    equal(report?.totalReturnPercentage, 105 / 295 * 100);
+    equal(report?.total.cost, 180);
+    equal(report?.totalReturnPercentage, 105 / 300 * 100);
     await fetchPortfolioView(db, 1, "Included", {
       history: true,
       accountPerformance: true,
@@ -286,7 +286,7 @@ Deno.test("included buckets merge holdings and sales using owner integrations an
       new Map([["USD", 1]]),
     );
     equal(series.at(-1)?.gain, 450);
-    equal(series.at(-1)?.percentage, 90);
+    equal(series.at(-1)?.percentage, null);
     setBucketIncluded({
       database: db,
       userId: 1,

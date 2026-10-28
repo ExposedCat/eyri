@@ -228,6 +228,7 @@ Deno.test("account return reconciles deposits, broker value, cash and every posi
   );
   equal(account.pnl, 24);
   equal(account.netContributions, 96);
+  equal(account.fundingHistory?.reduce((sum, flow) => sum + flow.amount, 0), 96);
   equal(account.cash, 55);
   account.reportedComponents = [{ currency: "EUR", cost: 50, pnl: 15 }];
   const report = await buildIntegratedAllTimeReport({
@@ -238,8 +239,8 @@ Deno.test("account return reconciles deposits, broker value, cash and every posi
     accountPerformances: [account],
   });
   equal(report?.total.change, 24);
-  equal(report?.total.cost, 41);
-  equal(report?.totalReturnPercentage, 24 / 41 * 100);
+  equal(report?.total.cost, 50);
+  equal(report?.totalReturnPercentage, 24 / account.deposits * 100);
   equal(report?.performances.reduce((sum, p) => sum + p.change!, 0), 24);
   const text = await buildIntegratedAllTimePerformanceList({
     positions: [p],

@@ -84,6 +84,7 @@ function harness(db: Database, currencies = new Map<number, string>()) {
         date: "2025-01-02", percentage: 10, gain: 100,
       }];
       return Promise.resolve({
+        fundingReturnVersion: 1 as const,
         userId: ctx.from!.id,
         label: ctx.from!.first_name,
         bucketName,
@@ -92,7 +93,7 @@ function harness(db: Database, currencies = new Map<number, string>()) {
         benchmark: {
           label: "If S&P 500 (CSPX.L)", symbol: "CSPX.L",
           asOf: points.at(-1)!.date,
-          points: points.map((p) => ({ ...p, percentage: p.percentage / 2, gain: p.gain / 2 })),
+          points: points.map((p) => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain / 2 })),
         },
       });
     },
@@ -295,7 +296,7 @@ Deno.test("Compare keeps the original date range and point values across older/n
     deepStrictEqual(h.renderedDatasets[0].map((d) => d.points), [original, inRange]);
     deepStrictEqual(h.renderedDatasets[0][0].benchmark, first.renderedDatasets[0][0].benchmark);
     deepStrictEqual(h.renderedDatasets[0][1].benchmark!.points,
-      inRange.map(p => ({ ...p, percentage: p.percentage / 2, gain: p.gain / 2 })));
+      inRange.map(p => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain / 2 })));
     const resumed = harness(db);
     const laterStart = [
       { date: "2025-07-01", percentage: 0, gain: 0 },
@@ -310,7 +311,7 @@ Deno.test("Compare keeps the original date range and point values across older/n
     deepStrictEqual(resumed.renderedDatasets[0].slice(0, 2).map(d => d.benchmark),
       h.renderedDatasets[0].map(d => d.benchmark));
     deepStrictEqual(resumed.renderedDatasets[0][2].benchmark!.points,
-      laterStart.map(p => ({ ...p, percentage: p.percentage / 2, gain: p.gain / 2 })));
+      laterStart.map(p => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain / 2 })));
     const stored = JSON.parse(readChartSession(db, data.split(":")[1], -1001, 100)!.datasets);
     deepStrictEqual(stored, resumed.renderedDatasets[0]);
   } finally {
@@ -386,7 +387,7 @@ Deno.test("legacy comparison sessions require a new chart without fetching any p
     const data = callback(first.calls);
     const id = data.split(":")[1];
     const datasets = JSON.parse(readChartSession(db, id, -1001, 100)!.datasets) as AllTimeDataset[];
-    delete datasets[0].benchmark;
+    delete datasets[0].fundingReturnVersion;
     db.prepare("UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?")
       .run(JSON.stringify(datasets), id);
     const resumed = harness(db);

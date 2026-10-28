@@ -2,6 +2,7 @@ import { Composer, InputFile } from "grammy";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts";
 import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
+import { parsePerformanceArgs } from "./performance_command.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { splitMessageLines } from "../bot/message.ts";
 import { showRichMessage } from "../bot/rich.ts";
@@ -184,13 +185,13 @@ function formatBucketList(
     .join("\n");
 }
 
-async function resolveBucketName(ctx: CustomContext) {
+async function resolveBucketName(ctx: CustomContext, input: unknown = ctx.match) {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
     return undefined;
   }
 
-  const bucketName = parseOptionalBucketName(ctx.match);
+  const bucketName = parseOptionalBucketName(input);
   if (bucketName === null) {
     return null;
   }
@@ -1085,106 +1086,6 @@ tickersComposer.command("portfolio", async (ctx) => {
 	}
 });
 
-tickersComposer.command("stocks", async (ctx) => {
-  if (!ctx.dbEntities.user || !ctx.from) {
-    await ctx.text("start");
-    return;
-  }
-
-  const bucketName = await resolveBucketName(ctx);
-  if (bucketName === undefined) {
-    return;
-  }
-
-  const {
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-    tickerEmojiMappings,
-  } = await readTickerDisplayPreferences(ctx.from.id);
-
-  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
-    await ctx.text("no_integrations");
-    return;
-  }
-
-  try {
-    const positions = await fetchBucketedPositions(ctx, bucketName);
-    const priceList = await buildIntegratedTickerList({
-      currency: ctx.dbEntities.user.currency ?? "USD",
-      positions: positions.filter(isStockPosition),
-      separateGainersLosers: true,
-      tickerDecorations,
-      tickerLabelPreferences,
-      tickerLabelLinks,
-      tickerEmojiMappings,
-    });
-
-    if (priceList.length === 0) {
-      await ctx.text("no_positions");
-      return;
-    }
-
-    await replyPortfolioText(ctx, priceList);
-  } catch (error) {
-    await replyIntegrationError(ctx, error);
-  }
-});
-
-tickersComposer.command("options", async (ctx) => {
-  if (!ctx.dbEntities.user || !ctx.from) {
-    await ctx.text("start");
-    return;
-  }
-
-  const bucketName = await resolveBucketName(ctx);
-  if (bucketName === undefined) {
-    return;
-  }
-
-  const preferences = await readTickerDisplayPreferences(ctx.from.id);
-  const {
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-    tickerEmojiMappings,
-  } = preferences;
-  const formatTicker = createTickerFormatter({
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-    tickerEmojiMappings,
-  });
-
-  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
-    await ctx.text("no_integrations");
-    return;
-  }
-
-  try {
-    const positions = await fetchBucketedPositions(ctx, bucketName);
-    const priceList = await buildIntegratedTickerList({
-      currency: ctx.dbEntities.user.currency ?? "USD",
-      positions: positions.filter(isOptionPosition),
-      separateGainersLosers: true,
-      tickerDecorations,
-      tickerLabelPreferences,
-      tickerLabelLinks,
-      tickerEmojiMappings,
-      formatTicker,
-    });
-
-    if (priceList.length === 0) {
-      await ctx.text("no_positions");
-      return;
-    }
-
-    await replyPortfolioText(ctx, priceList);
-  } catch (error) {
-    await replyIntegrationError(ctx, error);
-  }
-});
-
 tickersComposer.command("dump_options", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
@@ -1235,13 +1136,18 @@ tickersComposer.command("dump_tickers", async (ctx) => {
   }
 });
 
-tickersComposer.command(["perf", "alltime", "number", "allnumber", "worth", "worthnumber"], async (ctx) => {
+tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "worth", "worthnumber"], async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
   }
 
-  const bucketName = await resolveBucketName(ctx);
+  const args = parsePerformanceArgs(ctx.match);
+  if (!args) {
+    await ctx.reply("Use /perf, /dpnl, /alltime, or /worth [s/o/stocks/options] [BUCKET].");
+    return;
+  }
+  const bucketName = await resolveBucketName(ctx, args.bucketName);
   if (bucketName === undefined) {
     return;
   }
@@ -1270,28 +1176,35 @@ tickersComposer.command(["perf", "alltime", "number", "allnumber", "worth", "wor
     const isAllTime = ctx.hasCommand(["alltime", "allnumber"]);
     const numberOnly = ctx.hasCommand(["number", "allnumber", "worthnumber"]);
     const showCurrentValue = ctx.hasCommand(["worth", "worthnumber"]);
+    const isDaily = ctx.hasCommand("dpnl");
+    const matchesFilter = args.filter === "stocks" ? isStockPosition
+      : args.filter === "options" ? isOptionPosition : () => true;
     let performanceList: string;
     if (isAllTime) {
       const view = await fetchPortfolioView(
-        ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true, accountPerformance: true },
+        ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true, accountPerformance: args.filter === null },
       );
       performanceList = await buildIntegratedAllTimePerformanceList({
         currency,
         ...view,
+        positions: view.positions.filter(matchesFilter),
+        orders: view.orders.filter(matchesFilter),
         numberOnly,
         ...preferences,
         formatTicker,
       });
     } else {
-      const positions = await fetchBucketedPositions(ctx, bucketName);
-      performanceList = await buildIntegratedPerformanceList({
-        currency,
-        positions,
-        numberOnly,
-        showCurrentValue,
-        ...preferences,
-        formatTicker,
-      });
+      const positions = (await fetchBucketedPositions(ctx, bucketName)).filter(matchesFilter);
+      performanceList = isDaily
+        ? await buildIntegratedDailyPerformanceList({ currency, positions, ...preferences, formatTicker })
+        : await buildIntegratedPerformanceList({
+          currency,
+          positions,
+          numberOnly,
+          showCurrentValue,
+          ...preferences,
+          formatTicker,
+        });
     }
 
     if (performanceList.length === 0) {
@@ -1344,59 +1257,6 @@ tickersComposer.command("sold", async (ctx) => {
     const performanceList = await buildIntegratedSoldPerformanceList({
       currency: ctx.dbEntities.user.currency ?? "USD",
       ...view,
-      tickerDecorations,
-      tickerLabelPreferences,
-      tickerLabelLinks,
-      tickerEmojiMappings,
-      formatTicker,
-    });
-
-    if (performanceList.length === 0) {
-      await ctx.text("no_positions");
-      return;
-    }
-
-    await replyPortfolioText(ctx, performanceList);
-  } catch (error) {
-    await replyIntegrationError(ctx, error);
-  }
-});
-
-tickersComposer.command("dpnl", async (ctx) => {
-  if (!ctx.dbEntities.user || !ctx.from) {
-    await ctx.text("start");
-    return;
-  }
-
-  const bucketName = await resolveBucketName(ctx);
-  if (bucketName === undefined) {
-    return;
-  }
-
-  const preferences = await readTickerDisplayPreferences(ctx.from.id);
-  const {
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-    tickerEmojiMappings,
-  } = preferences;
-  const formatTicker = createTickerFormatter({
-    tickerDecorations,
-    tickerLabelPreferences,
-    tickerLabelLinks,
-    tickerEmojiMappings,
-  });
-
-  if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
-    await ctx.text("no_integrations");
-    return;
-  }
-
-  try {
-    const positions = await fetchBucketedPositions(ctx, bucketName);
-    const performanceList = await buildIntegratedDailyPerformanceList({
-      currency: ctx.dbEntities.user.currency ?? "USD",
-      positions,
       tickerDecorations,
       tickerLabelPreferences,
       tickerLabelLinks,

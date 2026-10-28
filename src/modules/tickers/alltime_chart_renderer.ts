@@ -17,6 +17,38 @@ const palette = [
 ];
 const day = 86_400_000;
 
+export function benchmarkMarkerIndices(
+  points: { x: number; y: number }[],
+  minimumDistance = 70,
+) {
+  if (!points.length) return [];
+  const turns: number[] = [0];
+  let direction = 0;
+  for (let index = 1; index < points.length; index++) {
+    const nextDirection = Math.sign(points[index].y - points[index - 1].y);
+    if (!nextDirection) continue;
+    if (direction && nextDirection !== direction) turns.push(index - 1);
+    direction = nextDirection;
+  }
+  const last = points.length - 1;
+  if (last === 0 || points[last].x - points[0].x < minimumDistance) return [last];
+  turns.push(last);
+  const selected = [0, last];
+  const candidates = turns.slice(1, -1).map((index, position) => ({
+    index,
+    prominence: Math.min(
+      Math.abs(points[index].y - points[turns[position]].y),
+      Math.abs(points[index].y - points[turns[position + 2]].y),
+    ),
+  })).sort((first, second) => second.prominence - first.prominence);
+  for (const { index } of candidates) {
+    if (selected.every(previous => Math.abs(points[index].x - points[previous].x) >= minimumDistance)) {
+      selected.push(index);
+    }
+  }
+  return selected.sort((first, second) => first - second);
+}
+
 // A sharp gradient colors the continuous stroke by its actual height, including
 // the exact zero crossing. Per-segment colors would move the transition.
 function performanceColor(chart: Chart): Color {
@@ -71,6 +103,9 @@ export function renderAllTimeDatasets(
     Math.max(12, Math.min(32, months * 0.6 + 1.4)) * 200,
   );
   const single = datasets.length === 1;
+  const percentagesAvailable = datasets.every(dataset => dataset.points.every(point => point.percentage !== null));
+  const displayCurrency = single ? (datasets[0].displayCurrency ?? "USD") : "USD";
+  const displayRate = single ? (datasets[0].displayRate ?? 1) : 1;
   const hasBenchmarks = datasets.some((dataset) => dataset.benchmark);
   const colorBySign = single && !hasBenchmarks;
   const monthTicks: { value: number }[] = [];
@@ -93,7 +128,7 @@ export function renderAllTimeDatasets(
           label: dataset.label,
           data: dataset.points.map((point) => ({
             x: Date.parse(point.date),
-            y: point.percentage,
+            y: percentagesAvailable ? point.percentage! : point.gain * displayRate,
           })),
           parsing: false,
           borderColor: colorBySign
@@ -120,12 +155,13 @@ export function renderAllTimeDatasets(
             label: `${dataset.label} · ${dataset.benchmark.label}`,
             data: dataset.benchmark.points.map((point) => ({
               x: Date.parse(point.date),
-              y: point.percentage,
+              y: percentagesAvailable ? point.percentage! : point.gain * displayRate,
             })),
             parsing: false as const,
-            borderColor: `${palette[index % palette.length]}80`,
+            borderColor: single ? "#E7C678" : palette[index % palette.length],
+            order: 1,
             borderWidth: 4.4,
-            borderDash: [18, 12],
+            borderDash: [12, 12],
             borderCapStyle: "round" as const,
             borderJoinStyle: "round" as const,
             // Join actual daily closes directly; no curve smoothing.
@@ -186,12 +222,34 @@ export function renderAllTimeDatasets(
             color: colors.muted,
             font: { family: chartFont, size: 32 },
             padding: 24,
-            callback: (value) => `${value}%`,
+            callback: (value) => percentagesAvailable ? `${value}%` : money(Number(value), displayCurrency),
           },
         },
       },
     },
     plugins: [
+      {
+        id: "benchmarkTurningPoints",
+        afterDatasetsDraw(chart) {
+          const { ctx } = chart;
+          ctx.save();
+          datasets.filter(dataset => dataset.benchmark).forEach((dataset, benchmarkIndex) => {
+            const participantIndex = datasets.indexOf(dataset);
+            const points = chart.getDatasetMeta(datasets.length + benchmarkIndex).data;
+            ctx.strokeStyle = single ? "#E7C678" : palette[participantIndex % palette.length];
+            ctx.fillStyle = colors.background;
+            ctx.lineWidth = 3.5;
+            ctx.setLineDash([]);
+            for (const index of benchmarkMarkerIndices(points)) {
+              ctx.beginPath();
+              ctx.arc(points[index].x, points[index].y, 9, 0, 2 * Math.PI);
+              ctx.fill();
+              ctx.stroke();
+            }
+          });
+          ctx.restore();
+        },
+      },
       {
         id: "performanceLegend",
         afterDraw(chart) {
@@ -202,7 +260,7 @@ export function renderAllTimeDatasets(
           const entries = datasets.flatMap((dataset, index) => {
             const last = dataset.points[dataset.points.length - 1];
             const color = colorBySign
-              ? last.percentage >= 0 ? colors.green : colors.red
+              ? last.gain >= 0 ? colors.green : colors.red
               : palette[index % palette.length];
             const name = dataset.label +
               (dataset.bucketName ? ` / ${dataset.bucketName}` : "");
@@ -210,14 +268,14 @@ export function renderAllTimeDatasets(
               ? (dataset.displayCurrency ?? "USD")
               : "USD";
             const rate = single ? (dataset.displayRate ?? 1) : 1;
-            const label = `${name}  ${last.percentage >= 0 ? "+" : ""}${
-              last.percentage.toFixed(2)
-            }%  (${money(last.gain * rate, currency)})`;
+            const lifetimeReturn = last.percentage === null ? "Lifetime % unavailable"
+              : `${last.percentage >= 0 ? "+" : ""}${last.percentage.toFixed(2)}%`;
+            const label = `${name}  ${lifetimeReturn}  (${money(last.gain * rate, currency)})`;
             const entries = [{ color, label, dashed: false }];
             if (dataset.benchmark) {
               const last = dataset.benchmark.points.at(-1)!;
               entries.push({
-                color: `${palette[index % palette.length]}80`,
+                color: single ? "#E7C678" : palette[index % palette.length],
                 label: `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${last.percentage >= 0 ? "+" : ""}${
                   last.percentage.toFixed(2)
                 }%  (${money(last.gain * rate, currency)})`,
@@ -234,7 +292,7 @@ export function renderAllTimeDatasets(
             const y = chart.height - legendHeight - 38 + row * 60;
             ctx.strokeStyle = color;
             ctx.lineWidth = 4.4;
-            ctx.setLineDash(dashed ? [18, 12] : []);
+            ctx.setLineDash(dashed ? [12, 12] : []);
             ctx.beginPath();
             ctx.moveTo(x, y);
             ctx.lineTo(x + 45, y);

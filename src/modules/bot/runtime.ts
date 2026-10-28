@@ -3,8 +3,6 @@ import type { Bot } from "./types.ts";
 
 const reportCommands = [
   "start",
-  "stocks",
-  "options",
   "portfolio",
   "chart",
   "perf",

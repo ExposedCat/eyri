@@ -152,9 +152,9 @@ Deno.test("CFD purchases, full sales and open funding flow through every portfol
       await buildIntegratedSoldPerformanceList({ orders }),
       /CFD \+100\.00% \+\$500\.00/,
     );
-    await rejects(
-      buildIntegratedAllTimePerformanceList({ orders, positions }),
-      /percentage.*requires deposits/,
+    match(
+      await buildIntegratedAllTimePerformanceList({ orders, positions }),
+      /Lifetime return unavailable/,
     );
     match(
       await buildIntegratedAllTimePerformanceList({
@@ -243,7 +243,7 @@ Deno.test("CFD purchases, full sales and open funding flow through every portfol
     equal(dataset.points.find((p) => p.date === "2026-01-02")!.gain, 0);
     equal(dataset.points.find((p) => p.date === "2026-01-03")!.gain, 500);
     equal(dataset.points.at(-1)!.gain, 500);
-    equal(dataset.points.at(-1)!.percentage, 500 / 700 * 100);
+    equal(dataset.points.at(-1)!.percentage, null);
     const refresh = await buildCfdHistoryOrders(
       transactions.map((t) => toCashTransaction(result.data!, t)).concat(
         toCashTransaction(result.data, {
@@ -561,7 +561,7 @@ Deno.test("CFD buckets value each outstanding purchase at its own cost across ac
     new Map(),
     new Map([["USD", 1]]),
   );
-  ok(points.every((p) => p.gain === 0 && p.percentage === 0));
+  ok(points.every((p) => p.gain === 0 && p.percentage === null));
 });
 
 Deno.test("CFD cash permission failures reject both portfolio and performance instead of returning partial equity data", async () => {

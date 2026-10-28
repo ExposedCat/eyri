@@ -133,6 +133,8 @@ export function buildFreedom24AccountPerformance(
   const seen = new Map<string, string>();
   const flowTotals = new Map<string, number>();
   let deposits = 0, withdrawals = 0;
+  const fundingHistory: { date: string; amount: number }[] = [];
+  let fundingIncludesTransfers = false;
   for (const row of flowRows) {
     if (
       number(row.approved, "cash approval") !== 1 ||
@@ -179,6 +181,8 @@ export function buildFreedom24AccountPerformance(
     }
     // Transfers between selected accounts cancel in the consolidated total.
     // A transfer into/out of a single selected account is funding for that account.
+    fundingHistory.push({ date: at.toISOString().slice(0, 10), amount });
+    if (["intercompany", "internal_holding"].includes(type)) fundingIncludesTransfers = true;
     if (amount >= 0) deposits += amount;
     else withdrawals -= amount;
   }
@@ -254,6 +258,8 @@ export function buildFreedom24AccountPerformance(
     currency: "USD",
     totalValue,
     netContributions,
+    fundingHistory,
+    fundingIncludesTransfers,
     pnl: totalValue - netContributions,
     deposits,
     withdrawals,

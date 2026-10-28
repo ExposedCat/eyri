@@ -98,6 +98,9 @@ Deno.test("Freedom24 lifetime funding uses historical USD values, keeps income i
   equal(account.deposits, 720);
   equal(account.withdrawals, 120);
   equal(account.netContributions, 600);
+  equal(account.fundingHistory?.length, 6);
+  equal(account.fundingHistory?.reduce((sum, flow) => sum + flow.amount, 0), 600);
+  equal(account.fundingIncludesTransfers, true);
   equal(account.cash, 12);
   equal(account.pnl, 40);
   equal(account.totalValue, 640);
@@ -215,7 +218,7 @@ Deno.test("Freedom24 adapter requests the whole lifetime independently of histor
       orders: [],
       accountPerformances: [account],
     });
-    match(output, /Total: \+6\.80% \+\$40\.00/);
+    match(output, /Total: \+5\.56% \+\$40\.00/);
     globalThis.fetch = async () => {
       throw new Error("Broker offline");
     };

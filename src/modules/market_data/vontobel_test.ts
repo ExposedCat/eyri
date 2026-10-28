@@ -618,9 +618,9 @@ Deno.test("warrant chart uses bids per warrant with EUR conversion and preserves
     new Map([[instrumentKey(order), history]]),
     new Map([["EUR", 1.1]]),
   );
-  equal(series.find((p) => p.date === "2026-06-25")!.percentage, 50);
+  equal(series.find((p) => p.date === "2026-06-25")!.percentage, null);
   ok(Math.abs(series.find((p) => p.date === "2026-06-25")!.gain - 11) < 1e-9);
-  equal(series.at(-1)!.percentage, 100);
+  equal(series.at(-1)!.percentage, null);
   equal(series.at(-1)!.gain, 22);
 });
 

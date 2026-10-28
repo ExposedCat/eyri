@@ -288,12 +288,12 @@ Deno.test("alltime merges partial sales and current gains without treating turno
   equal(report?.performances.find((p) => p.ticker.toUpperCase() === "AAPL")?.change, 320);
   equal(report?.performances.find((p) => p.ticker === "MSFT")?.change, -100);
   equal(report?.total.change, 220);
-  await rejects(buildIntegratedAllTimePerformanceList(args), /percentage.*requires deposits/);
+  match(await buildIntegratedAllTimePerformanceList(args), /Lifetime return unavailable/);
   match(await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true }), /\+\$220\.00$/);
   // The broker's realizedPnl field must not count sales a second time.
 });
 
-Deno.test("alltime account return subtracts current cash from funding and requires every account", async () => {
+Deno.test("alltime account return divides lifetime P/L by gross deposits and requires every account", async () => {
   const orders = [
     order("AAPL", 1, 100, "2025-01-01"),
     order("AAPL", -1, 110, "2025-02-01"),
@@ -311,23 +311,13 @@ Deno.test("alltime account return subtracts current cash from funding and requir
   const args = { positions: [], orders, accountPerformances: [account], formatTicker };
   const report = await buildIntegratedAllTimeReport(args);
   equal(report?.total.change, account.totalValue - account.netContributions);
-  equal(report?.total.cost, 10);
-  equal(report?.totalReturnPercentage, -100);
-  match(await buildIntegratedAllTimePerformanceList(args), /Total: -100\.00% -\$10\.00/);
+  equal(report?.total.cost, 210);
+  equal(report?.totalReturnPercentage, -10 / 150 * 100);
+  match(await buildIntegratedAllTimePerformanceList(args), /Total: -6\.67% -\$10\.00/);
   // FX conversion applies to funding, current cash and P/L together.
-  equal((await buildIntegratedAllTimeReport({ ...args, currency: "EUR", request: fxRequest }))?.totalReturnPercentage, -100);
-  for (const cash of [100, Number.NaN]) {
-    await rejects(buildIntegratedAllTimePerformanceList({
-      ...args, accountPerformances: [{ ...account, cash }],
-    }), /percentage.*requires deposits/);
-  }
-  equal((await buildIntegratedAllTimeReport({ ...args, accountPerformances: [{ ...account, cash: 110 }] }))?.totalReturnPercentage, 100);
-  for (const netContributions of [0, -100]) {
-    const output = await buildIntegratedAllTimePerformanceList({
-      ...args, accountPerformances: [{ ...account, netContributions }],
-    });
-    ok(!output.includes("?"));
-    match(output, /Total: \+\d+\.\d+% -\$10\.00/);
+  equal((await buildIntegratedAllTimeReport({ ...args, currency: "EUR", request: fxRequest }))?.totalReturnPercentage, -10 / 150 * 100);
+  for (const cash of [0, 100, 110]) {
+    equal((await buildIntegratedAllTimeReport({ ...args, accountPerformances: [{ ...account, cash }] }))?.totalReturnPercentage, -10 / 150 * 100);
   }
   for (const extra of [
     { positions: [position({ integrationId: 2 })], orders },
@@ -340,6 +330,22 @@ Deno.test("alltime account return subtracts current cash from funding and requir
   const missing = await buildIntegratedAllTimeReport({ ...args, accountPerformances: [] });
   equal(missing?.totalReturnPercentage, null);
   equal(missing?.total.change, -10);
+});
+
+Deno.test("alltime without allocated funding preserves P/L and omits lifetime percentages", async () => {
+  const args = {
+    positions: [position()],
+    orders: [order("AAPL", 10, 100, "2025-01-01"), order("AAPL", -4, 150, "2025-02-01")],
+    formatTicker,
+  };
+  const report = await buildIntegratedAllTimeReport(args);
+  equal(report?.total.cost, 1000);
+  equal(report?.total.change, 320);
+  equal(report?.totalReturnPercentage, null);
+  const text = await buildIntegratedAllTimePerformanceList(args);
+  match(text, /Total: \+\$320\.00/);
+  match(text, /Lifetime return unavailable/);
+  equal(text.includes("%"), false);
 });
 
 Deno.test("missing daily metrics fail the whole report and optional dates never render placeholders", async () => {

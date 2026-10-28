@@ -85,7 +85,7 @@ Deno.test("slow portfolio reports do not block same-chat commands in the runner"
   let remaining = 7;
   const bot = harness([
     command(1, "/portfolio"),
-    command(2, "/options"),
+    command(2, "/perf options"),
     command(3, "/chart"),
     command(4, "/number"),
     command(5, "/allnumber"),
@@ -94,7 +94,7 @@ Deno.test("slow portfolio reports do not block same-chat commands in the runner"
     command(8, "/start"),
   ]);
   bot.command(
-    ["portfolio", "options", "chart", "number", "allnumber", "worth", "worthnumber"],
+    ["portfolio", "perf", "chart", "number", "allnumber", "worth", "worthnumber"],
     async (ctx) => {
       ok(ctx.message?.text);
       started.push(ctx.message.text);
@@ -108,7 +108,7 @@ Deno.test("slow portfolio reports do not block same-chat commands in the runner"
     await within(responsive.promise);
     deepStrictEqual(started, [
       "/portfolio",
-      "/options",
+      "/perf options",
       "/chart",
       "/number",
       "/allnumber",

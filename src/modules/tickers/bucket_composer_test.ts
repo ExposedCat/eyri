@@ -267,7 +267,7 @@ Deno.test("shared reporting commands work without a recipient integration and ne
         "/worthnumber",
         "/dpnl",
         "/history",
-        "/stocks",
+        "/perf stocks",
         "/when AAPL.US=250",
         "/dump_tickers",
       ]
@@ -275,7 +275,7 @@ Deno.test("shared reporting commands work without a recipient integration and ne
       await h.command(command, recipient);
       equal(h.lastText().includes("PRIVATE"), false, command);
       equal(h.lastText().includes("No integrations"), false, command);
-      if (command === "/alltime") match(h.lastText(), /percentage.*requires deposits/);
+      if (command === "/alltime") match(h.lastText(), /Lifetime return unavailable/);
       else equal(h.lastText().includes("Failed to fetch"), false, command);
       equal(h.lastText().includes("?"), false, command);
       if (command === "/worth") match(h.lastText(), /Total: \+100\.00% \$800\.00/);
@@ -284,9 +284,9 @@ Deno.test("shared reporting commands work without a recipient integration and ne
     setUserCurrency(db, recipient, "EUR");
     await h.command("/worth Core", recipient);
     match(h.lastText(), /Total: \+100\.00% 640\.00 EUR/);
-    for (const command of ["/perf", "/alltime", "/allnumber", "/number", "/worth", "/worthnumber", "/history", "/stocks", "/when AAPL.US=200"]) {
+    for (const command of ["/perf", "/alltime", "/allnumber", "/number", "/worth", "/worthnumber", "/history", "/perf stocks", "/when AAPL.US=200"]) {
       await h.command(command, recipient);
-      if (command === "/alltime") match(h.lastText(), /percentage.*requires deposits/);
+      if (command === "/alltime") match(h.lastText(), /Lifetime return unavailable/);
       else match(h.lastText(), / EUR/, command);
       equal(h.lastText().includes("$"), false, command);
       equal(h.lastText().includes("PRIVATE"), false, command);
@@ -632,5 +632,107 @@ Deno.test("bucket transfers share at most 100% of a bucket across recipients", a
     equal(getUserBucket(db, second, "Core")?.share, 0.5);
   } finally {
     db.close();
+  }
+});
+
+Deno.test("performance commands filter current and sold assets, with bot mentions and shared buckets", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousPath = Deno.env.get("EYRI_DATABASE_PATH");
+  Deno.env.set("EYRI_DATABASE_PATH", ":memory:");
+  const db = new Database(":memory:");
+  const optionTicker = "+MSFT.19DEC2027.C100";
+  const soldOptionTicker = "+SOLDOPT.19DEC2027.C100";
+  globalThis.fetch = (_input, init) => {
+    const command = new URLSearchParams(String(init?.body)).get("cmd");
+    if (command === "getPositionJson") {
+      return Promise.resolve(Response.json({ result: { ps: { pos: [
+        { i: "AAPL.US", q: 4, s: 400, price_a: 100, mkt_price: 200, profit_close: 300, curr: "USD" },
+        { i: optionTicker, q: 2, s: 200, price_a: 100, mkt_price: 150, profit_close: 80, curr: "USD" },
+      ] } } }));
+    }
+    if (command === "getOrdersHistory") {
+      const orders = [
+        { instr: "AAPL.US", q: 4, p: 100, oper: 1 },
+        { instr: optionTicker, q: 2, p: 100, oper: 1 },
+        { instr: "SOLDSTK.US", q: 1, p: 50, oper: 1 },
+        { instr: soldOptionTicker, q: 1, p: 50, oper: 1 },
+        { instr: "SOLDSTK.US", q: 1, p: 75, oper: 3 },
+        { instr: soldOptionTicker, q: 1, p: 100, oper: 3 },
+      ].map((order, index) => ({ ...order, id: index + 1, date: index < 4 ? "2025-01-02" : "2025-02-02", stat: 21, curr: "USD" }));
+      return Promise.resolve(Response.json({ orders: { order: orders } }));
+    }
+    return Promise.resolve(Response.json({ result: { q: [] } }));
+  };
+  try {
+    ensureSchema(db);
+    const h = harness(db);
+    const owner = 123456789, recipient = 987654321;
+    await h.command("/bucket new Core");
+    createIntegration({ database: db, userId: owner, kind: "f24", credentials: { apiKey: "test-key", secretKey: "secret" } });
+    for (const kind of ["perf", "worth", "dpnl", "alltime"]) {
+      for (const filter of ["s", "stocks", "o", "options"]) {
+        const callsBefore = h.calls.length;
+        await h.command(`/${kind}@eyri_bot ${filter}`);
+        ok(h.calls.length > callsBefore);
+        const text = h.lastText();
+        const stocks = filter === "s" || filter === "stocks";
+        match(text, stocks ? /AAPL/ : /MSFT/, text);
+        equal(text.includes(stocks ? "MSFT" : "AAPL"), false, text);
+        if (kind === "alltime") {
+          match(text, stocks ? /SOLDSTK/ : /SOLDOPT/, text);
+          equal(text.includes(stocks ? "SOLDOPT" : "SOLDSTK"), false, text);
+          match(text, stocks ? /Total: \+\$425\.00/ : /Total: \+\$150\.00/);
+          match(text, /Lifetime return unavailable/);
+          equal(text.includes("%"), false);
+        } else if (kind === "worth") {
+          match(text, stocks ? /Total: \+100\.00% \$800\.00/ : /Total: \+50\.00% \$300\.00/);
+        } else if (kind === "dpnl") {
+          match(text, stocks ? /\+\$100\.00 today/ : /\+\$20\.00 today/);
+        } else {
+          match(text, stocks ? /Total: \+100\.00% \+\$400\.00/ : /Total: \+50\.00% \+\$100\.00/);
+        }
+      }
+    }
+    for (const kind of ["perf", "worth", "dpnl"]) {
+      await h.command(`/${kind}`);
+      match(h.lastText(), /AAPL/);
+      match(h.lastText(), /MSFT/);
+    }
+    await h.command("/number o");
+    match(h.lastText(), /\+\$100\.00$/);
+    await h.command("/worthnumber s");
+    match(h.lastText(), /\$800\.00$/);
+    await h.command("/allnumber o");
+    match(h.lastText(), /\+\$150\.00$/);
+    for (const ticker of ["AAPL.US", optionTicker]) {
+      db.prepare("INSERT INTO portfolio_bucket_transactions(user_id,transaction_key,bucket_name) VALUES (?,?,?)")
+        .run(owner, JSON.stringify(["2025-01-02", ticker, "USD"]), "Core");
+    }
+    await h.command("/bucket transfer Core", owner, recipient);
+    for (const kind of ["perf", "worth", "dpnl", "alltime"]) {
+      for (const filter of ["stocks", "options"]) {
+        await h.command(`/${kind} ${filter} Core`, recipient);
+        match(h.lastText(), filter === "stocks" ? /AAPL/ : /MSFT/);
+        equal(/SOLDOPT|SOLDSTK/.test(h.lastText()), false, h.lastText());
+      }
+    }
+    await h.command("/perf options", owner);
+    match(h.lastText(), /No positions/);
+    await h.command("/perf stocks Missing");
+    match(h.lastText(), /Bucket not found: Missing/);
+    await h.command("/worth options bad-name");
+    match(h.lastText(), /Bucket names must/);
+    await h.command("/dpnl s Core extra");
+    match(h.lastText(), /Use \/perf/);
+    const callsBefore = h.calls.length;
+    for (const command of ["/stocks", "/options", "/perf@another_bot stocks"]) {
+      await h.command(command);
+      equal(h.calls.length, callsBefore);
+    }
+  } finally {
+    db.close();
+    globalThis.fetch = previousFetch;
+    if (previousPath === undefined) Deno.env.delete("EYRI_DATABASE_PATH");
+    else Deno.env.set("EYRI_DATABASE_PATH", previousPath);
   }
 });

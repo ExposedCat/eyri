@@ -86,6 +86,8 @@ export type IntegrationAdapter = {
 };
 
 export type IntegrationAccountPerformance = {
+  fundingHistory?: { date: string; amount: number }[];
+  fundingIncludesTransfers?: boolean;
   integrationId: number;
   currency: string;
   totalValue: number;

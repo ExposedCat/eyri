@@ -1,4 +1,4 @@
-import { deepStrictEqual, equal, match, ok, rejects } from "node:assert/strict";
+import { deepStrictEqual, equal, match, ok } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -221,8 +221,8 @@ Deno.test("MCP returns concise numerical reports matching Telegram totals and hy
     equal(perf.positions[0].pnl, 120);
     equal(perf.total.returnPct, 20);
     const alltime = await h.client.callTool({ name: "alltime", arguments: { userId: 1 } });
-    equal(alltime.isError, true);
-    match(JSON.stringify(alltime.structuredContent), /percentage.*requires deposits/);
+    equal(Boolean(alltime.isError), false);
+    match(JSON.stringify(alltime.structuredContent), /Lifetime return unavailable/);
     match(
       await buildIntegratedPerformanceList({
         positions: [position],
@@ -230,9 +230,9 @@ Deno.test("MCP returns concise numerical reports matching Telegram totals and hy
       }),
       /Total: \+20.00% \+\$120.00/,
     );
-    await rejects(buildIntegratedAllTimePerformanceList({
+    match(await buildIntegratedAllTimePerformanceList({
       positions: [position], orders, formatTicker: (s) => s,
-    }), /percentage.*requires deposits/);
+    }), /Lifetime return unavailable/);
     equal((await call(h, "worth")).total.value, 720);
     equal((await call(h, "sold")).total.pnl, 200);
     deepStrictEqual((await call(h, "dpnl")).total, { pnl: 12, returnPct: 2 });
@@ -266,7 +266,7 @@ Deno.test("MCP returns concise numerical reports matching Telegram totals and hy
   }
 });
 
-Deno.test("MCP alltime uses funding minus cash and propagates missing quotes as errors", async () => {
+Deno.test("MCP alltime uses lifetime gross deposits and propagates missing quotes as errors", async () => {
   const h = await harness();
   try {
     const view = h.runtime.view;
@@ -283,7 +283,7 @@ Deno.test("MCP alltime uses funding minus cash and propagates missing quotes as 
     });
     const report = await call(h, "alltime");
     equal(report.total.pnl, 320);
-    equal(report.total.returnPct, 80);
+    equal(report.total.returnPct, 320 / 1200 * 100);
     equal((await call(h, "allnumber")).total, 320);
     h.runtime.view = async () => { throw new Error("Broker quote request failed"); };
     const result = await h.client.callTool({ name: "alltime", arguments: { userId: 1 } });

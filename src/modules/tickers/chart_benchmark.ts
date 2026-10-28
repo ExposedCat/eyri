@@ -18,8 +18,6 @@ export type ChartBenchmark = {
   points: { date: string; percentage: number; gain: number }[];
 };
 
-// Buy fractional index ETF shares for every actual purchase, then hold them.
-// Sales of the original instruments do not sell the ETF or remove its cost.
 export function buildChartBenchmark(
   history: PriceHistory,
   purchases: BenchmarkPurchase[],
@@ -41,7 +39,7 @@ export function buildChartBenchmark(
   if (purchases.some((purchase) =>
     !/^\d{4}-\d{2}-\d{2}$/.test(purchase.date) ||
     !Number.isFinite(Date.parse(purchase.date)) ||
-    !Number.isFinite(purchase.amountUsd) || purchase.amountUsd < 0
+    !Number.isFinite(purchase.amountUsd)
   )) throw new Error(`Invalid ${name} benchmark purchase.`);
 
   // The shared cache stores raw closes. Express all closes in end-date share
@@ -60,23 +58,28 @@ export function buildChartBenchmark(
     )
   ) throw new Error(`${name} benchmark has no valid prices for this chart.`);
 
-  const buys = purchases.filter((p) => p.amountUsd > 0 && p.date <= end)
+  const buys = purchases.filter((p) => p.amountUsd !== 0 && p.date <= end)
     .sort((a, b) => a.date.localeCompare(b.date));
   if (buys.length && buys[0].date < bars[0].date) {
     throw new Error(`${name} benchmark closing price unavailable on ${buys[0].date}.`);
   }
   const points: ChartBenchmark["points"] = [];
-  let barIndex = 0, buyIndex = 0, shares = 0, cost = 0;
+  let barIndex = 0, buyIndex = 0, shares = 0, cost = 0, withdrawals = 0;
   const first = buys.length && buys[0].date < start ? buys[0].date : start;
   for (let date = first; date <= end; date = dayAfter(date)) {
     while (barIndex + 1 < bars.length && bars[barIndex + 1].date <= date) barIndex++;
+    let cashFlow = 0;
     while (buyIndex < buys.length && buys[buyIndex].date <= date) {
       const purchase = buys[buyIndex++];
-      shares += purchase.amountUsd / bars[barIndex].close;
-      cost += purchase.amountUsd;
+      cashFlow += purchase.amountUsd;
+      if (purchase.amountUsd > 0) cost += purchase.amountUsd;
+      else withdrawals -= purchase.amountUsd;
     }
+    shares += cashFlow / bars[barIndex].close;
+    if (shares < -1e-7) throw new Error(`${name} benchmark cannot fund the account's withdrawals.`);
+    shares = Math.max(0, shares);
     if (date < start) continue;
-    const gain = cost === 0 ? 0 : shares * bars[barIndex].close - cost;
+    const gain = cost === 0 ? 0 : shares * bars[barIndex].close + withdrawals - cost;
     points.push({ date, percentage: cost === 0 ? 0 : gain / cost * 100, gain });
   }
   return {
@@ -97,7 +100,7 @@ export async function loadChartBenchmark(
   index: ChartBenchmarkIndex = "sp500",
 ): Promise<ChartBenchmark> {
   const { name, symbol } = CHART_BENCHMARKS[index];
-  const earliest = purchases.filter((p) => p.amountUsd > 0 && p.date <= end)
+  const earliest = purchases.filter((p) => p.amountUsd !== 0 && p.date <= end)
     .map((p) => p.date).sort()[0];
   try {
     const history = await cache.get(
@@ -108,7 +111,7 @@ export async function loadChartBenchmark(
     return buildChartBenchmark(history, purchases, start, end, index);
   } catch (cause) {
     throw new Error(
-      `${name} benchmark (${symbol}) prices unavailable for your purchase history. Try again shortly.`,
+      `${name} benchmark (${symbol}) unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
       { cause },
     );
   }

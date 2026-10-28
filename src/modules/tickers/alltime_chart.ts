@@ -1,3 +1,4 @@
+import { accountReturn } from "./account_return.ts";
 import type { Database } from "../database/setup.ts";
 import { renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
 import {
@@ -45,8 +46,10 @@ import {
   isDisplayableOrder,
 } from "./portfolio.ts";
 
-export type AllTimePoint = { date: string; percentage: number; gain: number };
+export type AllTimePoint = { date: string; percentage: number | null; gain: number };
 export type AllTimeDataset = {
+  fundingReturnVersion?: 1;
+  notes?: string[];
   userId: number;
   label: string;
   bucketName: string | null;
@@ -225,20 +228,19 @@ export function buildAllTimeSeries(
     totals.set(key, { cost: current.cost + cost, gain: current.gain + gain });
   };
   const pointInUsd = (date: string, totals: Map<string, Totals>): AllTimePoint => {
-    let cost = 0, gain = 0;
+    let gain = 0;
     for (const [currency, native] of totals) {
       const factor = usdFactor(currency, rates);
-      cost += native.cost * factor;
       gain += native.gain * factor;
     }
-    return { date, percentage: cost === 0 ? 0 : gain / cost * 100, gain };
+    return { date, percentage: null, gain };
   };
   const realized = new Map<string, Totals>();
   const nativeWalletRealized = new Map<string, Totals>();
   let orderIndex = 0;
   const points: AllTimePoint[] = [{
     date: dayAfter(first, -1),
-    percentage: 0,
+    percentage: null,
     gain: 0,
   }];
   // Replay earlier unselected lots too: sales must consume them before bucket lots.
@@ -440,7 +442,9 @@ export function buildAllTimeSeries(
     for (const c of account.reportedComponents) addTotals(totals, c.currency, -c.cost, -c.pnl);
     addTotals(totals, account.currency, account.netContributions, account.pnl);
   }
-  points[points.length - 1] = pointInUsd(last, totals);
+  const selectedIntegrationIds = new Set([...args.positions, ...args.orders].map(item => item.integrationId));
+  const funding = accountReturn(args.accountPerformances ?? [], selectedIntegrationIds, rates);
+  points[points.length - 1] = { ...pointInUsd(last, totals), percentage: funding.percentage };
   return points;
 }
 
@@ -629,7 +633,7 @@ export async function loadAllTimeDataset(
     request,
   );
   const fingerprint = await hash({
-    version: 4,
+    version: 5,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],
@@ -652,16 +656,36 @@ export async function loadAllTimeDataset(
       "DELETE FROM alltime_series_cache WHERE cache_key IN (SELECT cache_key FROM alltime_series_cache ORDER BY created_at DESC LIMIT -1 OFFSET 128)",
     );
   }
-  const purchases = selected.map((order) => ({
-    date: dateOf(order.date),
-    // Broker adapters normalize trade prices per held unit (including options).
-    // Use the same current FX factors as the actual curve, including GBX/GBP.
-    amountUsd: order.quantity * order.price * usdFactor(order.currency, rates),
-  }));
-  const benchmark = await loadChartBenchmark(
-    purchases, points[0].date, points.at(-1)!.date, cache,
-  );
-  return { userId, label, bucketName: args.bucketName, points, benchmark, benchmarkPurchases: purchases };
+  const notes = ["Historical curve shows trade P/L. Historical lifetime percentages require daily account cash balances."];
+  const accounts = args.accountPerformances ?? [];
+  const funding = accountReturn(accounts, new Set([...args.positions, ...args.orders].map(item => item.integrationId)), rates);
+  if (funding.reason) notes.push(funding.reason);
+  const purchases: BenchmarkPurchase[] = [];
+  const datedFunding = !funding.reason && accounts.every(account => {
+    if (!account.fundingHistory) return false;
+    let deposits = 0, withdrawals = 0;
+    for (const flow of account.fundingHistory) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(flow.date) || !Number.isFinite(flow.amount) || flow.date > through) {
+        throw new Error("Invalid dated account funding");
+      }
+      if (flow.amount > 0) deposits += flow.amount;
+      else withdrawals -= flow.amount;
+      purchases.push({ date: flow.date, amountUsd: flow.amount * usdFactor(account.currency, rates) });
+    }
+    if (Math.abs(deposits - account.deposits) > .02 || Math.abs(withdrawals - account.withdrawals) > .02) {
+      throw new Error("Dated account funding does not reconcile with lifetime deposits and withdrawals");
+    }
+    return true;
+  });
+  let benchmark: ChartBenchmark | undefined;
+  if (datedFunding) {
+    try {
+      benchmark = await loadChartBenchmark(purchases, points[0].date, points.at(-1)!.date, cache);
+    } catch (error) {
+      notes.push(error instanceof Error ? error.message : String(error));
+    }
+  } else notes.push("Benchmark unavailable: complete dated external funding is required.");
+  return { fundingReturnVersion: 1, userId, label, bucketName: args.bucketName, points, notes, ...(benchmark ? { benchmark, benchmarkPurchases: purchases } : {}) };
 }
 
 export async function switchChartBenchmarks(
@@ -670,7 +694,7 @@ export async function switchChartBenchmarks(
   index: ChartBenchmarkIndex,
   cache: Parameters<typeof loadChartBenchmark>[3] = historyCache(db),
 ): Promise<AllTimeDataset[]> {
-  if (datasets.some((dataset) => !dataset.benchmarkPurchases || !dataset.benchmark)) {
+  if (datasets.some((dataset) => dataset.fundingReturnVersion !== 1 || !dataset.benchmarkPurchases || !dataset.benchmark)) {
     throw new Error("This chart predates index switching. Create a new chart with /chart.");
   }
   return await Promise.all(datasets.map(async (dataset) => {
@@ -693,10 +717,10 @@ export async function renderAllTimeChart(
   datasets: AllTimeDataset[],
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  if (!datasets.length || datasets.some((dataset) => !dataset.benchmark)) {
-    throw new Error("This chart predates personal benchmarks. Create a new chart with /chart.");
+  if (!datasets.length || datasets.some((dataset) => dataset.fundingReturnVersion !== 1)) {
+    throw new Error("This chart uses an older return calculation. Create a new chart with /chart.");
   }
-  const key = await hash({ version: 8, datasets });
+  const key = await hash({ version: 13, datasets });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;

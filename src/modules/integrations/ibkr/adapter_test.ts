@@ -86,7 +86,7 @@ Deno.test("IBKR preserves separate identical Flex warrant purchases and the char
       }]]),
       new Map([["EUR", 1]]),
     );
-    equal(series.at(-1)!.percentage, 20);
+    equal(series.at(-1)!.percentage, null);
     equal(series.at(-1)!.gain, 20);
   } finally {
     db.close();

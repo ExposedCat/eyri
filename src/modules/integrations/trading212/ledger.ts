@@ -89,6 +89,7 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
     deposits: Record<string, number> = {},
     withdrawals: Record<string, number> = {};
   const quantities: Record<string, number> = {};
+  const fundingHistory: { date: string; amount: number; currency: string }[] = [];
   let openedAt: Date | null = null;
   const add = (
     target: Record<string, number>,
@@ -166,12 +167,15 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
     ) {
       add(cash, currency, value);
       if (!transfers.has(row.ID)) {
-        if (row.Action === "Deposit") add(deposits, currency, value);
-        if (row.Action === "Withdrawal") add(withdrawals, currency, -value);
+        if (row.Action === "Deposit" || row.Action === "Withdrawal") {
+          fundingHistory.push({ date: date.toISOString().slice(0, 10), amount: value, currency });
+          if (row.Action === "Deposit") add(deposits, currency, value);
+          else add(withdrawals, currency, -value);
+        }
       }
     } else throw new Error(`Unsupported Trading 212 CSV action: ${row.Action}`);
   }
-  return { cash, deposits, withdrawals, quantities, openedAt };
+  return { cash, deposits, withdrawals, quantities, openedAt, fundingHistory };
 }
 
 export type Trading212AccountSummary = {
@@ -302,6 +306,7 @@ export function reconcileTrading212Account(
     deposits,
     withdrawals,
     netContributions,
+    fundingHistory: ledger.fundingHistory.map(({ date, amount }) => ({ date, amount })),
     pnl: summary.totalValue - netContributions,
     cash,
     ledgerCash: ledger.cash,

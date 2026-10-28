@@ -53,6 +53,7 @@ export type IbkrFundingBatch = {
   through: string;
   deposits: number;
   withdrawals: number;
+  fundingHistory: { date: string; amount: number }[];
   startingCash: number;
   endingCash: number;
   startingValue: number;
@@ -189,6 +190,7 @@ export function parseIbkrFundingBatch(
   ]);
   const seen = new Map<string, string>();
   let deposits = 0, withdrawals = 0;
+  const fundingHistory: { date: string; amount: number }[] = [];
   for (const { attrs } of getXmlElements(body, ["CashTransaction"])) {
     if (attrs.accountId && attrs.accountId !== header.accountId) {
       throw new Error(
@@ -239,6 +241,7 @@ export function parseIbkrFundingBatch(
       throw new Error("Invalid IBKR funding currency conversion");
     }
     const amount = native * rate;
+    fundingHistory.push({ date: at.toISOString().slice(0, 10), amount });
     if (amount >= 0) deposits += amount;
     else withdrawals -= amount;
   }
@@ -308,6 +311,7 @@ export function parseIbkrFundingBatch(
     through: through.toISOString(),
     deposits,
     withdrawals,
+    fundingHistory,
     startingCash: requiredNumber(cash.startingCash, "starting cash"),
     endingCash: requiredNumber(cash.endingCash, "ending cash"),
     startingValue: requiredNumber(nav.startingValue, "starting account value"),
@@ -358,14 +362,14 @@ export async function fetchIbkrAccountPerformance(
       } | undefined;
     const ttl = +range.to === +latestRange.to ? 60_000 : 86_400_000;
     const batch: IbkrFundingBatch =
-      cached && Date.now() - cached.fetched_at < ttl
+      cached && Date.now() - cached.fetched_at < ttl && Array.isArray(JSON.parse(cached.payload).fundingHistory)
         ? JSON.parse(cached.payload)
         : parseIbkrFundingBatch(
           await requestStatement(token, queryId, range),
           range,
           snapshot.accountId,
         );
-    if (!cached || Date.now() - cached.fetched_at >= ttl) {
+    if (!cached || Date.now() - cached.fetched_at >= ttl || !Array.isArray(JSON.parse(cached.payload).fundingHistory)) {
       database.prepare(
         "INSERT OR REPLACE INTO ibkr_funding_batches VALUES (?,?,?,?,?,?)",
       )
@@ -409,6 +413,7 @@ export async function fetchIbkrAccountPerformance(
   let latest: IbkrFundingBatch | undefined,
     previous: IbkrFundingBatch | undefined;
   let deposits = 0, withdrawals = 0;
+  const fundingHistory: { date: string; amount: number }[] = [];
   for (const range of ranges) {
     const batch = await loadBatch(range);
     if (
@@ -438,6 +443,7 @@ export async function fetchIbkrAccountPerformance(
     previous = batch;
     deposits += batch.deposits;
     withdrawals += batch.withdrawals;
+    fundingHistory.push(...batch.fundingHistory);
     if (range.from <= new Date(batch.fundedAt ?? batch.openedAt)) {
       if (
         Math.abs(batch.startingValue) > .005 ||
@@ -471,6 +477,7 @@ export async function fetchIbkrAccountPerformance(
         pnl: snapshot.totalValue - netContributions,
         deposits,
         withdrawals,
+        fundingHistory,
         netContributions,
         ledgerCash: { [snapshot.currency]: snapshot.cash },
         openedAt: new Date(batch.openedAt),
