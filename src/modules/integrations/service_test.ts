@@ -11,6 +11,7 @@ import {
   fetchIntegratedOrderHistory,
   fetchIntegratedPortfolio,
   fetchIntegrationPortfolio,
+  mergePositions,
 } from "./service.ts";
 import type {
   IntegrationOrder,
@@ -18,6 +19,8 @@ import type {
 } from "./types.ts";
 import {
   buildIntegratedPerformanceList,
+  buildIntegratedTickerList,
+  buildIntegratedAllTimePerformanceList,
   buildIntegratedSoldPerformanceList,
   buildBucketedPortfolioPositions,
   getOrderTransactionKey,
@@ -150,6 +153,7 @@ Deno.test("integrated portfolios refresh Vontobel warrants before merging and bu
     equal(updated.totalNow, 521);
     equal(updated.totalInput, original.totalInput);
     equal(updated.currency, "EUR");
+    equal(updated.currentPriceCached, false);
     deepStrictEqual(raw, original);
     const buy: IntegrationOrder = {
       integrationId: integration.id,
@@ -172,10 +176,50 @@ Deno.test("integrated portfolios refresh Vontobel warrants before merging and bu
     equal(bucketed.currentPrice, .50);
     equal(bucketed.totalNow, 521);
     globalThis.fetch = async () => new Response(null, { status: 503 });
-    await rejects(
-      fetchIntegratedPortfolio(db, 1),
-      /Vontobel bid quote unavailable/,
-    );
+    raw.amount = 2 * original.amount;
+    const [cached] = await fetchIntegratedPortfolio(db, 1);
+    equal(cached.currentPrice, .50);
+    equal(cached.currentPriceCached, true);
+    equal(cached.currentPriceAsOf, updated.currentPriceAsOf);
+    equal(cached.totalNow, 1042);
+    equal(cached.unrealizedPnl, 1042 - original.totalInput!);
+    const [cachedBucket] = buildBucketedPortfolioPositions({
+      orders: [buy],
+      livePositions: [cached],
+      bucketName: "Core",
+      transactionBuckets: new Map([[getOrderTransactionKey(buy), "Core"]]),
+    });
+    equal(cachedBucket.currentPriceCached, true);
+    equal(cachedBucket.currentPriceAsOf, cached.currentPriceAsOf);
+    equal(cachedBucket.totalNow, 521);
+    // A cached component must mark a merged holding regardless of account order.
+    for (const components of [[updated, cachedBucket], [cachedBucket, updated]]) {
+      const merged = mergePositions(components);
+      equal(merged[0].currentPriceCached, true);
+      const args = {
+        positions: merged,
+        currency: "EUR",
+        formatTicker: (t: string) => t,
+        request: (async () => Response.json({ base: "USD", quote: "EUR", rate: .9 })) as typeof fetch,
+      };
+      const detailed = await buildIntegratedTickerList(args);
+      ok(detailed.split("\n").some((line) => /\(0\.50 EUR .*\) ⚠️$/.test(line)));
+      for (const showCurrentValue of [false, true]) {
+        const concise = await buildIntegratedPerformanceList({ ...args, showCurrentValue });
+        ok(concise.split("\n")[0].endsWith(" ⚠️"));
+      }
+      const alltime = await buildIntegratedAllTimePerformanceList({ ...args, orders: [] });
+      ok(alltime.split("\n")[0].endsWith(" ⚠️"));
+    }
+    const freshReport = await buildIntegratedTickerList({
+      positions: [updated], currency: "EUR", formatTicker: (t: string) => t,
+      request: async () => Response.json({ base: "USD", quote: "EUR", rate: .9 }),
+    });
+    ok(!freshReport.includes("⚠️"));
+    globalThis.fetch = async () => new Response(null, { status: 503 });
+    // A different warrant has no verified bid to fall back to.
+    raw.ticker = "VY8GTE";
+    await rejects(fetchIntegratedPortfolio(db, 1), /Vontobel bid quote unavailable/);
   } finally {
     ibkrAdapter.fetchPortfolio = originalPortfolio;
     globalThis.fetch = originalFetch;

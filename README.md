@@ -301,8 +301,11 @@ including commissions, are preserved. Quotes are verified against the issuer,
 product type and holding currency before bucket allocation or report calculations.
 If the product-detail snapshot omits its bid, Eyri requests the issuer's dedicated
 latest-price endpoint and keeps that quote's timestamp.
-If a required bid cannot be loaded, the report fails instead of using the broker
-mark. Diagnostic dumps include the quote source and timestamp.
+Verified live bids persist in SQLite. If a refresh fails, reports reuse the last
+saved bid and append ⚠️ to the affected price or performance row. Cached bids keep
+their original timestamp and have no expiry; a successful refresh clears the warning.
+If no verified bid has been saved yet, the report still fails. Diagnostic dumps
+include the quote source, timestamp and cache status.
 
 Rich integration and bucket controls use Telegram Bot API 10.3's `sendRichMessage`,
 inline `RichTextButton` and `InputRichBlockButtons` (bucket history uses rich HTML

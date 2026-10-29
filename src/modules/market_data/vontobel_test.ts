@@ -5,6 +5,7 @@ import {
   fetchVontobelQuote,
   enrichPortfolioWithVontobelQuotes,
   VontobelHistoryCache,
+  VontobelQuoteCache,
   vontobelIsin,
 } from "./vontobel.ts";
 import { YahooHistoryCache } from "./yahoo.ts";
@@ -114,6 +115,80 @@ const latestQuote = (bid = .50) => ({
       latestTimestamp: "2026-10-07T19:56:36Z",
     },
   },
+});
+
+Deno.test("live warrant cache persists across restarts, retries refreshes, and keeps the last valid bid during outages", async () => {
+  const dir = await Deno.makeTempDir();
+  let db = new Database(`${dir}/quotes.sqlite`);
+  let calls = 0;
+  let response = latestQuote();
+  let offline = false;
+  const request: typeof fetch = async () => {
+    calls++;
+    if (offline) throw new Error("Network unavailable");
+    return Response.json(response);
+  };
+  try {
+    const cache = new VontobelQuoteCache(db);
+    const [first, shared] = await Promise.all([
+      cache.get(isin, request), cache.get(isin, request),
+    ]);
+    deepStrictEqual(first, shared);
+    equal(calls, 1);
+    equal(first.bid, .50);
+    equal(first.cached, undefined);
+
+    db.close();
+    db = new Database(`${dir}/quotes.sqlite`);
+    const restarted = new VontobelQuoteCache(db);
+    offline = true;
+    const stale = await restarted.get(isin, request);
+    equal(stale.bid, .50);
+    equal(stale.cached, true);
+    equal(stale.timestamp, first.timestamp);
+    await rejects(restarted.get("DE000VY8GTE6", request), /Network unavailable/);
+
+    // Invalid refreshes must not overwrite the saved bid.
+    offline = false;
+    response = latestQuote(-1);
+    equal((await restarted.get(isin, request)).bid, .50);
+    offline = true;
+    equal((await restarted.get(isin, request)).bid, .50);
+
+    offline = false;
+    response = latestQuote(0);
+    response.payload.price.latestTimestamp = "2026-10-29T12:00:00Z";
+    const fresh = await restarted.get(isin, request);
+    equal(fresh.bid, 0);
+    equal(fresh.cached, undefined);
+    offline = true;
+    const cachedZero = await restarted.get(isin, request);
+    equal(cachedZero.bid, 0);
+    equal(cachedZero.cached, true);
+    equal(cachedZero.timestamp, fresh.timestamp);
+    equal(calls, 7);
+  } finally {
+    db.close();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("cached warrant quotes retain currency validation and cannot seed the cache with invalid prices", async () => {
+  const db = new Database(":memory:");
+  const cache = new VontobelQuoteCache(db);
+  const holding = {
+    ticker, isin, assetCategory: "WAR", currency: "EUR", amount: 2, totalInput: 1,
+  } as IntegrationPortfolioPosition;
+  try {
+    await rejects(enrichPortfolioWithVontobelQuotes([holding], async () =>
+      Response.json(latestQuote(-1)), cache), /Vontobel bid quote unavailable/);
+    equal((db.prepare("SELECT COUNT(*) AS n FROM vontobel_quotes").get() as { n: number }).n, 0);
+    await enrichPortfolioWithVontobelQuotes([holding], async () => Response.json(latestQuote()), cache);
+    await rejects(enrichPortfolioWithVontobelQuotes([{ ...holding, currency: "USD" }],
+      async () => new Response(null, { status: 503 }), cache), /Vontobel bid quote unavailable/);
+  } finally {
+    db.close();
+  }
 });
 
 Deno.test("live Vontobel bid replaces the lower IBKR mark in native EUR and retains broker cost including fees", async () => {

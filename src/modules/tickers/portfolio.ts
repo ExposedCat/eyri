@@ -911,7 +911,7 @@ export async function buildIntegratedTickerList({
           performance.currentVsAverageChange,
           position.currency,
         )
-      })`,
+      })${position.currentPriceCached ? " ⚠️" : ""}`,
       `${formatMoney(performance.totalInput, position.currency)} -> ${
         formatMoney(
           performance.totalNow,
@@ -1004,7 +1004,7 @@ export async function buildIntegratedPerformanceList({
       const percentage = formatMoneyChange(requireReportNumber(performance.totalPercentageChange, `${position.ticker} percentage`), "%");
       return `${tickerName} ${percentage} ${
         formatValue(getValue(performance))
-      }${periodSuffix(performance.elapsedPeriod)}`;
+      }${periodSuffix(performance.elapsedPeriod)}${position.currentPriceCached ? " ⚠️" : ""}`;
     },
   );
 
@@ -1145,6 +1145,7 @@ export async function buildIntegratedAllTimeReport({
     change: number | null;
     openedAt: Date | null;
     endedAt: Date;
+    currentPriceCached?: boolean;
   };
   const merged = new Map<string, Performance>();
   const merge = (
@@ -1154,6 +1155,7 @@ export async function buildIntegratedAllTimeReport({
     if (!current) {
       return { ...next };
     }
+    current.currentPriceCached ||= next.currentPriceCached;
     current.cost =
       current.cost === null || next.cost === null
         ? null
@@ -1194,6 +1196,7 @@ export async function buildIntegratedAllTimeReport({
       change: performance.totalChange,
       openedAt: position.openedAt,
       endedAt: now,
+      currentPriceCached: position.currentPriceCached,
     });
   }
   for (const sold of nativeSold) {
@@ -1317,7 +1320,7 @@ export async function buildIntegratedAllTimePerformanceList({
     }
     const percentage = returnPercentage == null ? ""
       : `${formatMoneyChange(returnPercentage, "%")} `;
-    return `${name} ${percentage}${formatCurrencyChange(performance.change, performance.currency)}${periodSuffix(elapsed)}`;
+    return `${name} ${percentage}${formatCurrencyChange(performance.change, performance.currency)}${periodSuffix(elapsed)}${performance.currentPriceCached ? " ⚠️" : ""}`;
   };
   const lines = buildSeparatedChangeLines(
     performances,
@@ -1704,6 +1707,9 @@ export function buildBucketedPortfolioPositions({
           ? { brokerValuations: livePosition.brokerValuations } : {}),
         averageUnitPrice: draft.totalInput / draft.amount,
         currentPrice,
+        currentPriceSource: livePosition.currentPriceSource,
+        currentPriceAsOf: livePosition.currentPriceAsOf,
+        currentPriceCached: livePosition.currentPriceCached,
         currency: draft.currency,
         totalInput: draft.totalInput,
         totalNow,

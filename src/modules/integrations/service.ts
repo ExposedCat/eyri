@@ -7,7 +7,7 @@ import { logFetch } from "../../utils/fetch_logging.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
 import { trading212Adapter } from "./trading212/adapter.ts";
-import { enrichPortfolioWithVontobelQuotes } from "../market_data/vontobel.ts";
+import { enrichPortfolioWithVontobelQuotes, VontobelQuoteCache } from "../market_data/vontobel.ts";
 import { portfolioValuations } from "./usd.ts";
 import type {
   IntegrationAdapter,
@@ -25,6 +25,7 @@ const pendingPortfolios = new WeakMap<
   Database,
   Map<string, Promise<IntegrationPortfolioPosition[]>>
 >();
+const warrantQuoteCaches = new WeakMap<Database, VontobelQuoteCache>();
 
 function getAdapter(integration: Integration) {
   return adapters[integration.kind];
@@ -66,6 +67,9 @@ function mergePosition(
 
   return {
     ...current,
+    ...(current.currentPriceCached || next.currentPriceCached
+      ? { currentPriceCached: true }
+      : {}),
     ...(current.brokerValuations || next.brokerValuations ? {
       brokerValuations: [...portfolioValuations(current), ...portfolioValuations(next)],
     } : {}),
@@ -212,11 +216,22 @@ export function fetchIntegrationPortfolio(
       `${integration.kind} portfolio integration=${integration.id}`,
       async () => enrichPortfolioWithVontobelQuotes(
         await getAdapter(integration).fetchPortfolio(database, integration),
+        fetch,
+        getWarrantQuoteCache(database),
       ),
     )
   ).finally(() => pending.delete(key));
   pending.set(key, request);
   return request;
+}
+
+function getWarrantQuoteCache(database: Database) {
+  let cache = warrantQuoteCaches.get(database);
+  if (!cache) {
+    cache = new VontobelQuoteCache(database);
+    warrantQuoteCaches.set(database, cache);
+  }
+  return cache;
 }
 
 export async function fetchIntegrationOrderHistory(

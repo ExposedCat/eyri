@@ -15,6 +15,7 @@ export type IntegrationPortfolioPosition = {
   currentPrice: number | null;
   currentPriceSource?: string;
   currentPriceAsOf?: string;
+  currentPriceCached?: boolean;
   currency: string;
   // Account-currency valuations supplied by the broker, including historical FX.
   // Keep components separate when merging accounts with different currencies.

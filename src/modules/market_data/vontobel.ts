@@ -197,11 +197,58 @@ export async function fetchVontobelQuote(
   };
 }
 
+type VontobelQuote = Awaited<ReturnType<typeof fetchVontobelQuote>> & {
+  cached?: boolean;
+};
+
+// Always try the issuer first. The last verified bid survives outages and
+// restarts, retaining its original timestamp rather than appearing fresh.
+export class VontobelQuoteCache {
+  private pending = new Map<string, Promise<VontobelQuote>>();
+
+  constructor(private db: Database) {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS vontobel_quotes (
+        isin TEXT PRIMARY KEY,
+        currency TEXT NOT NULL,
+        bid REAL NOT NULL,
+        timestamp TEXT NOT NULL
+      );
+    `);
+  }
+
+  get(isin: string, request: typeof fetch = fetch): Promise<VontobelQuote> {
+    const existing = this.pending.get(isin);
+    if (existing) return existing;
+    const result = this.load(isin, request).finally(() => this.pending.delete(isin));
+    this.pending.set(isin, result);
+    return result;
+  }
+
+  private async load(isin: string, request: typeof fetch): Promise<VontobelQuote> {
+    let quote: VontobelQuote;
+    try {
+      quote = await fetchVontobelQuote(isin, request);
+    } catch (cause) {
+      const stored = this.db.prepare(
+        "SELECT currency,bid,timestamp FROM vontobel_quotes WHERE isin = ?",
+      ).get(isin) as VontobelQuote | undefined;
+      if (!stored) throw cause;
+      return { ...stored, cached: true };
+    }
+    this.db.prepare(
+      "INSERT OR REPLACE INTO vontobel_quotes(isin,currency,bid,timestamp) VALUES (?,?,?,?)",
+    ).run(isin, quote.currency, quote.bid, quote.timestamp);
+    return quote;
+  }
+}
+
 export async function enrichPortfolioWithVontobelQuotes(
   positions: IntegrationPortfolioPosition[],
   request: typeof fetch = fetch,
+  cache?: VontobelQuoteCache,
 ) {
-  const quotes = new Map<string, ReturnType<typeof fetchVontobelQuote>>();
+  const quotes = new Map<string, Promise<VontobelQuote>>();
   return await Promise.all(positions.map(async (position) => {
     if (
       position.assetCategory?.trim().toUpperCase() !== "WAR" ||
@@ -213,7 +260,7 @@ export async function enrichPortfolioWithVontobelQuotes(
     if (!isin) return position;
     let quote = quotes.get(isin);
     if (!quote) {
-      quote = fetchVontobelQuote(isin, request);
+      quote = cache ? cache.get(isin, request) : fetchVontobelQuote(isin, request);
       quotes.set(isin, quote);
     }
     try {
@@ -225,7 +272,7 @@ export async function enrichPortfolioWithVontobelQuotes(
       }
     }
     try {
-      const { bid, currency, timestamp } = await quote;
+      const { bid, currency, timestamp, cached = false } = await quote;
       if (currency !== position.currency.trim().toUpperCase()) {
         throw new Error("Vontobel quote currency does not match the holding.");
       }
@@ -239,6 +286,7 @@ export async function enrichPortfolioWithVontobelQuotes(
           : totalNow - position.totalInput,
         currentPriceSource: "vontobel_bid",
         currentPriceAsOf: timestamp,
+        currentPriceCached: cached,
       };
     } catch (cause) {
       throw new Error(
