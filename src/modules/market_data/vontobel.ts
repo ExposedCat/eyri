@@ -199,6 +199,7 @@ export async function fetchVontobelQuote(
 
 type VontobelQuote = Awaited<ReturnType<typeof fetchVontobelQuote>> & {
   cached?: boolean;
+  source?: string;
 };
 
 // Always try the issuer first. The last verified bid survives outages and
@@ -233,13 +234,56 @@ export class VontobelQuoteCache {
       const stored = this.db.prepare(
         "SELECT currency,bid,timestamp FROM vontobel_quotes WHERE isin = ?",
       ).get(isin) as VontobelQuote | undefined;
-      if (!stored) throw cause;
-      return { ...stored, cached: true };
+      if (stored) return { ...stored, cached: true };
+      const historical = this.cachedHistoryQuote(isin);
+      if (historical) return historical;
+      throw cause;
     }
     this.db.prepare(
       "INSERT OR REPLACE INTO vontobel_quotes(isin,currency,bid,timestamp) VALUES (?,?,?,?)",
     ).run(isin, quote.currency, quote.bid, quote.timestamp);
     return quote;
+  }
+
+  private cachedHistoryQuote(isin: string): VontobelQuote | undefined {
+    // Older deployments already saved verified daily bids for charts, but did
+    // not retain live quotes. Reuse those without requiring a successful tick
+    // after the cache feature was installed.
+    const tables = this.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type = 'table'
+        AND name IN ('vontobel_products', 'vontobel_prices', 'vontobel_recent')
+    `).all();
+    if (tables.length !== 3) return undefined;
+    const productRow = this.db.prepare(
+      "SELECT payload FROM vontobel_products WHERE isin = ?",
+    ).get(isin) as { payload: string } | undefined;
+    if (!productRow) return undefined;
+    const product: Product = JSON.parse(productRow.payload);
+    const stored = this.db.prepare(
+      "SELECT date,close FROM vontobel_prices WHERE isin = ? ORDER BY date DESC LIMIT 1",
+    ).get(isin) as PriceBar | undefined;
+    const recentRow = this.db.prepare(
+      "SELECT payload FROM vontobel_recent WHERE isin = ?",
+    ).get(isin) as { payload: string } | undefined;
+    const recent: PriceHistory | undefined = recentRow ? JSON.parse(recentRow.payload) : undefined;
+    const bars = [
+      ...(stored ? [stored] : []),
+      ...(recent?.symbol === VONTOBEL_PREFIX + isin &&
+          recent.currency === product.currency && recent.priceBasis === "BID" &&
+          recent.instrumentType === "WARRANT" ? recent.bars : []),
+    ];
+    const latest = bars.filter((bar) =>
+      /^\d{4}-\d{2}-\d{2}$/.test(bar.date) && Number.isFinite(Date.parse(bar.date)) &&
+      Number.isFinite(bar.close) && bar.close >= 0
+    ).sort((a, b) => b.date.localeCompare(a.date))[0];
+    if (!latest) return undefined;
+    return {
+      currency: product.currency,
+      bid: latest.close,
+      timestamp: latest.date,
+      cached: true,
+      source: "vontobel_daily_bid",
+    };
   }
 }
 
@@ -272,7 +316,7 @@ export async function enrichPortfolioWithVontobelQuotes(
       }
     }
     try {
-      const { bid, currency, timestamp, cached = false } = await quote;
+      const { bid, currency, timestamp, cached = false, source = "vontobel_bid" } = await quote;
       if (currency !== position.currency.trim().toUpperCase()) {
         throw new Error("Vontobel quote currency does not match the holding.");
       }
@@ -284,7 +328,7 @@ export async function enrichPortfolioWithVontobelQuotes(
         unrealizedPnl: position.totalInput === null
           ? null
           : totalNow - position.totalInput,
-        currentPriceSource: "vontobel_bid",
+        currentPriceSource: source,
         currentPriceAsOf: timestamp,
         currentPriceCached: cached,
       };

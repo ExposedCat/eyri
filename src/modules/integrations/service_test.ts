@@ -76,6 +76,43 @@ Deno.test("concurrent reports share a pending portfolio fetch and retry after fa
   }
 });
 
+Deno.test("stock-only fetches never request issuer quotes or inherit a concurrent full-portfolio failure", async () => {
+  const db = new Database(":memory:");
+  const originalPortfolio = ibkrAdapter.fetchPortfolio;
+  const originalFetch = globalThis.fetch;
+  let quoteRequests = 0;
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    const saved = createIntegration({ database: db, userId: 1, kind: "ibkr", credentials: {} });
+    ok(saved.data);
+    const stock = { ...position(saved.data), assetCategory: "STK" };
+    const warrant = { ...stock, ticker: "BD3G1A", currency: "EUR", assetCategory: "WAR" };
+    ibkrAdapter.fetchPortfolio = async () => [stock, warrant];
+    globalThis.fetch = async () => {
+      quoteRequests++;
+      return new Response(null, { status: 503 });
+    };
+    deepStrictEqual(await fetchIntegratedPortfolio(db, 1, false, false), [stock, warrant]);
+    equal(quoteRequests, 0);
+    for (const fullFirst of [true, false]) {
+      const results = await Promise.allSettled((fullFirst ? [true, false] : [false, true]).map(
+        (warrantQuotes) => fetchIntegrationPortfolio(db, saved.data!, warrantQuotes),
+      ));
+      const full = results[fullFirst ? 0 : 1];
+      const stocks = results[fullFirst ? 1 : 0];
+      equal(full.status, "rejected");
+      equal(stocks.status, "fulfilled");
+      if (stocks.status === "fulfilled") deepStrictEqual(stocks.value, [stock, warrant]);
+    }
+    equal(quoteRequests, 2);
+  } finally {
+    ibkrAdapter.fetchPortfolio = originalPortfolio;
+    globalThis.fetch = originalFetch;
+    db.close();
+  }
+});
+
 function position(integration: Integration): IntegrationPortfolioPosition {
   const id = integration.id;
   return {

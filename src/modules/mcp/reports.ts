@@ -195,6 +195,7 @@ export async function runReport(
     history: ["alltime", "allnumber", "worth", "worthnumber", "sold", "chart"].includes(name),
     displayHistory: name === "history",
     accountPerformance: name === "chart" || !args.filter && ["alltime", "allnumber", "worth", "worthnumber"].includes(name),
+    warrantQuotes: name !== "stocks" && name !== "portfolio" && args.filter !== "stocks",
   });
   const matches = args.filter === "stocks" ? isStockPosition : args.filter === "options" ? isOptionPosition : () => true;
   const view = { ...rawView, positions: rawView.positions.filter(matches), orders: rawView.orders.filter(matches),

@@ -109,6 +109,9 @@ type Options = {
   history?: boolean;
   displayHistory?: boolean;
   accountPerformance?: boolean;
+  // Stock-only reports still need broker holdings for bucket/funding calculations,
+  // but must not depend on issuer quotes for excluded warrants.
+  warrantQuotes?: boolean;
 };
 type Runtime = {
   request?: typeof fetch;
@@ -147,7 +150,7 @@ export async function fetchPortfolioView(
         const [ownerPositions, ownerOrders] = await Promise.all([
           options.positions === false
             ? []
-            : fetchers.portfolio(db, ownerId, false),
+            : fetchers.portfolio(db, ownerId, false, options.warrantQuotes),
           needsOrders
             ? (options.displayHistory ? fetchers.history : fetchers.orders)(
               db,

@@ -56,7 +56,9 @@ async function datasetFor(ctx: CustomContext, bucketName: string | null,
       "Configure an integration before charting your all-time performance.",
     );
   }
-  const view = await fetchPortfolioView(ctx.db, userId, bucketName, { history: true, accountPerformance: true });
+  const view = await fetchPortfolioView(ctx.db, userId, bucketName, {
+    history: true, accountPerformance: true, warrantQuotes: selection.filter !== "stocks",
+  });
   const matches = selection.filter === "stocks" ? isStockPosition : selection.filter === "options" ? isOptionPosition : () => true;
   const label = [ctx.from!.first_name, ctx.from!.last_name].filter(Boolean)
     .join(" ").slice(0, 60);

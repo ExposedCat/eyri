@@ -11,6 +11,8 @@ import {
   transferBucketAccess,
 } from "../database/bucket.ts";
 import { createIntegration } from "../database/integration.ts";
+import { ibkrAdapter } from "../integrations/ibkr/adapter.ts";
+import { fetchIntegratedPortfolio } from "../integrations/service.ts";
 import { saveRsuAward } from "../database/rsu.ts";
 import { ensureSchema } from "../database/setup.ts";
 import { findOrCreateUser, setUserCurrency } from "../database/user.ts";
@@ -137,6 +139,45 @@ async function call(
   ok(!text.text.includes("\n"));
   return parsed;
 }
+
+Deno.test("MCP stock reports and filtered charts work without issuer quotes", async () => {
+  const h = await harness();
+  const previousFetch = globalThis.fetch;
+  const previousPortfolio = ibkrAdapter.fetchPortfolio;
+  let issuerRequests = 0;
+  try {
+    ibkrAdapter.fetchPortfolio = async () => [structuredClone(position), {
+      ...structuredClone(position), ticker: "BD3G1A", assetCategory: "WAR", currency: "EUR",
+    }];
+    globalThis.fetch = async () => {
+      issuerRequests++;
+      return new Response(null, { status: 503 });
+    };
+    h.runtime.view = (database, userId, bucketName, options) =>
+      fetchPortfolioView(database, userId, bucketName, options, {
+        portfolio: fetchIntegratedPortfolio,
+        orders: async () => structuredClone(orders),
+        history: async () => structuredClone(orders),
+        accounts: async () => [],
+      });
+    for (const name of ["stocks", "portfolio"]) {
+      const result = await call(h, name);
+      ok(JSON.stringify(result).includes("AAPL"));
+      ok(!JSON.stringify(result).includes("BD3G1A"));
+    }
+    for (const name of ["perf", "worth", "dpnl", "alltime", "number", "allnumber", "worthnumber", "chart"]) {
+      await call(h, name, { userId: 1, filter: "stocks" });
+    }
+    equal(issuerRequests, 0);
+    const options = await h.client.callTool({ name: "options", arguments: { userId: 1 } });
+    equal(options.isError, true);
+    equal(issuerRequests, 1);
+  } finally {
+    ibkrAdapter.fetchPortfolio = previousPortfolio;
+    globalThis.fetch = previousFetch;
+    await h.close();
+  }
+});
 
 Deno.test("MCP discovers command tools and validates userId, bucket, targets and cutoff", async () => {
   const h = await harness();

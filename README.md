@@ -304,8 +304,17 @@ latest-price endpoint and keeps that quote's timestamp.
 Verified live bids persist in SQLite. If a refresh fails, reports reuse the last
 saved bid and append ⚠️ to the affected price or performance row. Cached bids keep
 their original timestamp and have no expiry; a successful refresh clears the warning.
-If no verified bid has been saved yet, the report still fails. Diagnostic dumps
-include the quote source, timestamp and cache status.
+If no live bid has been saved yet, Eyri reuses the latest previously cached daily
+Vontobel bid, with ⚠️ and its original date. This includes history saved before live
+quote caching was added. If neither cache has a verified bid, the report still fails.
+Diagnostic dumps include the quote source, timestamp and cache status; daily
+fallbacks use `vontobel_daily_bid`.
+
+Stock-only reports skip warrant issuer quote requests entirely, including stock
+filters on performance, worth, daily, all-time, number and historical chart commands,
+stock allocation charts, stock dumps and MCP stock reports. Bucket and account
+funding calculations retain the broker holdings they need; an excluded warrant's
+issuer feed cannot block a stock-only report.
 
 Rich integration and bucket controls use Telegram Bot API 10.3's `sendRichMessage`,
 inline `RichTextButton` and `InputRichBlockButtons` (bucket history uses rich HTML

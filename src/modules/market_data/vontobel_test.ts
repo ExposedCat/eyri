@@ -191,6 +191,55 @@ Deno.test("cached warrant quotes retain currency validation and cannot seed the 
   }
 });
 
+Deno.test("the first live-quote outage reuses preexisting daily warrant bids and recovers to live prices", async () => {
+  for (const bid of [.41, 0]) {
+    const db = new Database(":memory:");
+    const offline: typeof fetch = async () => new Response(null, { status: 503 });
+    const holding = {
+      ticker, isin, assetCategory: "WAR", currency: "EUR", amount: 10, totalInput: 3,
+    } as IntegrationPortfolioPosition;
+    try {
+      // Seed only the history tables, as deployed versions before live caching did.
+      await new VontobelHistoryCache(db, market([], [
+        point("2026-06-24", 2.03),
+        point("2026-10-03", .48),
+        point("2026-10-06", bid),
+      ]), clock).get(isin, "2026-06-24");
+      const cache = new VontobelQuoteCache(db);
+      const [cached] = await enrichPortfolioWithVontobelQuotes([holding], offline, cache);
+      equal(cached.currentPrice, bid);
+      equal(cached.totalNow, bid * 10);
+      equal(cached.unrealizedPnl, bid * 10 - 3);
+      equal(cached.currentPriceCached, true);
+      equal(cached.currentPriceSource, "vontobel_daily_bid");
+      equal(cached.currentPriceAsOf, "2026-10-06");
+      await rejects(enrichPortfolioWithVontobelQuotes([{ ...holding, currency: "USD" }],
+        offline, cache), /Vontobel bid quote unavailable/);
+      await rejects(cache.get("DE000VY8GTE6", offline), /HTTP 503/);
+
+      // Finalized daily bids work even when the provisional history was removed.
+      db.exec("DELETE FROM vontobel_recent");
+      const stable = await cache.get(isin, offline);
+      equal(stable.bid, .48);
+      equal(stable.timestamp, "2026-10-03");
+      equal(stable.cached, true);
+
+      const [fresh] = await enrichPortfolioWithVontobelQuotes([cached],
+        async () => Response.json(latestQuote()), cache);
+      equal(fresh.currentPrice, .50);
+      equal(fresh.currentPriceCached, false);
+      equal(fresh.currentPriceSource, "vontobel_bid");
+      equal(fresh.currentPriceAsOf, "2026-10-07T19:56:36Z");
+      // Saved live ticks take precedence over the daily-history fallback.
+      const saved = await cache.get(isin, offline);
+      equal(saved.bid, .50);
+      equal(saved.timestamp, fresh.currentPriceAsOf);
+    } finally {
+      db.close();
+    }
+  }
+});
+
 Deno.test("live Vontobel bid replaces the lower IBKR mark in native EUR and retains broker cost including fees", async () => {
   const holding: IntegrationPortfolioPosition = {
     integrationId: 7,

@@ -2,7 +2,7 @@ import { Composer, InputFile } from "grammy";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts";
 import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
-import { parsePerformanceArgs, parseReportArgs } from "./performance_command.ts";
+import { parsePerformanceArgs, parseReportArgs, type ReportFilter } from "./performance_command.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { splitMessageLines } from "../bot/message.ts";
 import { showRichMessage } from "../bot/rich.ts";
@@ -216,13 +216,16 @@ async function resolveBucketName(ctx: CustomContext, input: unknown = ctx.match)
 export async function fetchBucketedPositions(
   ctx: CustomContext,
   bucketName: string | null,
+  filter: ReportFilter = null,
 ) {
   const userId = ctx.dbEntities.user?.userId;
   if (!userId) {
     return [];
   }
 
-  return (await fetchPortfolioView(ctx.db, userId, bucketName)).positions;
+  return (await fetchPortfolioView(ctx.db, userId, bucketName, {
+    warrantQuotes: filter !== "stocks",
+  })).positions;
 }
 
 async function fetchBucketedHistoryOrders(
@@ -460,8 +463,9 @@ async function replyJsonDump(ctx: CustomContext, value: unknown) {
 
 async function replyIntegrationError(ctx: CustomContext, error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  const detail = message.replace(/^Failed to fetch integration data:\s*/, "");
   await ctx.reply(
-    `Failed to fetch integration data:\n\n<code>${escapeHtml(message)}</code>`,
+    `Failed to fetch integration data:\n\n<code>${escapeHtml(detail)}</code>`,
     htmlReplyOptions,
   );
 }
@@ -1070,7 +1074,7 @@ tickersComposer.command("portfolio", async (ctx) => {
 	}
 	try {
 		const chart = await buildPortfolioChart(
-			await fetchBucketedPositions(ctx, bucketName),
+			await fetchBucketedPositions(ctx, bucketName, "stocks"),
 			fetch,
 			ctx.dbEntities.user.currency ?? "USD",
 		);
@@ -1101,7 +1105,7 @@ tickersComposer.command("dump_options", async (ctx) => {
   }
 
   try {
-    const positions = await fetchBucketedPositions(ctx, bucketName);
+    const positions = await fetchBucketedPositions(ctx, bucketName, "options");
     await replyJsonDump(
       ctx,
       (await portfolioPositionsInCurrency(positions.filter(isOptionPosition), fetch, ctx.dbEntities.user.currency ?? "USD")).map(toDumpablePosition),
@@ -1126,7 +1130,7 @@ tickersComposer.command("dump_tickers", async (ctx) => {
   }
 
   try {
-    const positions = await fetchBucketedPositions(ctx, bucketName);
+    const positions = await fetchBucketedPositions(ctx, bucketName, "stocks");
     await replyJsonDump(
       ctx,
       (await portfolioPositionsInCurrency(positions.filter(isStockPosition), fetch, ctx.dbEntities.user.currency ?? "USD")).map(toDumpablePosition),
@@ -1186,7 +1190,10 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
     let performanceList: string;
     if (isAllTime) {
       const view = await fetchPortfolioView(
-        ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true, accountPerformance: args.filter === null },
+        ctx.db, ctx.dbEntities.user.userId, bucketName, {
+          history: true, accountPerformance: args.filter === null,
+          warrantQuotes: args.filter !== "stocks",
+        },
       );
       performanceList = await buildIntegratedAllTimePerformanceList({
         currency,
@@ -1200,7 +1207,7 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
     } else {
       const worthView = showCurrentValue && args.filter === null
         ? await fetchPortfolioView(ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true, accountPerformance: true }) : null;
-      const positions = (worthView?.positions ?? await fetchBucketedPositions(ctx, bucketName)).filter(matchesFilter);
+      const positions = (worthView?.positions ?? await fetchBucketedPositions(ctx, bucketName, args.filter)).filter(matchesFilter);
       performanceList = isDaily
         ? await buildIntegratedDailyPerformanceList({ currency, positions, numberOnly, ...preferences, formatTicker })
         : await buildIntegratedPerformanceList({

@@ -171,12 +171,13 @@ export async function fetchIntegratedPortfolio(
   database: Database,
   userId: number,
   merge = true,
+  warrantQuotes = true,
 ) {
   const integrations = getUserIntegrations(database, userId);
   const positions = await mapIntegrationData(
     database,
     integrations,
-    (_adapter, db, integration) => fetchIntegrationPortfolio(db, integration),
+    (_adapter, db, integration) => fetchIntegrationPortfolio(db, integration, warrantQuotes),
   );
 
   return merge ? mergePositions(positions) : positions;
@@ -197,6 +198,7 @@ export function fetchIntegratedAccountPerformances(
 export function fetchIntegrationPortfolio(
   database: Database,
   integration: Integration,
+  warrantQuotes = true,
 ) {
   let pending = pendingPortfolios.get(database);
   if (!pending) {
@@ -204,7 +206,7 @@ export function fetchIntegrationPortfolio(
     pendingPortfolios.set(database, pending);
   }
   const key = JSON.stringify([
-    integration.id, integration.kind, integration.credentials,
+    integration.id, integration.kind, integration.credentials, warrantQuotes,
   ]);
   const existing = pending.get(key);
   if (existing) {
@@ -214,11 +216,12 @@ export function fetchIntegrationPortfolio(
   const request = Promise.resolve().then(() =>
     logFetch(
       `${integration.kind} portfolio integration=${integration.id}`,
-      async () => enrichPortfolioWithVontobelQuotes(
-        await getAdapter(integration).fetchPortfolio(database, integration),
-        fetch,
-        getWarrantQuoteCache(database),
-      ),
+      async () => {
+        const positions = await getAdapter(integration).fetchPortfolio(database, integration);
+        return warrantQuotes
+          ? enrichPortfolioWithVontobelQuotes(positions, fetch, getWarrantQuoteCache(database))
+          : positions;
+      },
     )
   ).finally(() => pending.delete(key));
   pending.set(key, request);

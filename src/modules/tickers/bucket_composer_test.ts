@@ -7,6 +7,9 @@ import { ensureSchema } from "../database/setup.ts";
 import { findOrCreateUser, setUserCurrency } from "../database/user.ts";
 import { getUserBucket, readBucketAssignments } from "../database/bucket.ts";
 import { createIntegration } from "../database/integration.ts";
+import { ibkrAdapter } from "../integrations/ibkr/adapter.ts";
+import type { IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
+import { getOrderTransactionKey } from "./portfolio.ts";
 import { tickersComposer } from "./composer.ts";
 
 function fundedReport(holdings: { i: string; q: number; value: number }[], deposits: number, cash = 0) {
@@ -124,6 +127,79 @@ function harness(db: Database) {
     lastText: () => String(calls.at(-1)?.payload.text),
   };
 }
+
+Deno.test("stock reports, dumps and allocation charts ignore unavailable warrant feeds, including shared buckets", async () => {
+  const db = new Database(":memory:");
+  const previousPath = Deno.env.get("EYRI_DATABASE_PATH");
+  const previousFetch = globalThis.fetch;
+  const previousPortfolio = ibkrAdapter.fetchPortfolio;
+  const previousOrders = ibkrAdapter.fetchOrderHistory;
+  Deno.env.set("EYRI_DATABASE_PATH", ":memory:");
+  let issuerRequests = 0;
+  try {
+    ensureSchema(db);
+    const owner = 123456789, recipient = 987654321;
+    const h = harness(db);
+    await h.command("/bucket new Core");
+    const saved = createIntegration({ database: db, userId: owner, kind: "ibkr", credentials: {} });
+    ok(saved.data);
+    const stock: IntegrationPortfolioPosition = {
+      integrationId: saved.data.id, integrationKind: "ibkr", account: "test",
+      ticker: "AAPL", assetCategory: "STK", currency: "USD", amount: 10,
+      averageUnitPrice: 100, currentPrice: 120, totalInput: 1000, totalNow: 1200,
+      unrealizedPnl: 200, realizedPnl: 0, dailyPnl: 10,
+      dailyPnlPercentage: 1, dailyPnlBaseline: 1000, openedAt: new Date("2025-01-01"),
+    };
+    const warrant = { ...stock, ticker: "BD3G1A", assetCategory: "WAR", currency: "EUR" };
+    const orders: IntegrationOrder[] = [stock, warrant].map((p) => ({
+      integrationId: p.integrationId, integrationKind: p.integrationKind, account: p.account,
+      ticker: p.ticker, assetCategory: p.assetCategory!, currency: p.currency,
+      date: p.openedAt!, quantity: p.amount, price: p.averageUnitPrice,
+    }));
+    ibkrAdapter.fetchPortfolio = async () => [stock, warrant];
+    ibkrAdapter.fetchOrderHistory = async () => orders;
+    globalThis.fetch = async (input) => {
+      if (String(input).includes("markets.vontobel.com")) {
+        issuerRequests++;
+        return new Response(null, { status: 503 });
+      }
+      throw new Error(`Unexpected request: ${input}`);
+    };
+    const checkReports = async (bucket = "", userId = owner) => {
+      for (const command of ["/perf s", "/worth stocks", "/dpnl s", "/alltime stocks",
+        "/number perf s", "/number alltime stocks", "/worthnumber s", "/allnumber stocks",
+        "/dump_tickers"]) {
+        await h.command(`${command}${bucket ? ` ${bucket}` : ""}`, userId);
+        const text = h.lastText();
+        ok(!text.includes("Failed to fetch"), text);
+        if (!command.includes("number")) match(text, /AAPL/, text);
+        ok(!text.includes("BD3G1A"), text);
+      }
+      await h.command(`/portfolio${bucket ? ` ${bucket}` : ""}`, userId);
+      equal(h.calls.at(-1)?.method, "sendDocument");
+      equal(issuerRequests, 0);
+    };
+    await checkReports();
+    // Both assets are in the shared bucket; stock requests still skip the warrant.
+    for (const order of orders) {
+      db.prepare("INSERT INTO portfolio_bucket_transactions(user_id,transaction_key,bucket_name) VALUES (?,?,?)")
+        .run(owner, getOrderTransactionKey(order), "Core");
+    }
+    await h.command("/bucket transfer Core", owner, recipient);
+    await checkReports("Core", recipient);
+    await h.command("/perf options Core", recipient);
+    match(h.lastText(), /Vontobel bid quote unavailable/);
+    equal(h.lastText().match(/Failed to fetch integration data:/g)?.length, 1);
+    equal(issuerRequests, 1);
+  } finally {
+    ibkrAdapter.fetchPortfolio = previousPortfolio;
+    ibkrAdapter.fetchOrderHistory = previousOrders;
+    globalThis.fetch = previousFetch;
+    if (previousPath === undefined) Deno.env.delete("EYRI_DATABASE_PATH");
+    else Deno.env.set("EYRI_DATABASE_PATH", previousPath);
+    db.close();
+  }
+});
 
 Deno.test("bucket transfer accepts replied-to users and explicit Telegram IDs, with read-only recipient controls", async () => {
   const db = new Database(":memory:");
