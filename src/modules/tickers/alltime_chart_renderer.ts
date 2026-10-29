@@ -86,7 +86,8 @@ export function renderAllTimeDatasets(
     Math.max(12, Math.min(32, months * 0.6 + 1.4)) * 200,
   );
   const single = datasets.length === 1;
-  const percentagesAvailable = datasets.every(dataset => dataset.points.every(point => point.percentage !== null));
+  const worth = datasets[0].kind === "worth";
+  const percentagesAvailable = !worth && datasets.every(dataset => dataset.points.every(point => point.percentage !== null));
   const displayCurrency = single ? (datasets[0].displayCurrency ?? "USD") : "USD";
   const displayRate = single ? (datasets[0].displayRate ?? 1) : 1;
   const monthTicks: { value: number }[] = [];
@@ -234,7 +235,8 @@ export function renderAllTimeDatasets(
           const entries = datasets.flatMap((dataset, index) => {
             const last = dataset.points[dataset.points.length - 1];
             const color = palette[index % palette.length];
-            const name = dataset.label +
+            const name = dataset.label + (dataset.kind ? ` · ${dataset.kind === "perf" ? "Open" : dataset.kind === "worth" ? "Value" : "Lifetime"}` : "") +
+              (dataset.filter ? ` · ${dataset.filter}` : "") +
               (dataset.bucketName ? ` / ${dataset.bucketName}` : "");
             const currency = single
               ? (dataset.displayCurrency ?? "USD")
@@ -242,13 +244,14 @@ export function renderAllTimeDatasets(
             const rate = single ? (dataset.displayRate ?? 1) : 1;
             const lifetimeReturn = last.percentage === null ? "Lifetime % unavailable"
               : `${last.percentage >= 0 ? "+" : ""}${last.percentage.toFixed(2)}%`;
-            const label = `${name}  ${lifetimeReturn}  (${money(last.gain * rate, currency)})`;
+            const label = worth ? `${name}  ${money(last.gain * rate, currency).replace(/^\+/, "")}`
+              : `${name}  ${lifetimeReturn}  (${money(last.gain * rate, currency)})`;
             const entries = [{ color, label, dashed: false }];
             if (dataset.benchmark) {
               const last = dataset.benchmark.points.at(-1)!;
               entries.push({
                 color: single ? "#E7C678" : palette[index % palette.length],
-                label: `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${last.percentage >= 0 ? "+" : ""}${
+                label: worth ? `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${money(last.gain * rate, currency).replace(/^\+/, "")}` : `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${last.percentage >= 0 ? "+" : ""}${
                   last.percentage.toFixed(2)
                 }%  (${money(last.gain * rate, currency)})`,
                 dashed: true,

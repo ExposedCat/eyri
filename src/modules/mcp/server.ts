@@ -56,7 +56,9 @@ export function createMcpServer(db: Database, runtime?: ReportRuntime) {
           ? { userId, cutoff }
           : ["buckets", "integrations", "rsu"].includes(name)
             ? { userId }
-            : { userId, bucketName };
+            : name === "number" ? { userId, bucketName, kind: z.enum(["perf", "alltime", "worth", "dpnl"]).optional(), filter: z.enum(["stocks", "options"]).optional() }
+            : name === "chart" ? { userId, bucketName, kind: z.enum(["perf", "alltime", "worth"]).optional(), filter: z.enum(["stocks", "options"]).optional() }
+            : { userId, bucketName, filter: z.enum(["stocks", "options"]).optional() };
     server.registerTool(
       name,
       {

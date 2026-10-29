@@ -273,18 +273,22 @@ Deno.test("MCP alltime uses lifetime gross deposits and propagates missing quote
     h.runtime.view = async (...args) => ({
       ...await view(...args),
       accountPerformances: [{
-        integrationId: 1, currency: "USD", totalValue: 1420,
+        integrationId: 1, currency: "USD", totalValue: 1450,
         deposits: 1200, withdrawals: 100, netContributions: 1100,
-        cash: 700, ledgerCash: { USD: 700 }, pnl: 320,
+        cash: 730, ledgerCash: { USD: 730 }, pnl: 350,
         openedAt: new Date("2025-01-01"), historyThrough: new Date(),
         positionValue: 720, investmentValue: 720,
         reportedComponents: [{ currency: "USD", cost: 1000, pnl: 320 }],
       }],
     });
     const report = await call(h, "alltime");
-    equal(report.total.pnl, 320);
-    equal(report.total.returnPct, 320 / 1200 * 100);
-    equal((await call(h, "allnumber")).total, 320);
+    deepStrictEqual(report.positions.map((position: { ticker: string }) => position.ticker), ["AAPL"]);
+    equal(report.positions[0].pnl, 320);
+    equal(report.total.pnl, 350);
+    equal(report.total.returnPct, 350 / 1200 * 100);
+    const allnumber = await call(h, "allnumber");
+    deepStrictEqual(allnumber.tickers, ["AAPL"]);
+    equal(allnumber.total, 350);
     h.runtime.view = async () => { throw new Error("Broker quote request failed"); };
     const result = await h.client.callTool({ name: "alltime", arguments: { userId: 1 } });
     equal(result.isError, true);

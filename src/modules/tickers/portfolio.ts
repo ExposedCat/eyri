@@ -1,4 +1,4 @@
-import { accountReturn } from "./account_return.ts";
+import { accountReturn, accountWorth } from "./account_return.ts";
 import { requireReportNumber } from "../../utils/report_value.ts";
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
@@ -27,6 +27,7 @@ import {
 } from "./decorations.ts";
 
 type BuildIntegratedTickerListArgs = {
+  accountPerformances?: IntegrationAccountPerformance[];
   positions: IntegrationPortfolioPosition[];
   request?: typeof fetch;
   currency?: string;
@@ -632,7 +633,7 @@ export function buildIntegratedSoldPerformances(
         ticker: order.ticker,
         currency: order.currency,
         quantity: order.quantity,
-        price: order.price ?? 0,
+        price: (order.price ?? 0) - (order.commission?.currency === order.currency ? order.commission.amount / order.quantity : 0),
         date: order.date,
         bucketName: transactionBuckets?.get(getOrderTransactionKey(order)) ??
           null,
@@ -659,7 +660,7 @@ export function buildIntegratedSoldPerformances(
         .reduce((sum, tax) => sum + tax.quantity, 0) ?? 0;
       const proceeds = wallet
         ? (wallet.netValue - charges) * fraction
-        : quantity * (order.price ?? 0);
+        : quantity * (order.price ?? 0) + (order.commission?.currency === order.currency ? order.commission.amount * fraction : 0);
       const realizedPnl = wallet ? wallet.realisedProfitLoss! * fraction
         : proceeds - quantity * lot.price;
       const cost = wallet ? proceeds - realizedPnl : quantity * lot.price;
@@ -945,6 +946,7 @@ export async function buildIntegratedTickerList({
 
 export async function buildIntegratedPerformanceList({
   positions,
+  accountPerformances = [],
   request,
   currency = "USD",
   priceOverrides,
@@ -956,19 +958,22 @@ export async function buildIntegratedPerformanceList({
   numberOnly = false,
   showCurrentValue = false,
 }: BuildIntegratedTickerListArgs & { showCurrentValue?: boolean }): Promise<string> {
-  if (positions.length === 0) {
+  if (positions.length === 0 && (!showCurrentValue || !accountPerformances.length)) {
     return "";
   }
 
   const { performances, totals, currentValue } = await buildIntegratedPositionReport({
     positions, request, currency, priceOverrides,
   });
+  const worth = showCurrentValue ? await accountWorth(requireReportNumber(currentValue, "current value"),
+    new Set(positions.map(position => position.integrationId)), accountPerformances, currency, request) : null;
+  const cash = worth?.cash ?? 0;
 
   const getValue = (performance: IntegratedPositionPerformance) => {
     return showCurrentValue ? performance.currentValue : performance.totalChange;
   };
   const totalValue = showCurrentValue
-    ? currentValue
+    ? worth!.value
     : totals.totalChange;
   const formatValue = (value: number | null) =>
     showCurrentValue
@@ -1008,7 +1013,7 @@ export async function buildIntegratedPerformanceList({
     formatValue(totalValue)
   }${periodSuffix(totals.elapsedPeriod)}`;
 
-  return [...lines, totalLine].join("\n\n");
+  return [...lines, ...(cash ? [`Cash ${formatMoney(cash, currency)}`] : []), totalLine].join("\n\n");
 }
 
 export async function buildIntegratedSoldReport({
@@ -1140,7 +1145,6 @@ export async function buildIntegratedAllTimeReport({
     change: number | null;
     openedAt: Date | null;
     endedAt: Date;
-    accountAdjustment?: boolean;
   };
   const merged = new Map<string, Performance>();
   const merge = (
@@ -1226,25 +1230,15 @@ export async function buildIntegratedAllTimeReport({
   if (bucketName !== null && accountPerformances.some(account => account.fundingSource !== "bucket_cash")) {
     throw new Error("Account funding cannot be assigned to an individual bucket");
   }
-  const ids = new Set<number>();
+  let fundedTradePnl = 0;
   for (const account of accountPerformances) {
-    if (ids.has(account.integrationId)) throw new Error("Duplicate account reconciliation");
-    ids.add(account.integrationId);
     if (!account.reportedComponents) {
       throw new Error("Account reconciliation requires the matching position/trade snapshot");
     }
-    if (account.fundingSource === "bucket_cash") continue;
-    const factor = account.currency === currency ? 1 : conversionFactor(account.currency, rates);
-    const reported = account.reportedComponents.reduce((sum, c) => {
-      const rate = c.currency === currency ? 1 : conversionFactor(c.currency, rates);
-      return { cost: sum.cost + c.cost * rate, pnl: sum.pnl + c.pnl * rate };
-    }, { cost: 0, pnl: 0 });
-    const key = "__account_adjustments";
-    display.set(key, merge(display.get(key), {
-      ticker: "Account adjustments", currency, cost: 0,
-      change: account.pnl * factor - reported.pnl,
-      openedAt: account.openedAt, endedAt: now, accountAdjustment: true,
-    }));
+    for (const component of account.reportedComponents) {
+      const factor = component.currency === currency ? 1 : conversionFactor(component.currency, rates);
+      fundedTradePnl += requireReportNumber(component.pnl, "funded trade P/L") * factor;
+    }
   }
   const performances = [...display.values()].sort(
     (a, b) =>
@@ -1254,7 +1248,7 @@ export async function buildIntegratedAllTimeReport({
   );
   const total = performances.reduce((total, next) => merge(total, next), {
     ticker: "",
-    currency: performances[0].currency,
+    currency,
     cost: 0,
     change: 0,
     openedAt: null,
@@ -1271,6 +1265,14 @@ export async function buildIntegratedAllTimeReport({
     }
   }
   const funding = accountReturn(accountPerformances, selectedIntegrationIds, rates, currency);
+  if (accountPerformances.length) {
+    total.change = funding.complete ? funding.pnl
+      : funding.pnl + requireReportNumber(total.change, "trade P/L") - fundedTradePnl;
+    for (const account of accountPerformances) {
+      if (!total.openedAt || account.openedAt < total.openedAt) total.openedAt = account.openedAt;
+    }
+    total.endedAt = now;
+  }
   return { performances, total, totalReturnPercentage: funding.percentage, returnUnavailableReason: funding.reason, accounts: accountPerformances };
 }
 
@@ -1310,9 +1312,6 @@ export async function buildIntegratedAllTimePerformanceList({
     returnPercentage?: number | null,
   ) => {
     const elapsed = getElapsedPeriod(performance.openedAt, performance.endedAt);
-    if (performance.accountAdjustment) {
-      return `${name} ${formatCurrencyChange(requireReportNumber(performance.change, `${name} P/L`), performance.currency)}`;
-    }
     if (performance.change === null) {
       throw new Error(`Cannot build report: P/L is unavailable for ${name}.`);
     }
@@ -1341,6 +1340,7 @@ export async function buildIntegratedAllTimePerformanceList({
 
 export async function buildIntegratedDailyPerformanceList({
   positions,
+  numberOnly = false,
   request,
   currency = "USD",
   priceOverrides,
@@ -1357,6 +1357,8 @@ export async function buildIntegratedDailyPerformanceList({
   const { performances, totals } = await buildIntegratedPositionReport({
     positions, request, currency, priceOverrides,
   }, true);
+  if (numberOnly) return buildNumberSummary(performances.map(item => item.position.ticker),
+    formatCurrencyChange(requireReportNumber(totals.dailyChange, "total daily P/L"), currency), tickerDecorations, tickerEmojiMappings);
 
   const lines = buildSeparatedChangeLines(
     performances,
@@ -1426,7 +1428,7 @@ function isCurrencyConversionOrder(order: IntegrationOrder) {
     return true;
   }
 
-  const [base, quote] = order.ticker.toUpperCase().split(".");
+  const [base, quote] = order.ticker.toUpperCase().split(/[./]/);
   return Boolean(
     base && quote && currencyCodes.has(base) && currencyCodes.has(quote),
   );

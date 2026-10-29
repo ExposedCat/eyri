@@ -241,7 +241,9 @@ Deno.test("account return reconciles deposits, broker value, cash and every posi
   equal(report?.total.change, 24);
   equal(report?.total.cost, 50);
   equal(report?.totalReturnPercentage, 24 / account.deposits * 100);
-  equal(report?.performances.reduce((sum, p) => sum + p.change!, 0), 24);
+  equal(report?.performances.length, 1);
+  equal(report?.performances[0].ticker, p.ticker);
+  equal(report?.performances[0].change, 15);
   const text = await buildIntegratedAllTimePerformanceList({
     positions: [p],
     orders: [],

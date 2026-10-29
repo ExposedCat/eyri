@@ -80,6 +80,7 @@ export async function excludeBucketCapital(
     return {
       ...account,
       fundingSource: "account_allocated",
+      sourceCashBalances: account.sourceCashBalances ?? account.ledgerCash,
       deposits: Math.max(0, deposits),
       netContributions: Math.max(0, deposits) - account.withdrawals,
       totalValue,

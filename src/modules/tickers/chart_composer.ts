@@ -20,6 +20,8 @@ import {
   switchChartBenchmarks,
 } from "./alltime_chart.ts";
 import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
+import { parseReportArgs, type ReportFilter } from "./performance_command.ts";
+import { isOptionPosition, isStockPosition } from "./portfolio.ts";
 
 type Session = {
   id: string;
@@ -46,19 +48,22 @@ const buttons = (
 };
 const pending = new Set<string>();
 
-async function datasetFor(ctx: CustomContext, bucketName: string | null) {
+async function datasetFor(ctx: CustomContext, bucketName: string | null,
+  selection: { kind: "perf" | "alltime" | "worth"; filter: ReportFilter } = { kind: "alltime", filter: null }) {
   const userId = ctx.from!.id;
   if (!hasPortfolioViewIntegrations(ctx.db, userId, bucketName)) {
     throw new Error(
       "Configure an integration before charting your all-time performance.",
     );
   }
-  const view = await fetchPortfolioView(ctx.db, userId, bucketName, { history: true, accountPerformance: true });
+  const view = await fetchPortfolioView(ctx.db, userId, bucketName, { history: true,
+    accountPerformance: selection.kind !== "perf" && selection.filter === null });
+  const matches = selection.filter === "stocks" ? isStockPosition : selection.filter === "options" ? isOptionPosition : () => true;
   const label = [ctx.from!.first_name, ctx.from!.last_name].filter(Boolean)
     .join(" ").slice(0, 60);
   return loadAllTimeDataset(
     ctx.db,
-    view,
+    { ...view, positions: view.positions.filter(matches), orders: view.orders.filter(matches), ...selection },
     userId,
     label,
   );
@@ -159,19 +164,22 @@ export function createChartComposer(
   });
   composer.command("chart", async (ctx) => {
     if (!ctx.dbEntities.user || !ctx.from || !ctx.chat) return;
-    const bucketName = typeof ctx.match === "string" && ctx.match.trim()
-      ? ctx.match.trim()
-      : null;
+    const selection = parseReportArgs(ctx.match, "alltime");
+    if (!selection) {
+      await ctx.reply("Use /chart [perf|alltime|worth] [s/o/stocks/options] [BUCKET].");
+      return;
+    }
+    const { bucketName } = selection;
     if (
       bucketName &&
       (!/^[A-Za-z][A-Za-z0-9_]{0,19}$/.test(bucketName) ||
         !getUserBucket(ctx.db, ctx.from.id, bucketName))
     ) {
-      await ctx.reply("Bucket not found. Use /chart or /chart BUCKET.");
+      await ctx.reply("Bucket not found. Use /chart [perf|alltime|worth] [s/o/stocks/options] [BUCKET].");
       return;
     }
     try {
-      const dataset = await runtime.dataset(ctx, bucketName);
+      const dataset = await runtime.dataset(ctx, bucketName, { kind: selection.kind as "perf" | "alltime" | "worth", filter: selection.filter });
       const currency = ctx.dbEntities.user.currency ?? "USD";
       if (currency !== "USD") {
         const rates = await fetchConversionRates(["USD"], currency, runtime.request);
@@ -220,7 +228,7 @@ export function createChartComposer(
       return;
     }
     const datasets = JSON.parse(session.datasets) as AllTimeDataset[];
-    if (datasets.some((dataset) => dataset.fundingReturnVersion !== 1)) {
+    if (datasets.some((dataset) => dataset.fundingReturnVersion !== 3)) {
       await ctx.answerCallbackQuery({
         text: "This chart uses an older return calculation. Create a new chart with /chart.",
         show_alert: true,
@@ -267,7 +275,7 @@ export function createChartComposer(
       } else {
         // Only the clicker's accounts are fetched; existing curves and purchase
         // schedules remain the snapshots their owners chose to publish.
-        const added = await runtime.dataset(ctx, null);
+        const added = await runtime.dataset(ctx, null, { kind: datasets[0].kind ?? "alltime", filter: datasets[0].filter ?? null });
         const original = datasets[0].points;
         const start = original[0].date;
         const end = original.at(-1)!.date;

@@ -56,6 +56,17 @@ function market(
   };
 }
 
+Deno.test("broker listing identity bypasses an old cached resolution for an unrelated same-currency ticker", async () => {
+  const db = new Database(":memory:");
+  const calls: URL[] = [];
+  const cache = new YahooHistoryCache(db, market([], calls), () => new Date("2025-01-06"));
+  try {
+    equal(await cache.resolve({ ticker: "CURE", currency: "USD" }, "2025-01-02"), "CURE");
+    equal(await cache.resolve({ ticker: "CURE", currency: "USD", exchange: "LSEETF" }, "2025-01-02"), "CURE.L");
+    ok(calls.some(url => url.pathname.endsWith("/CURE.L")));
+  } finally { db.close(); }
+});
+
 Deno.test("Yahoo range coverage finds only missing prefixes, interior gaps and tails", () => {
   deepStrictEqual(
     missingRanges("2025-01-01", "2025-01-10", [

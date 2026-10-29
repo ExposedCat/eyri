@@ -35,6 +35,9 @@ export function defaultYahooSymbols(
   const option = yahooOptionContract(ticker);
   if (option) return [instrument.yahooSymbol ?? option.symbol];
   if (ticker.startsWith("+")) return candidates;
+  if (["LSE", "LSEETF"].includes(instrument.exchange?.toUpperCase() ?? "")) {
+    candidates.push(ticker.endsWith(".L") ? ticker : `${ticker}.L`);
+  }
   const mapping = DEFAULT_MAPPINGS[`${ticker}:${currency}`];
   if (mapping) candidates.push(mapping);
   for (const rule of DEFAULT_PATTERNS) {

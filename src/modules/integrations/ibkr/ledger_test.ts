@@ -1,4 +1,4 @@
-import { equal, match, ok, rejects, throws } from "node:assert/strict";
+import { deepStrictEqual, equal, match, ok, rejects, throws } from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { Database } from "@db/sqlite";
 import { EventName, type IBApi } from "@stoqey/ib";
@@ -81,6 +81,10 @@ Deno.test("IBKR funding parses external flows with historical FX and validates i
   equal(parsed.fundingHistory[0].date, "2026-01-03");
   equal(parsed.fundingHistory[0].amount, 120);
   equal(parsed.fundingHistory[1].amount, -20);
+  equal(parsed.cashHistory.length, 4);
+  deepStrictEqual(parsed.cashHistory[0], { date: "2026-01-03", currency: "EUR", amount: 100, type: "Deposits/Withdrawals", reference: "in" });
+  equal(parsed.cashHistory[2].type, "Dividends");
+  equal(parsed.cashHistory[3].amount, -2);
   equal(parsed.endingCash, 300);
   equal(parsed.openedAt, "2025-01-01T00:00:00.000Z");
   throws(

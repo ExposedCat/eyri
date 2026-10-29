@@ -37,6 +37,7 @@ export {
 } from "./history.ts";
 export type HistoricalInstrument = {
   ticker: string;
+  exchange?: string;
   currency: string;
   yahooSymbol?: string;
   isin?: string;
@@ -193,6 +194,7 @@ export class YahooHistoryCache {
       instrument.currency.toUpperCase(),
       instrument.isin ?? "",
       instrument.yahooSymbol ?? "",
+      ...(instrument.exchange ? ["exchange", instrument.exchange.toUpperCase()] : []),
       // Changing a global override must select its own cached resolution.
       ...(globalMapping
         ? ["global", globalMapping]

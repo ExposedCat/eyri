@@ -18,6 +18,7 @@ export function scaleOrder(
   return {
     ...order,
     quantity: order.quantity * share,
+    ...(order.commission ? { commission: { ...order.commission, amount: order.commission.amount * share } } : {}),
     ...(order.walletImpact
       ? {
         walletImpact: {

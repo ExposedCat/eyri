@@ -134,6 +134,7 @@ export function buildFreedom24AccountPerformance(
   const flowTotals = new Map<string, number>();
   let deposits = 0, withdrawals = 0;
   const fundingHistory: { date: string; amount: number }[] = [];
+  const cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]> = [];
   let fundingIncludesTransfers = false;
   for (const row of flowRows) {
     if (
@@ -164,6 +165,8 @@ export function buildFreedom24AccountPerformance(
       (flowTotals.get(nativeCurrency) ?? 0) + nativeAmount,
     );
     const type = String(row.type);
+    cashHistory.push({ date: date(row.pay_d, "cash movement pay date").toISOString().slice(0, 10),
+      currency: nativeCurrency, amount: nativeAmount, type, reference: id });
     if (incomeTypes.has(type)) continue;
     if (!fundingTypes.has(type)) {
       throw new Error(`Unsupported Freedom24 cash movement type: ${type}`);
@@ -265,6 +268,7 @@ export function buildFreedom24AccountPerformance(
     withdrawals,
     cash,
     ledgerCash,
+    cashHistory,
     openedAt,
     historyThrough: now,
     positionValue: totalValue - cash,

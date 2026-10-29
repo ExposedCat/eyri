@@ -54,6 +54,7 @@ export type IbkrFundingBatch = {
   deposits: number;
   withdrawals: number;
   fundingHistory: { date: string; amount: number }[];
+  cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]>;
   startingCash: number;
   endingCash: number;
   startingValue: number;
@@ -191,6 +192,7 @@ export function parseIbkrFundingBatch(
   const seen = new Map<string, string>();
   let deposits = 0, withdrawals = 0;
   const fundingHistory: { date: string; amount: number }[] = [];
+  const cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]> = [];
   for (const { attrs } of getXmlElements(body, ["CashTransaction"])) {
     if (attrs.accountId && attrs.accountId !== header.accountId) {
       throw new Error(
@@ -202,8 +204,7 @@ export function parseIbkrFundingBatch(
         "IBKR Cash Transactions must use detail rows, not summaries",
       );
     }
-    if (otherTypes.has(attrs.type)) continue;
-    if (!externalTypes.has(attrs.type)) {
+    if (!otherTypes.has(attrs.type) && !externalTypes.has(attrs.type)) {
       throw new Error(
         `Unsupported IBKR cash transaction type: ${attrs.type || "missing"}`,
       );
@@ -234,6 +235,10 @@ export function parseIbkrFundingBatch(
     }
     seen.set(id, serialized);
     const native = requiredNumber(attrs.amount, "cash transaction amount");
+    if (!/^[A-Z]{3}$/.test(attrs.currency)) throw new Error("Invalid IBKR cash transaction currency");
+    cashHistory.push({ date: at.toISOString().slice(0, 10), currency: attrs.currency,
+      amount: native, type: attrs.type, reference: id });
+    if (otherTypes.has(attrs.type)) continue;
     const rate = attrs.currency === currency
       ? 1
       : requiredNumber(attrs.fxRateToBase, "cash transaction FX Rate to Base");
@@ -312,6 +317,7 @@ export function parseIbkrFundingBatch(
     deposits,
     withdrawals,
     fundingHistory,
+    cashHistory,
     startingCash: requiredNumber(cash.startingCash, "starting cash"),
     endingCash: requiredNumber(cash.endingCash, "ending cash"),
     startingValue: requiredNumber(nav.startingValue, "starting account value"),
@@ -362,14 +368,14 @@ export async function fetchIbkrAccountPerformance(
       } | undefined;
     const ttl = +range.to === +latestRange.to ? 60_000 : 86_400_000;
     const batch: IbkrFundingBatch =
-      cached && Date.now() - cached.fetched_at < ttl && Array.isArray(JSON.parse(cached.payload).fundingHistory)
+      cached && Date.now() - cached.fetched_at < ttl && Array.isArray(JSON.parse(cached.payload).cashHistory)
         ? JSON.parse(cached.payload)
         : parseIbkrFundingBatch(
           await requestStatement(token, queryId, range),
           range,
           snapshot.accountId,
         );
-    if (!cached || Date.now() - cached.fetched_at >= ttl || !Array.isArray(JSON.parse(cached.payload).fundingHistory)) {
+    if (!cached || Date.now() - cached.fetched_at >= ttl || !Array.isArray(JSON.parse(cached.payload).cashHistory)) {
       database.prepare(
         "INSERT OR REPLACE INTO ibkr_funding_batches VALUES (?,?,?,?,?,?)",
       )
@@ -414,6 +420,7 @@ export async function fetchIbkrAccountPerformance(
     previous: IbkrFundingBatch | undefined;
   let deposits = 0, withdrawals = 0;
   const fundingHistory: { date: string; amount: number }[] = [];
+  const cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]> = [];
   for (const range of ranges) {
     const batch = await loadBatch(range);
     if (
@@ -444,6 +451,7 @@ export async function fetchIbkrAccountPerformance(
     deposits += batch.deposits;
     withdrawals += batch.withdrawals;
     fundingHistory.push(...batch.fundingHistory);
+    cashHistory.push(...batch.cashHistory);
     if (range.from <= new Date(batch.fundedAt ?? batch.openedAt)) {
       if (
         Math.abs(batch.startingValue) > .005 ||
@@ -478,8 +486,9 @@ export async function fetchIbkrAccountPerformance(
         deposits,
         withdrawals,
         fundingHistory,
+        cashHistory,
         netContributions,
-        ledgerCash: { [snapshot.currency]: snapshot.cash },
+        ledgerCash: snapshot.cashByCurrency ?? { [snapshot.currency]: snapshot.cash },
         openedAt: new Date(batch.openedAt),
         historyThrough: new Date(latest.through),
         positionValue: snapshot.totalValue - snapshot.cash,

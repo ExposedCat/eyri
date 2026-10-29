@@ -1,5 +1,40 @@
 import { deepStrictEqual, equal } from "node:assert/strict";
-import { getFlexStatement, getFlexStatementRange } from "./flex.ts";
+import { ensureFlexCommissions, getFlexStatement, getFlexStatementRange, readFlexOrders } from "./flex.ts";
+import { Database } from "@db/sqlite";
+
+Deno.test("legacy Flex fills backfill execution fees without changing bucket identity or double counting fills", async () => {
+  const db = new Database(":memory:");
+  const integration = { id: 1, userId: 1, kind: "ibkr" as const,
+    credentials: { instanceUrl: "tcp://localhost:4001", flexToken: "token", flexQueryId: "trades" }, createdAt: new Date(), updatedAt: new Date() };
+  try {
+    readFlexOrders(db, integration);
+    db.prepare("INSERT INTO ibkr_flex_trades(integration_id,query_id,trade_key,ticker,date,quantity,price,currency,asset_category,synced_at) VALUES(1,'trades','legacy','A','2025-01-01',2,10,'EUR','STK','2025-01-02')").run();
+    let calls = 0;
+    await ensureFlexCommissions(db, integration, async () => { calls++; return '<FlexQueryResponse><Trade symbol="A" tradeDate="20250101" quantity="2" buySell="BUY" tradePrice="10" currency="EUR" assetCategory="STK" ibCommission="-1" ibCommissionCurrency="USD" /></FlexQueryResponse>'; });
+    const orders = readFlexOrders(db, integration);
+    equal(orders.length, 1);
+    equal(orders[0].price, 10);
+    deepStrictEqual(orders[0].commission, { amount: -1, currency: "USD" });
+    await ensureFlexCommissions(db, integration, async () => { calls++; throw new Error("Unexpected request"); });
+    equal(calls, 1);
+  } finally { db.close(); }
+});
+
+Deno.test("missing commission fields remain unknown, without breaking existing position reports or repeatedly downloading", async () => {
+  const db = new Database(":memory:");
+  const integration = { id: 1, userId: 1, kind: "ibkr" as const,
+    credentials: { instanceUrl: "tcp://localhost:4001", flexToken: "token", flexQueryId: "trades" }, createdAt: new Date(), updatedAt: new Date() };
+  try {
+    readFlexOrders(db, integration);
+    db.prepare("INSERT INTO ibkr_flex_trades(integration_id,query_id,trade_key,ticker,date,quantity,price,currency,asset_category,synced_at) VALUES(1,'trades','legacy','A','2025-01-01',2,10,'USD','STK','2025-01-02')").run();
+    let calls = 0;
+    const query = async () => { calls++; return '<FlexQueryResponse><Trade symbol="A" tradeDate="20250101" quantity="2" buySell="BUY" tradePrice="10" currency="USD" /></FlexQueryResponse>'; };
+    await ensureFlexCommissions(db, integration, query);
+    await ensureFlexCommissions(db, integration, query);
+    equal(calls, 1);
+    equal(readFlexOrders(db, integration)[0].commission, undefined);
+  } finally { db.close(); }
+});
 
 function getRangeDates(batchIndex: number, now: string) {
   const range = getFlexStatementRange(batchIndex, new Date(now));

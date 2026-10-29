@@ -16,6 +16,42 @@ const purchases = [
 ];
 const near = (actual: number, expected: number) => ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
 
+Deno.test("foreign-funded benchmark includes currency gains in the same basis as account returns", () => {
+  // 50,000 CZK bought $1,000. The ETF stays flat while USD rises to 60 CZK.
+  // Account P/L is 10,000 CZK, displayed as $166.67, on $833.33 of deposits.
+  const flat = { ...history, bars: history.bars.map(bar => ({ ...bar, close: 100 })) };
+  const funding = [{ date: "2026-01-02", amountUsd: 1000, contributionUsd: 50000 / 60, valuationCurrency: "CZK" }];
+  const valuations = { CZK: [
+    { date: "2026-01-02", factor: 50 / 60 },
+    { date: "2026-04-01", factor: 1 },
+    { date: "2026-05-01", factor: 1 },
+  ] };
+  // Daily observations also prevent treating today's FX gain as a gain on day one.
+  for (let day = Date.parse("2026-01-03"); day < Date.parse("2026-05-01"); day += 86400000) {
+    const date = new Date(day).toISOString().slice(0, 10);
+    if (!valuations.CZK.some(row => row.date === date)) valuations.CZK.push({ date, factor: date < "2026-04-01" ? 50 / 60 : 1 });
+  }
+  valuations.CZK.sort((a, b) => a.date.localeCompare(b.date));
+  const result = buildChartBenchmark(flat, funding, "2026-01-02", "2026-05-01", "sp500", valuations);
+  near(result.points[0].gain, 0);
+  near(result.points.at(-1)!.gain, 10000 / 60);
+  near(result.points.at(-1)!.percentage, 20);
+  // The old conversion bought only $833.33 and incorrectly reported zero gain.
+  near(buildChartBenchmark(flat, [{ ...funding[0], amountUsd: 50000 / 60, valuationCurrency: undefined }], "2026-01-02", "2026-05-01").points.at(-1)!.gain, 0);
+  // Cash-funded bucket allocations remove the same USD cost and ETF cash.
+  const allocated = buildChartBenchmark(flat, [...funding,
+    { date: "2026-04-01", amountUsd: -100, allocation: true, valuationCurrency: "CZK" },
+  ], "2026-01-02", "2026-05-01", "sp500", valuations);
+  near(allocated.points.at(-1)!.gain, 10000 / 60);
+  const withdrawn = buildChartBenchmark(flat, [...funding,
+    { date: "2026-04-01", amountUsd: -100, contributionUsd: -80, valuationCurrency: "CZK" },
+  ], "2026-01-02", "2026-05-01", "sp500", valuations);
+  near(withdrawn.points.at(-1)!.gain, 10000 / 60 - 20);
+  for (const contributionUsd of [NaN, Infinity, -1, 0]) {
+    throws(() => buildChartBenchmark(flat, [{ ...funding[0], contributionUsd }], "2026-01-02", "2026-05-01"), /Invalid.*purchase/);
+  }
+});
+
 Deno.test("personal benchmark invests each purchase amount on its date: 10%, then 5%, then 15.5%", () => {
   const result = buildChartBenchmark(history, purchases, "2026-01-02", "2026-05-01");
   equal(result.label, "If S&P 500 (CSPX.L)");

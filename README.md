@@ -157,6 +157,10 @@ continuity and reconciles Cash Transactions against Cash Report and Change in NA
 Requests using the same token are paced together, including trade imports.
 Historical transaction FX rates convert contributions into account base currency;
 Gateway NetLiquidation and TotalCashValue supply the live balance and cash.
+Native cash transactions, including dividends and withholding, are retained for
+historical reconstruction. The trade Flex Query must include commissions for
+account cash charts. Existing imported fills backfill commission fields on demand;
+missing fees are never silently replaced with zero for account-ledger charts.
 Flex only publishes completed days. If live cash differs from the latest statement,
 the report fails with an explicit reconciliation error until the next daily statement;
 it does not treat an unverified same-day deposit as profit. Missing sections,
@@ -192,8 +196,9 @@ currency, realized result, historical FX rate, net cash and taxes. `/sold` uses
 the broker's supplied realized P/L; this metric is distinct from net account
 return. Partial bucket sales allocate a fill's broker result proportionally to
 the selected FIFO quantity. This cannot reconstruct exact tax-lot FX results.
-Historical chart points and partial open FIFO holdings still use native trade
-costs; historical chart points are estimates, not a historical cash ledger.
+Historical holdings use execution wallet costs where available and daily market
+prices. The complete CSV cash ledger supplies dated trade cash, conversions,
+income and tax movements without deducting execution charges a second time.
 
 For whole Trading 212 accounts, `/alltime` and `/allnumber` use current broker
 account value minus external net contributions. The percentage denominator is
@@ -202,13 +207,15 @@ distinguish true deposits/withdrawals from internal transfers, conversions and
 tax adjustments that the cash API labels as deposits. Cash and share quantities
 must reconcile with fresh broker data, and imported execution IDs must match the
 export. Execution net/gross totals already contain fees and taxes; these are
-never deducted twice. An explicit **Account adjustments** row reconciles the
-holding and sold-trade rows with account return, including cash FX, dividends,
-fees, tax adjustments and differences in broker valuation endpoints. MCP reports
-also expose the account value, funding and separate position/summary values.
-The live chart endpoint uses the same reconciled monetary total as `/alltime`;
-its percentage uses net contributions including cash. Earlier chart points retain
-the estimate described above.
+never deducted twice. Instrument rows show holding and sold-trade P/L. The Total
+uses account value and funding directly, including cash, FX, dividends and fees.
+Funded P/L is calculated in the broker account's base currency before display
+conversion. For example, a CZK-funded account displayed in USD includes currency
+gains that USD instrument price P/L does not, so the instrument rows need not sum
+to the account Total.
+MCP reports also expose the account value, funding and separate position/summary values.
+The lifetime chart endpoint uses the same monetary total and gross-deposit return
+as `/alltime`. Earlier account points replay the dated cash and execution ledger.
 
 Exports are cached while event history is unchanged and cash/share checks pass.
 On first use or after new activity, T212 may need a minute to prepare an export;
@@ -418,17 +425,18 @@ current holdings, or the final sale for fully sold holdings. Unknown purchase da
 omit the optional holding period and monthly rates. Missing required prices, costs,
 daily P/L or RSU quotes fails the relevant report instead of showing partial totals.
 
-Use `/number` or `/allnumber` for the same totals as `/perf` or `/alltime`
-in a compact format: available ticker icons on one line, a separator, and only
-the total dollar gain or loss. Icons are deduplicated; tickers without an icon
-are omitted from the icon line but still count toward the total. Both commands
-accept an optional bucket name.
+Use `/number [perf|alltime|worth|dpnl] [s|stocks|o|options] [BUCKET]` for
+the selected report's exact total as ticker icons, a separator, and one number.
+The default is `perf`. `/allnumber` and `/worthnumber` remain aliases for
+`/number alltime` and `/number worth`. Icons are deduplicated; missing icons do
+not exclude a ticker from the total. Options includes warrants.
 
-Use `/worth` for the same layout and percentage returns as `/perf`, with current
-holding values in your selected currency and their total replacing dollar gains or losses. `/worthnumber`
-shows the same ticker icons and separator as `/number`, followed by only the current
-total value in your selected currency. Both commands accept an optional bucket name and use the same
-holdings, including any included buckets.
+Use `/worth` for current holding values plus a separate Cash line and their total
+in the selected currency. Per-holding percentages retain `/perf`'s open-position
+meaning. Complete-account totals use broker equity, matching `/alltime`'s account
+valuation, including any broker accruals. Asset-filtered worth reports contain only the selected holdings, without
+assigning account cash to stocks or options. Included buckets retain their cash
+from sold positions. `/number worth` and `/worthnumber` use exactly the same total.
 
 ## Portfolio chart
 
@@ -444,17 +452,25 @@ If a required exchange rate is unavailable, the command reports an error.
 Charts render directly in Deno using Chart.js and `@napi-rs/canvas` from npm.
 The container includes DejaVu Sans fonts; local runs use installed system fonts.
 
-## All-time chart
+## Report charts
 
-Use `/chart` (or `/chart BUCKET`) for a daily time series of current plus realized
-performance. Cash-funded bucket views show percentage returns against cumulative
-assumed contributions. Complete-account histories show reconstructed monetary P/L
-because daily account cash balances are unavailable; their legend shows the current
-funding-based return. The monetary endpoint matches `/alltime`.
-Sales retain realized gains, weekends carry
-the last close, and splits adjust historical quantities and unit costs. Historical
-trade P/L uses the latest exchange rates and excludes historical FX effects,
-dividends and fees; current reconciled account P/L includes those adjustments.
+Use `/chart [perf|alltime|worth] [s|stocks|o|options] [BUCKET]` for a daily
+chart of the corresponding report. The default is `alltime`; `/chart BUCKET`
+continues to work. The live endpoint comes from the same calculation as the text
+report and `/number KIND`.
+
+`perf` shows open-position P/L and return on the remaining book cost. Sales remove
+the sold lots' open P/L. `alltime` retains realized results and reconstructs cash
+from native deposits, withdrawals, executions, currency conversions, dividends,
+taxes and fees, using daily FX. Reinvestment never adds deposits. `worth` plots
+holdings plus cash as a monetary value, including changes from contributions.
+Cash-funded buckets use the agreed fresh-cash purchase model and keep sale proceeds.
+Filtered reports use only selected instruments and do not allocate account cash.
+Cash balances and held quantities must reconcile before a ledger chart is published.
+Missing cash, fee or FX history fails explicitly instead of substituting a trade-only
+curve. Weekends carry the last close; splits preserve quantities and cost basis.
+IBKR contract exchange and ISIN metadata distinguish unrelated listings sharing a
+ticker, including London CURE versus the US leveraged ETF.
 
 The chart is sent as a Telegram photo using the portfolio's dark background.
 Single-portfolio charts keep a solid mint actual-performance line above and below
@@ -467,15 +483,24 @@ For complete accounts, the dashed line invests each external deposit into fracti
 **CSPX.L**, the accumulating USD iShares S&P 500 ETF, at that date's closing price
 (or the preceding close). Withdrawals sell hypothetical units and remain part of
 lifetime proceeds. Actual purchases and reinvestments add no benchmark capital
-for these accounts. Bucket benchmarks instead receive fresh cash on each selected
+for these accounts. Non-USD deposits buy ETF shares using their funding-date FX
+rate. Daily ETF values include currency movement in the broker account's base
+currency, then convert to the display currency, matching the account Total's
+funding basis. Both daily FX rates and contribution values are frozen with the
+chart for index switching; unavailable historical FX omits the benchmark rather
+than substituting today's rate. Bucket benchmarks instead receive fresh cash on each selected
 purchase date, scaled by the user's share; bucket sale proceeds remain cash.
 Allocations to excluded owned buckets reduce the remaining account's benchmark
 capital on their purchase dates; they are distinct from external withdrawals.
 Benchmark return is `(remaining value + withdrawals - deposits) / deposits * 100`.
 Benchmarks require complete dated external funding and are omitted when it is
 unavailable or the hypothetical fund cannot cover a withdrawal. Existing chart
-sessions made with purchase-cost returns must be recreated with `/chart`.
+sessions made with purchase-cost returns or the previous funding FX calculation
+must be recreated with `/chart`.
 The two curves and monetary gains appear together in the participant legend.
+The benchmark is available for `alltime` and `worth`; worth compares account
+values rather than profits. `perf` charts the open holdings without an account-funding
+benchmark. Compare retains the original chart's kind and asset filter.
 The **S&P 500** button beside Compare switches the index to **Momentum**, using
 the USD **IUMO.L** ETF with the same external funding schedule. Clicking
 **Momentum** switches back to S&P 500. The button names the current selection,
@@ -589,10 +614,10 @@ VSCO/VSCO.US joins VSXY/VSXY.US using Yahoo's combined VSXY history. APH option
 splits on June 12, 2024 and September 3, 2026 double contract quantities and halve
 strikes and unit costs. The chart stitches the predecessor strike's historical
 premiums into the adjusted contract, preserving original bucket assignments.
-Stock holdings with no recorded purchase are assumed to be free, with a $0
-purchase price. Their full current value counts as gain at the chart's current
-endpoint; no earlier acquisition date is assumed. This chart-only fallback does
-not add broker trades or change bucket assignments. Other instruments without
+Stock holdings with no recorded purchase start at the current chart endpoint;
+no earlier acquisition date is assumed. Their current book cost and value match
+the corresponding report. This chart fallback does not add broker trades or
+change bucket assignments. Other instruments without
 matching purchases report missing purchase history rather than suggesting an
 unrelated `/yahoo` mapping.
 

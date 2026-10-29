@@ -2,7 +2,7 @@ import { Composer, InputFile } from "grammy";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts";
 import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
-import { parsePerformanceArgs } from "./performance_command.ts";
+import { parsePerformanceArgs, parseReportArgs } from "./performance_command.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { splitMessageLines } from "../bot/message.ts";
 import { showRichMessage } from "../bot/rich.ts";
@@ -1142,9 +1142,13 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
     return;
   }
 
-  const args = parsePerformanceArgs(ctx.match);
+  const hasCommand = (commands: string | string[]): boolean => ctx.hasCommand(commands);
+  const defaultKind = hasCommand(["alltime", "allnumber"]) ? "alltime"
+    : hasCommand(["worth", "worthnumber"]) ? "worth" : hasCommand("dpnl") ? "dpnl" : "perf";
+  const args = hasCommand("number") ? parseReportArgs(ctx.match, defaultKind, true)
+    : (() => { const parsed = parsePerformanceArgs(ctx.match); return parsed ? { ...parsed, kind: defaultKind } : null; })();
   if (!args) {
-    await ctx.reply("Use /perf, /dpnl, /alltime, or /worth [s/o/stocks/options] [BUCKET].");
+    await ctx.reply("Use /perf, /dpnl, /alltime, or /worth [s/o/stocks/options] [BUCKET], or /number [perf|alltime|worth|dpnl] [s/o/stocks/options] [BUCKET].");
     return;
   }
   const bucketName = await resolveBucketName(ctx, args.bucketName);
@@ -1173,10 +1177,10 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
 
   try {
     const currency = ctx.dbEntities.user.currency ?? "USD";
-    const isAllTime = ctx.hasCommand(["alltime", "allnumber"]);
+    const isAllTime = args.kind === "alltime";
     const numberOnly = ctx.hasCommand(["number", "allnumber", "worthnumber"]);
-    const showCurrentValue = ctx.hasCommand(["worth", "worthnumber"]);
-    const isDaily = ctx.hasCommand("dpnl");
+    const showCurrentValue = args.kind === "worth";
+    const isDaily = args.kind === "dpnl";
     const matchesFilter = args.filter === "stocks" ? isStockPosition
       : args.filter === "options" ? isOptionPosition : () => true;
     let performanceList: string;
@@ -1194,14 +1198,17 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
         formatTicker,
       });
     } else {
-      const positions = (await fetchBucketedPositions(ctx, bucketName)).filter(matchesFilter);
+      const worthView = showCurrentValue && args.filter === null
+        ? await fetchPortfolioView(ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true, accountPerformance: true }) : null;
+      const positions = (worthView?.positions ?? await fetchBucketedPositions(ctx, bucketName)).filter(matchesFilter);
       performanceList = isDaily
-        ? await buildIntegratedDailyPerformanceList({ currency, positions, ...preferences, formatTicker })
+        ? await buildIntegratedDailyPerformanceList({ currency, positions, numberOnly, ...preferences, formatTicker })
         : await buildIntegratedPerformanceList({
           currency,
           positions,
           numberOnly,
           showCurrentValue,
+          accountPerformances: worthView?.accountPerformances,
           ...preferences,
           formatTicker,
         });

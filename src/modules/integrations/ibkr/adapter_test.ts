@@ -1,7 +1,10 @@
 import { deepStrictEqual, equal, throws } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import type { Integration } from "../../database/integration.ts";
-import { ibkrAdapter } from "./adapter.ts";
+import type { IntegrationPortfolioPosition } from "../types.ts";
+import { enrichContractIdentity, ibkrAdapter } from "./adapter.ts";
+import { EventEmitter } from "node:events";
+import { EventName, type IBApi } from "@stoqey/ib";
 import {
   buildAllTimeSeries,
   instrumentKey,
@@ -15,6 +18,30 @@ const integration: Integration = {
   createdAt: new Date("2026-10-01"),
   updatedAt: new Date("2026-10-01"),
 };
+
+Deno.test("IBKR preserves and caches the actual contract exchange and ISIN for ambiguous symbols", async () => {
+  const db = new Database(":memory:");
+  let calls = 0;
+  class Api extends EventEmitter {
+    reqContractDetails(id: number) {
+      calls++;
+      this.emit(EventName.contractDetails, id, { contract: { primaryExch: "LSEETF" }, secIdList: [{ tag: "ISIN", value: "IE000B9PQW54" }] });
+      this.emit(EventName.contractDetailsEnd, id);
+    }
+  }
+  const api = new Api();
+  try {
+    const first = { ticker: "CURE", assetCategory: "STK", conId: 583966268 } as IntegrationPortfolioPosition & { conId: number };
+    await enrichContractIdentity(db, api as unknown as IBApi, [first], 100);
+    equal(first.exchange, "LSEETF");
+    equal(first.isin, "IE000B9PQW54");
+    const second = { ticker: "CURE", assetCategory: "STK", conId: 583966268 } as IntegrationPortfolioPosition & { conId: number };
+    await enrichContractIdentity(db, api as unknown as IBApi, [second], 100);
+    equal(second.exchange, "LSEETF");
+    equal(calls, 1);
+    equal(api.listenerCount(EventName.contractDetails), 0);
+  } finally { db.close(); }
+});
 
 async function setup() {
   const db = new Database(":memory:");

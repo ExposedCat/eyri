@@ -1,5 +1,34 @@
-import { deepStrictEqual, equal, ok, rejects } from "node:assert/strict";
-import { fetchConversionRates, fetchUsdConversionRates } from "./exchange_rates.ts";
+import { deepStrictEqual, equal, ok, rejects, throws } from "node:assert/strict";
+import { fetchConversionRates, fetchHistoricalUsdConversionRates, fetchUsdConversionRates, historicalUsdFactor } from "./exchange_rates.ts";
+
+Deno.test("historical funding FX uses the last available date, never a future or stale rate", async () => {
+  const rates = await fetchHistoricalUsdConversionRates(["CZK", "GBP", "GBX", "USD"], "2026-01-03", "2026-01-05", async input => {
+    const url = new URL(String(input));
+    equal(url.searchParams.get("from"), "2025-12-27");
+    equal(url.searchParams.get("to"), "2026-01-05");
+    equal(url.searchParams.get("quotes"), "czk,gbp");
+    return Response.json([
+      { base: "USD", quote: "CZK", date: "2026-01-05", rate: 25 },
+      { base: "USD", quote: "CZK", date: "2026-01-02", rate: 20 },
+      { base: "USD", quote: "GBP", date: "2026-01-02", rate: .5 },
+    ]);
+  });
+  equal(historicalUsdFactor(rates, "CZK", "2026-01-03"), .05);
+  equal(historicalUsdFactor(rates, "CZK", "2026-01-05"), .04);
+  equal(historicalUsdFactor(rates, "GBX", "2026-01-03"), .02);
+  equal(historicalUsdFactor(rates, "USD", "1900-01-01"), 1);
+  throws(() => historicalUsdFactor(rates, "CZK", "2026-01-01"), /unavailable/);
+  throws(() => historicalUsdFactor(rates, "CZK", "2026-01-13"), /unavailable/);
+  deepStrictEqual(await fetchHistoricalUsdConversionRates(["USD"], "2026-01-03", "2026-01-05", () => { throw new Error("Unexpected request"); }), new Map());
+});
+
+Deno.test("historical funding FX rejects malformed, missing, duplicate or mismatched currency data", async () => {
+  const row = { base: "USD", quote: "CZK", date: "2026-01-02", rate: 20 };
+  for (const data of [{}, [], [row, row], [{ ...row, rate: 0 }], [{ ...row, quote: "EUR" }], [{ ...row, date: "2026-01-06" }]]) {
+    await rejects(fetchHistoricalUsdConversionRates(["CZK"], "2026-01-03", "2026-01-05", async () => Response.json(data)), /historical exchange rates/i);
+  }
+  await rejects(fetchHistoricalUsdConversionRates(["CZK"], "2026-01-03", "2026-01-05", async () => new Response(null, { status: 503 })), /HTTP 503/);
+});
 
 Deno.test("report conversion handles cross rates and pence as source or target", async () => {
   const request: typeof fetch = async (input) => {

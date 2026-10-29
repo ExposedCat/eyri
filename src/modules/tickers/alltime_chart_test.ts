@@ -817,7 +817,7 @@ Deno.test("a current option holding with no purchase is a history error, not a Y
   }
 });
 
-Deno.test("a referral stock with no purchase adds its full value at zero cost only at the current endpoint", async () => {
+Deno.test("a referral stock with no purchase starts at the current endpoint and preserves the text report's book cost", async () => {
   const db = new Database(":memory:");
   const buy = trade(1, 100, "2025-01-02");
   const gift = {
@@ -844,7 +844,7 @@ Deno.test("a referral stock with no purchase adds its full value at zero cost on
     } as never);
     deepStrictEqual(calls, [["AAPL", "2025-01-02"], ["IBKR", "2025-01-06"]]);
     equal(dataset.points.find((p) => p.date === "2025-01-05")!.gain, 10);
-    equal(dataset.points.at(-1)!.gain, 38.09);
+    equal(dataset.points.at(-1)!.gain, 33.09);
     equal(dataset.points.at(-1)!.percentage, null);
     equal(args.orders.length, 1);
     equal(gift.totalInput, 5);
@@ -1019,7 +1019,9 @@ Deno.test("bucket charts never invent benchmark deposits from USD/GBP/GBX/option
       }],
       transactionBuckets: new Map([usd, gbp, gbx, option].map(o => [getOrderTransactionKey(o), "Core"])),
       bucketName: "Core", now,
-    }, 1, "Person", cache as never, async () => Response.json({ base: "USD", quote: "GBP", rate: .5 }));
+    }, 1, "Person", cache as never, async input => Response.json(new URL(String(input)).pathname === "/v2/rates"
+      ? [{ date: "2025-01-01", base: "USD", quote: "GBP", rate: .5 }]
+      : { base: "USD", quote: "GBP", rate: .5 }));
     equal(dataset.benchmark, undefined);
     equal(calls.filter(symbol => symbol === "CSPX.L").length, 0);
     ok(!calls.some(s => s.startsWith("OTHER")));
@@ -1038,7 +1040,7 @@ Deno.test("switching index replays saved purchases before the visible window and
     { date: "2025-01-02", amountUsd: 1000 }, { date: "2025-01-03", amountUsd: 1000 },
   ];
   const first: AllTimeDataset = {
-      fundingReturnVersion: 1,
+      fundingReturnVersion: 3,
     userId: 1, label: "First", bucketName: null, displayCurrency: "EUR", displayRate: .8,
     points: [{ date: "2025-01-03", percentage: 5, gain: 100 }, { date: "2025-01-06", percentage: 15.5, gain: 310 }],
     benchmarkPurchases: purchases,

@@ -9,6 +9,16 @@ import { getUserBucket, readBucketAssignments } from "../database/bucket.ts";
 import { createIntegration } from "../database/integration.ts";
 import { tickersComposer } from "./composer.ts";
 
+function fundedReport(holdings: { i: string; q: number; value: number }[], deposits: number, cash = 0) {
+  const flow = { id: 1, type: "bank", amount: deposits, value_usd: deposits, pay_d: "2025-01-01", currency: "USD", approved: 1, reverted: 0, phantom: 0, offbalance: null };
+  return { report: { date_start: "1970-01-01", date_end: new Date().toISOString().slice(0, 10),
+    plainAccountInfoData: { client_date_open: "2025-01-01", base_currency: "USD" },
+    account_at_start: { account: { net_assets: 0, positions_from_ts: { ps: { acc: [{ curr: "USD", s: 0 }], pos: [] } } } },
+    account_at_end: { account: { net_assets: cash + holdings.reduce((sum, holding) => sum + holding.value, 0),
+      positions_from_ts: { ps: { acc: [{ curr: "USD", s: cash, net_assets: cash }], pos: holdings.map(holding => ({ i: holding.i, q: holding.q, net_assets: holding.value })) } } } },
+    cash_in_outs: [flow], cash_flows: { detailed: [{ type_id: "bank", amount: deposits }], total: { USD: deposits } }, securities_in_outs: [] } };
+}
+
 function harness(db: Database) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const bot = new Bot<CustomContext>("123:test", {
@@ -506,6 +516,7 @@ Deno.test("partial bucket moves take open portfolio shares FIFO and return them"
       return Promise.resolve(Response.json({ base: "USD", quote: "EUR", rate: .8 }));
     }
     const cmd = new URLSearchParams(String(init?.body)).get("cmd");
+    if (cmd === "getBrokerReport") return Promise.resolve(Response.json(fundedReport([{ i: "AAPL.US", q: 8, value: 1600 }], 840)));
     if (cmd === "getPositionJson") {
       return Promise.resolve(Response.json({
         result: {
@@ -644,6 +655,7 @@ Deno.test("performance commands filter current and sold assets, with bot mention
   const soldOptionTicker = "+SOLDOPT.19DEC2027.C100";
   globalThis.fetch = (_input, init) => {
     const command = new URLSearchParams(String(init?.body)).get("cmd");
+    if (command === "getBrokerReport") return Promise.resolve(Response.json(fundedReport([{ i: "AAPL.US", q: 4, value: 800 }, { i: optionTicker, q: 2, value: 300 }], 525)));
     if (command === "getPositionJson") {
       return Promise.resolve(Response.json({ result: { ps: { pos: [
         { i: "AAPL.US", q: 4, s: 400, price_a: 100, mkt_price: 200, profit_close: 300, curr: "USD" },
@@ -698,6 +710,20 @@ Deno.test("performance commands filter current and sold assets, with bot mention
       match(h.lastText(), /AAPL/);
       match(h.lastText(), /MSFT/);
     }
+    for (const [kind, stocks, options] of [["perf", "+$400.00", "+$100.00"], ["alltime", "+$425.00", "+$150.00"],
+      ["worth", "$800.00", "$300.00"], ["dpnl", "+$100.00", "+$20.00"]]) {
+      for (const alias of ["s", "stocks", "o", "options"]) {
+        await h.command(`/number ${kind} ${alias}`);
+        equal(h.lastText().split("\n").at(-1), alias === "s" || alias === "stocks" ? stocks : options);
+        equal(h.lastText().includes("Total:"), false);
+      }
+    }
+    await h.command("/number worth");
+    equal(h.lastText().split("\n").at(-1), "$1,100.00");
+    await h.command("/number alltime");
+    equal(h.lastText().split("\n").at(-1), "+$575.00");
+    await h.command("/number dpnl");
+    equal(h.lastText().split("\n").at(-1), "+$120.00");
     await h.command("/number o");
     match(h.lastText(), /\+\$100\.00$/);
     await h.command("/worthnumber s");

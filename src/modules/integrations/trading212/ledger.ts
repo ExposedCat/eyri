@@ -90,6 +90,7 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
     withdrawals: Record<string, number> = {};
   const quantities: Record<string, number> = {};
   const fundingHistory: { date: string; amount: number; currency: string }[] = [];
+  const cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]> = [];
   let openedAt: Date | null = null;
   const add = (
     target: Record<string, number>,
@@ -130,6 +131,13 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
       continue;
     }
     seen.set(key, serialized);
+    const before = { ...cash };
+    const capture = () => {
+      for (const currency of new Set([...Object.keys(cash), ...Object.keys(before)])) {
+        const amount = (cash[currency] ?? 0) - (before[currency] ?? 0);
+        if (amount) cashHistory.push({ date: date.toISOString().slice(0, 10), currency, amount, type: row.Action, reference: key });
+      }
+    };
     if (!openedAt || date < openedAt) openedAt = date;
     if (row.Action === "Currency conversion") {
       add(
@@ -149,6 +157,7 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
           number(row["Currency conversion fee"], "conversion fee"),
         );
       }
+      capture();
       continue;
     }
     const field = row["Net Total"] ? "Net Total" : "Gross Total";
@@ -174,8 +183,9 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
         }
       }
     } else throw new Error(`Unsupported Trading 212 CSV action: ${row.Action}`);
+    capture();
   }
-  return { cash, deposits, withdrawals, quantities, openedAt, fundingHistory };
+  return { cash, deposits, withdrawals, quantities, openedAt, fundingHistory, cashHistory };
 }
 
 export type Trading212AccountSummary = {
@@ -310,6 +320,8 @@ export function reconcileTrading212Account(
     pnl: summary.totalValue - netContributions,
     cash,
     ledgerCash: ledger.cash,
+    cashHistory: ledger.cashHistory,
+    cashHistoryIncludesTrades: true,
     openedAt: ledger.openedAt,
     historyThrough,
     positionValue,

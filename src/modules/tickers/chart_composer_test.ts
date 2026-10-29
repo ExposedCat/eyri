@@ -13,6 +13,7 @@ import { createBucket, transferBucketAccess } from "../database/bucket.ts";
 function harness(db: Database, currencies = new Map<number, string>(), notes?: string[]) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const fetched: number[] = [];
+  const selections: { userId: number; bucketName: string | null; kind: string; filter: string | null }[] = [];
   const rendered: number[][] = [];
   const renderedDatasets: AllTimeDataset[][] = [];
   const failures = new Set<number>();
@@ -68,8 +69,9 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
   });
   const composer = createChartComposer({
     request: async () => Response.json({ base: "USD", quote: "EUR", rate: .8 }),
-    dataset: async (ctx, bucketName) => {
+    dataset: async (ctx, bucketName, selection = { kind: "alltime", filter: null }) => {
       fetched.push(ctx.from!.id);
+      selections.push({ userId: ctx.from!.id, bucketName, ...selection });
       await datasetGates.get(ctx.from!.id)?.();
       if (failures.has(ctx.from!.id)) {
         return Promise.reject(
@@ -84,7 +86,8 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
         date: "2025-01-02", percentage: 10, gain: 100,
       }];
       return Promise.resolve({
-        fundingReturnVersion: 1 as const,
+        fundingReturnVersion: 3 as const,
+        ...selection,
         ...(notes ? { notes } : {}),
         userId: ctx.from!.id,
         label: ctx.from!.first_name,
@@ -130,6 +133,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
   });
   return {
     calls,
+    selections,
     fetched,
     rendered,
     renderedDatasets,
@@ -199,6 +203,32 @@ function callback(
   }).inline_keyboard[0][0].callback_data;
   return data;
 }
+
+Deno.test("chart modes and asset filters persist and Compare uses the original report selection", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    db.exec("INSERT INTO users(user_id) VALUES(1),(2)");
+    await createBucket({ database: db, userId: 1, name: "Core" });
+    const h = harness(db);
+    for (const kind of ["perf", "alltime", "worth"] as const) {
+      for (const [alias, filter] of [["s", "stocks"], ["stocks", "stocks"], ["o", "options"], ["options", "options"]]) {
+        await h.command(`/chart ${kind} ${alias} Core`);
+        deepStrictEqual(h.selections.at(-1), { userId: 1, kind, filter, bucketName: "Core" });
+        equal(h.renderedDatasets.at(-1)![0].kind, kind);
+        equal(h.renderedDatasets.at(-1)![0].filter, filter);
+      }
+    }
+    const photo = h.calls.filter(call => call.method === "sendPhoto").at(-1)!;
+    const keyboard = photo.payload.reply_markup as { inline_keyboard: { callback_data: string }[][] };
+    await h.compare(keyboard.inline_keyboard[0][0].callback_data);
+    deepStrictEqual(h.selections.at(-1), { userId: 2, kind: "worth", filter: "options", bucketName: null });
+    const before = h.fetched.length;
+    await h.command("/chart dpnl");
+    equal(h.fetched.length, before);
+    match(String(h.calls.at(-1)!.payload.text), /Use \/chart/);
+  } finally { db.close(); }
+});
 function chartKeyboard(data: string, compareLabel: string | null = "Compare", index = "sp500") {
   const id = data.split(":")[1];
   const keyboard = new InlineKeyboard();

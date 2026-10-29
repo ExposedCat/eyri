@@ -14,7 +14,7 @@ import type {
   IntegrationPortfolioPosition,
 } from "../types.ts";
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
-import { readFlexOrders } from "./flex.ts";
+import { ensureFlexCommissions, readFlexOrders } from "./flex.ts";
 import {
   fetchIbkrAccountPerformance,
   type IbkrAccountSnapshot,
@@ -392,6 +392,7 @@ function toPortfolioPosition(
     integrationKind: integration.kind,
     account: accountName ?? "",
     ticker: getTicker(contract),
+    exchange: contract.primaryExch ?? contract.exchange,
     assetCategory: contract.secType ?? null,
     amount,
     averageUnitPrice,
@@ -932,6 +933,42 @@ export async function readIbkrCashBalances(
   return balances;
 }
 
+export async function enrichContractIdentity(database: Database, api: IBApi, positions: IbkrPortfolioPosition[], timeoutMs: number) {
+  database.exec("CREATE TABLE IF NOT EXISTS ibkr_contract_identities(con_id INTEGER PRIMARY KEY,payload TEXT NOT NULL)");
+  for (let offset = 0; offset < positions.length; offset += 3) {
+    await Promise.all(positions.slice(offset, offset + 3).map(async position => {
+      if (!position.conId || position.assetCategory !== "STK") return;
+      const cached = database.prepare("SELECT payload FROM ibkr_contract_identities WHERE con_id=?").get(position.conId) as { payload: string } | undefined;
+      let identity: { exchange?: string; isin?: string };
+      if (cached) identity = JSON.parse(cached.payload);
+      else {
+        identity = await new Promise((resolve, reject) => {
+          const requestId = position.conId!;
+          let found: { exchange?: string; isin?: string } | undefined;
+          const cleanup = () => { clearTimeout(timer); api.off(EventName.contractDetails, onDetails); api.off(EventName.contractDetailsEnd, onEnd); };
+          const timer = setTimeout(() => { cleanup(); reject(new Error(`IBKR contract identity unavailable for ${position.ticker}`)); }, timeoutMs);
+          const onDetails = (id: number, details: { contract: Contract; secIdList?: { tag: string; value: string }[] }) => {
+            if (id !== requestId) return;
+            found = { exchange: details.contract.primaryExch ?? details.contract.exchange,
+              isin: details.secIdList?.find(item => item.tag === "ISIN")?.value };
+          };
+          const onEnd = (id: number) => {
+            if (id !== requestId) return;
+            cleanup();
+            if (!found?.exchange) reject(new Error(`IBKR contract identity unavailable for ${position.ticker}`));
+            else resolve(found);
+          };
+          api.on(EventName.contractDetails, onDetails); api.on(EventName.contractDetailsEnd, onEnd);
+          api.reqContractDetails(requestId, { conId: position.conId });
+        });
+        database.prepare("INSERT OR REPLACE INTO ibkr_contract_identities VALUES(?,?)").run(position.conId, JSON.stringify(identity));
+      }
+      if (identity.exchange) position.exchange = identity.exchange;
+      if (identity.isin) position.isin = identity.isin;
+    }));
+  }
+}
+
 export const ibkrAdapter: IntegrationAdapter = {
   async fetchAccountPerformance(database, integration) {
     const { config } = getConnectionConfig(integration);
@@ -973,6 +1010,7 @@ export const ibkrAdapter: IntegrationAdapter = {
         accountId,
         config,
       );
+      await enrichContractIdentity(database, api, positions, config.timeoutMs);
       const positionsWithDailyPnl = await enrichPortfolioWithDailyPnl(
         api,
         positions,
@@ -988,6 +1026,7 @@ export const ibkrAdapter: IntegrationAdapter = {
   },
 
   async fetchOrderHistory(database: Database, integration: Integration) {
+    await ensureFlexCommissions(database, integration);
     return readIbkrOrders(database, integration);
   },
 

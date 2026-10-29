@@ -24,16 +24,18 @@ import {
   hasPortfolioViewIntegrations,
 } from "../tickers/portfolio_view.ts";
 import { buildRsuReport, getRsuView } from "../tickers/rsu.ts";
+import { buildReportSnapshot } from "../tickers/report.ts";
+import type { ReportKind, ReportFilter } from "../tickers/performance_command.ts";
 
 export const reportDescriptions = {
-  number: "Total unrealized profit/loss and tickers, like /number.",
+  number: "Ticker icons' underlying tickers and total for perf, alltime, worth or dpnl, with an optional stocks/options filter, like /number.",
   allnumber:
     "Total realized plus unrealized profit/loss and tickers, like /allnumber.",
   perf: "Open-position profit/loss, percentage returns and holding periods, like /perf.",
   alltime:
     "Lifetime profit/loss and total return on gross deposits. Ticker returns and unallocated bucket returns are unavailable, like /alltime.",
   worth:
-    "Current position values, percentage returns and holding periods, like /worth.",
+    "Current holdings plus cash and portfolio value, like /worth. Filtered views exclude unallocated account cash.",
   worthnumber: "Total current portfolio value and tickers, like /worthnumber.",
   stocks:
     "Stock/CFD positions, prices, quantities, costs, values and monthly returns.",
@@ -47,7 +49,7 @@ export const reportDescriptions = {
   portfolio:
     "Stock/CFD allocation weights, current values and returns, like /portfolio.",
   chart:
-    "Historical trade P/L and current lifetime return on deposits, like /chart, without an image. Historical returnPct is unavailable without daily account cash balances.",
+    "Historical perf, alltime or worth from the same reports as text commands, using broker cash and execution history, like /chart, without an image.",
   buckets:
     "Accessible portfolio buckets, their owners and inclusion flags, like /buckets.",
   integrations:
@@ -58,6 +60,8 @@ export const reportDescriptions = {
 } as const;
 export type ReportName = keyof typeof reportDescriptions;
 export type ReportArgs = {
+  kind?: ReportKind;
+  filter?: ReportFilter;
   userId: number;
   bucketName?: string;
   prices?: Record<string, number>;
@@ -93,6 +97,11 @@ export async function runReport(
   args: ReportArgs,
   runtime: ReportRuntime = defaultRuntime,
 ): Promise<Record<string, unknown>> {
+  const compactKind = name === "number" ? args.kind ?? "perf" : name === "allnumber" ? "alltime" : name === "worthnumber" ? "worth" : null;
+  if (name === "number" && compactKind === "alltime") name = "allnumber";
+  if (name === "number" && compactKind === "worth") name = "worthnumber";
+  const chartKind = args.kind ?? "alltime";
+  if (name === "chart" && chartKind === "dpnl") throw new ReportError("invalid_kind", "Chart supports perf, alltime and worth.");
   const user = readUser(db, args.userId);
   if (!user)
     throw new ReportError(
@@ -181,12 +190,15 @@ export async function runReport(
       "No integrations configured for this portfolio.",
     );
   }
-  const view = await runtime.view(db, user.userId, bucketName, {
+  const rawView = await runtime.view(db, user.userId, bucketName, {
     positions: name !== "history" && name !== "sold",
-    history: ["alltime", "allnumber", "sold", "chart"].includes(name),
+    history: ["alltime", "allnumber", "worth", "worthnumber", "sold", "chart"].includes(name),
     displayHistory: name === "history",
-    accountPerformance: ["alltime", "allnumber", "chart"].includes(name),
+    accountPerformance: !args.filter && ["alltime", "allnumber", "worth", "worthnumber", "chart"].includes(name) && !(name === "chart" && chartKind === "perf"),
   });
+  const matches = args.filter === "stocks" ? isStockPosition : args.filter === "options" ? isOptionPosition : () => true;
+  const view = { ...rawView, positions: rawView.positions.filter(matches), orders: rawView.orders.filter(matches),
+    ...(args.filter ? { accountPerformances: [] } : {}) };
   const input = {
     ...view,
     currency,
@@ -203,7 +215,7 @@ export async function runReport(
   if (name === "chart") {
     const dataset = await runtime.chart(
       db,
-      view,
+      { ...view, kind: chartKind as "perf" | "alltime" | "worth", filter: args.filter },
       user.userId,
       String(user.userId),
       undefined,
@@ -215,13 +227,18 @@ export async function runReport(
     );
     return {
       ...context,
+      kind: chartKind,
       notes: dataset.notes ?? [],
       points: dataset.points.map((p) => ({
         date: p.date,
-        pnl: p.gain * rate,
+        [chartKind === "worth" ? "value" : "pnl"]: p.gain * rate,
         returnPct: p.percentage,
       })),
     };
+  }
+  if (compactKind === "dpnl") {
+    const snapshot = await buildReportSnapshot(input, "dpnl");
+    return { ...context, tickers: snapshot.tickers, total: snapshot.value };
   }
   if (name === "portfolio") {
     const chart = await buildPortfolioAllocation(
@@ -334,15 +351,16 @@ export async function runReport(
     name === "dpnl",
   );
   const { performances, totals } = report;
+  const worth = name === "worth" || name === "worthnumber" ? await buildReportSnapshot({ ...input, positions }, "worth") : null;
   if (name === "number" || name === "worthnumber") {
     return {
       ...context,
       tickers: [...new Set(performances.map((p) => p.position.ticker))],
-      total: !positions.length
+      total: !positions.length && !worth
         ? null
         : name === "number"
           ? totals.totalChange
-          : report.currentValue,
+          : worth!.value,
     };
   }
   if (name === "dpnl") {
@@ -361,6 +379,7 @@ export async function runReport(
   const detailed = ["stocks", "options", "when"].includes(name);
   return {
     ...context,
+    ...(worth ? { cash: worth.cash } : {}),
     positions: performances.map((p) => ({
       ticker: p.position.ticker,
       [name === "worth" ? "value" : "pnl"]:
@@ -387,11 +406,11 @@ export async function runReport(
           }
         : {}),
     })),
-    total: !positions.length
+    total: !positions.length && !worth
       ? null
       : {
           [name === "worth" ? "value" : "pnl"]:
-            name === "worth" ? report.currentValue : totals.totalChange,
+            name === "worth" ? worth!.value : totals.totalChange,
           returnPct: totals.totalPercentageChange,
           period:
             totals.elapsedPeriod.days === null

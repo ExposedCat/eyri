@@ -1,6 +1,18 @@
 import type { IntegrationAccountPerformance } from "../integrations/types.ts";
 import { conversionFactor } from "../integrations/usd.ts";
 import { requireReportNumber } from "../../utils/report_value.ts";
+import { fetchConversionRates } from "../../utils/exchange_rates.ts";
+
+export async function accountWorth(holdings: number, selectedIds: Set<number>, accounts: IntegrationAccountPerformance[], currency: string, request: typeof fetch = fetch) {
+  const rates = await fetchConversionRates(accounts.map(account => account.currency), currency, request);
+  const ids = new Set(accounts.map(account => account.integrationId));
+  if (ids.size !== accounts.length) throw new Error("Duplicate account valuation");
+  const cash = accounts.reduce((sum, account) => sum + account.cash * conversionFactor(account.currency, rates), 0);
+  const complete = accounts.length > 0 && [...selectedIds].every(id => ids.has(id));
+  const value = complete ? accounts.reduce((sum, account) => sum + requireReportNumber(account.totalValue, "account value") * conversionFactor(account.currency, rates), 0)
+    : holdings + cash;
+  return { cash, value };
+}
 
 export function accountReturn(
   accounts: IntegrationAccountPerformance[],
@@ -31,5 +43,5 @@ export function accountReturn(
     : ambiguousTransfers
     ? "Lifetime return unavailable: transfers between selected accounts must be identified and excluded from deposits."
     : deposits <= 0 ? "Lifetime return unavailable: total deposits must be positive." : null;
-  return { percentage: reason ? null : pnl / deposits * 100, reason };
+  return { pnl, complete, percentage: reason ? null : pnl / deposits * 100, reason };
 }

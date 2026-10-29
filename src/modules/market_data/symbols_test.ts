@@ -1,6 +1,12 @@
 import { deepStrictEqual } from "node:assert/strict";
 import { defaultYahooSymbols, likelyYahooSymbols } from "./symbols.ts";
 
+Deno.test("broker exchange distinguishes London ETFs from unrelated US funds with the same ticker", () => {
+  deepStrictEqual(defaultYahooSymbols({ ticker: "CURE", currency: "USD", exchange: "LSEETF" }), ["CURE.L", "CURE"]);
+  deepStrictEqual(defaultYahooSymbols({ ticker: "CURE", currency: "USD", exchange: "ARCA" }), ["CURE"]);
+  deepStrictEqual(defaultYahooSymbols({ ticker: "SMH", currency: "USD", exchange: "LSEETF" }), ["SMH.L", "SMH"]);
+});
+
 Deno.test("default Yahoo patterns cover broker suffixes without metadata and remain currency scoped", () => {
   for (
     const [ticker, currency, expected] of [

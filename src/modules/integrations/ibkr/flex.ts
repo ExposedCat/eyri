@@ -14,6 +14,8 @@ const FLEX_BATCH_DAYS = 365;
 const DEFAULT_FLEX_MAX_YEARS = 5;
 
 export type FlexTrade = {
+  commission?: number | null;
+  commissionCurrency?: string | null;
   ticker: string;
   date: Date;
   quantity: number;
@@ -32,6 +34,8 @@ type XmlElement = {
 };
 
 type FlexTradeRow = {
+  commission: number | null;
+  commission_currency: string | null;
   integration_id: number;
   ticker: string;
   date: string;
@@ -90,6 +94,7 @@ async function paceFlexRequest<T>(
 }
 
 function ensureFlexSchema(database: Database) {
+  database.exec("CREATE TABLE IF NOT EXISTS ibkr_flex_commission_queries (integration_id INTEGER NOT NULL,query_id TEXT NOT NULL,supported INTEGER NOT NULL,checked_at REAL NOT NULL,PRIMARY KEY(integration_id,query_id))");
   database.exec(`
     CREATE TABLE IF NOT EXISTS ibkr_flex_trades (
       integration_id INTEGER NOT NULL,
@@ -120,6 +125,13 @@ function ensureFlexSchema(database: Database) {
       PRIMARY KEY (integration_id, query_id, batch_index)
     );
   `);
+  const columns = database.prepare("PRAGMA table_info(ibkr_flex_trades)").all() as { name: string }[];
+  if (!columns.some(column => column.name === "commission")) {
+    database.exec("ALTER TABLE ibkr_flex_trades ADD COLUMN commission REAL");
+  }
+  if (!columns.some(column => column.name === "commission_currency")) {
+    database.exec("ALTER TABLE ibkr_flex_trades ADD COLUMN commission_currency TEXT");
+  }
 }
 
 function getFlexMaxYears() {
@@ -418,6 +430,9 @@ function parseTrades(xml: string) {
       date,
       quantity,
       price: parsePrice(element),
+      commission: getAttr(element, ["commission", "ibCommission"])?.trim() && Number.isFinite(Number(getAttr(element, ["commission", "ibCommission"])))
+        ? Number(getAttr(element, ["commission", "ibCommission"])) : null,
+      commissionCurrency: getAttr(element, ["commissionCurrency", "ibCommissionCurrency", "currency"]),
       currency: getAttr(element, ["currency", "Currency"]),
       assetCategory: getAttr(element, [
         "assetCategory",
@@ -648,8 +663,10 @@ function writeBatchTrades(
         price,
         currency,
         asset_category,
+        commission,
+        commission_currency,
         synced_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     trades.forEach((trade, index) => {
@@ -663,6 +680,8 @@ function writeBatchTrades(
         trade.price,
         trade.currency,
         trade.assetCategory,
+        trade.commission ?? null,
+        trade.commissionCurrency ?? trade.currency,
         syncedAt,
       );
     });
@@ -790,7 +809,9 @@ export function readFlexOrders(
         quantity,
         price,
         currency,
-        asset_category
+        asset_category,
+        commission,
+        commission_currency
       FROM ibkr_flex_trades
       WHERE integration_id = ?
         AND query_id = ?
@@ -808,5 +829,37 @@ export function readFlexOrders(
     price: row.price,
     currency: row.currency ?? "USD",
     assetCategory: row.asset_category,
+    ...(row.commission === null ? {} : { commission: { amount: row.commission, currency: row.commission_currency ?? row.currency ?? "USD" } }),
   }));
+}
+
+// Upgrade existing history on demand. Bucket transaction keys depend on date,
+// ticker and currency, so retaining fees does not change bucket assignments.
+export async function ensureFlexCommissions(
+  database: Database, integration: Integration, requestStatement = getFlexStatement,
+) {
+  ensureFlexSchema(database);
+  const credentials = parseIbkrCredentials(integration.credentials);
+  if (!credentials.flexToken || !credentials.flexQueryId) return;
+  const support = database.prepare("SELECT supported,checked_at FROM ibkr_flex_commission_queries WHERE integration_id=? AND query_id=?")
+    .get(integration.id, credentials.flexQueryId) as { supported: number; checked_at: number } | undefined;
+  if (support?.supported === 0 && Date.now() - support.checked_at < 3_600_000) return;
+  const missing = database.prepare("SELECT MIN(date) AS first,MAX(date) AS last FROM ibkr_flex_trades WHERE integration_id=? AND query_id=? AND commission IS NULL")
+    .get(integration.id, credentials.flexQueryId) as { first: string | null; last: string | null };
+  if (!missing.first || !missing.last) return;
+  const last = new Date(missing.last);
+  for (let from = new Date(missing.first); from <= last;) {
+    const to = new Date(Math.min(+last, +from + 364 * 86_400_000));
+    const trades = parseTrades(await requestStatement(credentials.flexToken, credentials.flexQueryId, { from, to }));
+    if (!trades.length) throw new Error("IBKR commission backfill returned no executions for existing history; cached trades were preserved.");
+    if (trades.some(trade => trade.commission === null)) {
+      // Open-position reports can still use broker book cost. Cash-ledger
+      // reconstruction rejects unknown fees explicitly instead of inventing zero.
+      database.prepare("INSERT OR REPLACE INTO ibkr_flex_commission_queries VALUES (?,?,0,?)").run(integration.id, credentials.flexQueryId, Date.now());
+      return;
+    }
+    writeBatchTrades(database, integration, credentials.flexQueryId, -1, { from, to }, trades);
+    from = new Date(+to + 86_400_000);
+  }
+  database.prepare("INSERT OR REPLACE INTO ibkr_flex_commission_queries VALUES (?,?,1,?)").run(integration.id, credentials.flexQueryId, Date.now());
 }

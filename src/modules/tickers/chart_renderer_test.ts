@@ -11,7 +11,7 @@ import { benchmarkMarkerIndices, renderAllTimeDatasets } from "./alltime_chart_r
 import { buildChartBenchmark } from "./chart_benchmark.ts";
 
 const dataset: AllTimeDataset = {
-  fundingReturnVersion: 1,
+  fundingReturnVersion: 3,
   userId: 1,
   label: "Zero crossings",
   bucketName: null,
@@ -182,6 +182,7 @@ Deno.test("render cache includes each person's frozen benchmark, and legacy char
     deepStrictEqual(await renderAllTimeChart(db, [withBenchmark]), first);
     equal((db.prepare("SELECT COUNT(*) AS n FROM alltime_render_cache").get() as { n: number }).n, 2);
     await rejects(renderAllTimeChart(db, [{ ...dataset, fundingReturnVersion: undefined }]), /Create a new chart with \/chart/);
+    await rejects(renderAllTimeChart(db, [{ ...dataset, fundingReturnVersion: 1 as never }]), /Create a new chart with \/chart/);
   } finally { db.close(); }
 });
 

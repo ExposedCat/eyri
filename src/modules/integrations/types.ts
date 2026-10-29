@@ -8,6 +8,7 @@ export type IntegrationPortfolioPosition = {
   integrationKind: string;
   account: string;
   ticker: string;
+  exchange?: string;
   assetCategory?: string | null;
   amount: number;
   averageUnitPrice: number | null;
@@ -39,6 +40,9 @@ export type IntegrationPortfolioPosition = {
 };
 
 export type IntegrationOrder = {
+  // Signed broker commission, normally negative; never add it to a live book
+  // cost that already includes fees.
+  commission?: { amount: number; currency: string };
   executionId?: string;
   walletImpact?: {
     currency: string;
@@ -86,6 +90,12 @@ export type IntegrationAdapter = {
 };
 
 export type IntegrationAccountPerformance = {
+  // Complete cash ledger. IBKR stores non-trade events here; execution cash is
+  // replayed from orders. CSV ledgers can include trade cash directly.
+  cashHistory?: { date: string; currency: string; amount: number; type: string; reference?: string }[];
+  cashHistoryIncludesTrades?: boolean;
+  // Original broker balances when cash-funded buckets have been excluded.
+  sourceCashBalances?: Record<string, number>;
   fundingSource?: "bucket_cash" | "account_allocated";
   fundingHistory?: { date: string; amount: number; allocation?: boolean }[];
   fundingIncludesTransfers?: boolean;

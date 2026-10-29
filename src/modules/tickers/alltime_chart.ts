@@ -1,8 +1,12 @@
 import { accountReturn } from "./account_return.ts";
+import { buildHistoricalReportSeries } from "./historical_report.ts";
+import { buildReportSnapshot } from "./report.ts";
+import type { ReportKind, ReportFilter } from "./performance_command.ts";
 import type { Database } from "../database/setup.ts";
 import { renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
 import {
   type BenchmarkPurchase,
+  type BenchmarkValuations,
   type ChartBenchmark,
   type ChartBenchmarkIndex,
   chartBenchmarkIndex,
@@ -32,7 +36,7 @@ import type {
   IntegrationAccountPerformance,
 } from "../integrations/types.ts";
 import { usdFactor } from "../integrations/usd.ts";
-import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
+import { fetchHistoricalUsdConversionRates, fetchUsdConversionRates, historicalUsdFactor } from "../../utils/exchange_rates.ts";
 import { portfolioPositionCurrencies, portfolioValuations } from "../integrations/usd.ts";
 import { isCfdAllocation } from "./cfd_history.ts";
 import {
@@ -48,7 +52,9 @@ import {
 
 export type AllTimePoint = { date: string; percentage: number | null; gain: number };
 export type AllTimeDataset = {
-  fundingReturnVersion?: 1;
+  fundingReturnVersion?: 3;
+  kind?: Exclude<ReportKind, "dpnl">;
+  filter?: ReportFilter;
   notes?: string[];
   userId: number;
   label: string;
@@ -57,12 +63,15 @@ export type AllTimeDataset = {
   // Absent only on older published sessions, which must be recreated.
   benchmark?: ChartBenchmark;
   benchmarkPurchases?: BenchmarkPurchase[];
+  benchmarkValuations?: BenchmarkValuations;
   benchmarkSnapshots?: Partial<Record<ChartBenchmarkIndex, ChartBenchmark>>;
   // Points remain USD snapshots; only single-chart monetary labels use these.
   displayCurrency?: string;
   displayRate?: number;
 };
 type Args = {
+  kind?: Exclude<ReportKind, "dpnl">;
+  filter?: ReportFilter;
   positions: IntegrationPortfolioPosition[];
   orders: IntegrationOrder[];
   transactionBuckets: Map<string, string>;
@@ -450,7 +459,8 @@ export function buildAllTimeSeries(
   }
   const selectedIntegrationIds = new Set([...args.positions, ...selected].map(item => item.integrationId));
   const funding = accountReturn(args.accountPerformances ?? [], selectedIntegrationIds, rates);
-  points[points.length - 1] = { ...pointInUsd(last, totals), percentage: funding.percentage };
+  const endpoint = pointInUsd(last, totals);
+  points[points.length - 1] = { ...endpoint, gain: funding.complete ? funding.pnl : endpoint.gain, percentage: funding.percentage };
   return points;
 }
 
@@ -490,6 +500,9 @@ export async function loadAllTimeDataset(
   request: typeof fetch = fetch,
 ): Promise<AllTimeDataset> {
   ensureChartSchema(db);
+  const kind = args.kind ?? "alltime";
+  args = { ...args, kind };
+  const reportArgs = args;
   const through = dateOf(args.now ?? new Date());
   args = {
     ...args,
@@ -503,7 +516,7 @@ export async function loadAllTimeDataset(
   };
   args = withFreeStockPurchases(args);
   const selected = selectedChartOrders(args);
-  if (!selected.length) {
+  if (!selected.length && !args.accountPerformances?.some(account => account.fundingHistory?.length || account.cashHistory?.length)) {
     throw new Error(
       "No purchase history for this chart. Complete broker order history is required.",
     );
@@ -631,15 +644,25 @@ export async function loadAllTimeDataset(
   if (failures.length) {
     throw new HistoricalDataError(failures);
   }
-  const rates = await fetchUsdConversionRates(
-    [...sources.values()].flatMap(portfolioPositionCurrencies).concat(
+  const currencies = [...sources.values()].flatMap(portfolioPositionCurrencies).concat(
       [...histories.values()].map((h) => h.currency),
       (args.accountPerformances ?? []).flatMap(a => [a.currency, ...(a.reportedComponents?.map(c => c.currency) ?? [])]),
-    ),
+      (args.accountPerformances ?? []).flatMap(a => a.cashHistory?.map(event => event.currency) ?? []),
+      args.orders.flatMap(order => [order.currency, ...(order.commission ? [order.commission.currency] : []),
+        ...(!isDisplayableOrder(order) ? order.ticker.split(/[./]/) : [])]),
+    );
+  const rates = await fetchUsdConversionRates(
+    currencies,
     request,
   );
+  const historyStart = [...selected.map(order => dateOf(order.date)),
+    ...(args.accountPerformances ?? []).flatMap(account => [
+      ...(account.fundingHistory?.map(flow => flow.date) ?? []),
+      ...(account.cashHistory?.map(flow => flow.date) ?? []),
+    ])].sort()[0];
+  const historicalRates = await fetchHistoricalUsdConversionRates(currencies, historyStart, through, request);
   const fingerprint = await hash({
-    version: 7,
+    version: 9,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],
@@ -647,13 +670,16 @@ export async function loadAllTimeDataset(
     },
     histories: [...histories].sort(([a], [b]) => a.localeCompare(b)),
     rates: [...rates].sort(([a], [b]) => a.localeCompare(b)),
+    historicalRates: [...historicalRates],
   });
   const stored = db.prepare(
     "SELECT payload FROM alltime_series_cache WHERE cache_key = ?",
   ).get(fingerprint) as { payload: string } | undefined;
   const points = stored
     ? JSON.parse(stored.payload)
-    : buildAllTimeSeries(args, histories, rates);
+    : buildHistoricalReportSeries(args, histories, rates, historicalRates, kind);
+  const snapshot = await buildReportSnapshot({ ...reportArgs, currency: "USD", request }, kind);
+  points[points.length - 1] = { ...points.at(-1), gain: snapshot.value, percentage: snapshot.percentage };
   if (!stored) {
     db.prepare(
       "INSERT OR REPLACE INTO alltime_series_cache(cache_key,payload,created_at) VALUES (?,?,?)",
@@ -663,12 +689,11 @@ export async function loadAllTimeDataset(
     );
   }
   const accounts = args.accountPerformances ?? [];
-  const notes = accounts.length && accounts.every(account => account.fundingSource === "bucket_cash")
-    ? [] : ["Historical curve shows trade P/L. Historical lifetime percentages require daily account cash balances."];
+  const notes: string[] = [];
   const funding = accountReturn(accounts, new Set([...args.positions, ...selected].map(item => item.integrationId)), rates);
-  if (funding.reason) notes.push(funding.reason);
+  if (funding.reason && args.kind !== "perf" && args.kind !== "worth") notes.push(funding.reason);
   const purchases: BenchmarkPurchase[] = [];
-  const datedFunding = !funding.reason && accounts.every(account => {
+  const datedFunding = args.kind !== "perf" && !funding.reason && accounts.every(account => {
     if (!account.fundingHistory) return false;
     let deposits = 0, withdrawals = 0;
     for (const flow of account.fundingHistory) {
@@ -685,14 +710,43 @@ export async function loadAllTimeDataset(
     return true;
   });
   let benchmark: ChartBenchmark | undefined;
+  const benchmarkValuations: BenchmarkValuations = {};
   if (datedFunding) {
     try {
-      benchmark = await loadChartBenchmark(purchases, points[0].date, points.at(-1)!.date, cache);
+      const foreign = accounts.filter(account => account.currency !== "USD" &&
+        account.fundingHistory!.some(flow => !flow.allocation && flow.amount !== 0));
+      if (foreign.length) {
+        const start = foreign.flatMap(account => account.fundingHistory!
+          .filter(flow => !flow.allocation && flow.amount !== 0).map(flow => flow.date)).sort()[0];
+        const historicalRates = await fetchHistoricalUsdConversionRates(foreign.map(account => account.currency), start, through, request);
+        for (const account of foreign) {
+          benchmarkValuations[account.currency] = historicalRates.get(account.currency)!.map(row => ({
+            date: row.date, factor: usdFactor(account.currency, rates) / row.factor,
+          }));
+        }
+        // Keep the contribution basis identical to the account Total, while
+        // buying ETF shares with the dollars available on each funding date.
+        purchases.length = 0;
+        for (const account of accounts) {
+          for (const flow of account.fundingHistory!) {
+            const contributionUsd = flow.amount * usdFactor(account.currency, rates);
+            const amountUsd = flow.allocation || flow.amount === 0 ? contributionUsd
+              : flow.amount * historicalUsdFactor(historicalRates, account.currency, flow.date);
+            purchases.push({ date: flow.date, amountUsd,
+              ...(account.currency !== "USD" && !flow.allocation ? { contributionUsd } : {}),
+              ...(account.currency !== "USD" ? { valuationCurrency: account.currency } : {}),
+              ...(flow.allocation ? { allocation: true } : {}),
+            });
+          }
+        }
+      }
+      benchmark = await loadChartBenchmark(purchases, points[0].date, points.at(-1)!.date, cache, "sp500", benchmarkValuations);
+      if (args.kind === "worth") benchmark = { ...benchmark, points: benchmark.points.map(point => ({ ...point, gain: point.value!, percentage: 0 })) };
     } catch (error) {
       notes.push(error instanceof Error ? error.message : String(error));
     }
-  } else notes.push("Benchmark unavailable: complete dated external funding is required.");
-  return { fundingReturnVersion: 1, userId, label, bucketName: args.bucketName, points, notes, ...(benchmark ? { benchmark, benchmarkPurchases: purchases } : {}) };
+  } else if (args.kind !== "perf") notes.push("Benchmark unavailable: complete dated external funding is required.");
+  return { fundingReturnVersion: 3, kind: args.kind, filter: args.filter, userId, label, bucketName: args.bucketName, points, notes, ...(benchmark ? { benchmark, benchmarkPurchases: purchases, benchmarkValuations } : {}) };
 }
 
 export async function switchChartBenchmarks(
@@ -701,16 +755,18 @@ export async function switchChartBenchmarks(
   index: ChartBenchmarkIndex,
   cache: Parameters<typeof loadChartBenchmark>[3] = historyCache(db),
 ): Promise<AllTimeDataset[]> {
-  if (datasets.some((dataset) => dataset.fundingReturnVersion !== 1 || !dataset.benchmarkPurchases || !dataset.benchmark)) {
+  if (datasets.some((dataset) => dataset.fundingReturnVersion !== 3 || !dataset.benchmarkPurchases || !dataset.benchmark)) {
     throw new Error("This chart predates index switching. Create a new chart with /chart.");
   }
   return await Promise.all(datasets.map(async (dataset) => {
     const current = chartBenchmarkIndex(dataset.benchmark!.symbol);
     if (current === index) return dataset;
-    const benchmark = dataset.benchmarkSnapshots?.[index] ?? await loadChartBenchmark(
+    let benchmark = dataset.benchmarkSnapshots?.[index] ?? await loadChartBenchmark(
       dataset.benchmarkPurchases!, dataset.points[0].date,
-      dataset.points.at(-1)!.date, cache, index,
+      dataset.points.at(-1)!.date, cache, index, dataset.benchmarkValuations,
     );
+    if (dataset.kind === "worth" && !dataset.benchmarkSnapshots?.[index]) benchmark = { ...benchmark,
+      points: benchmark.points.map(point => ({ ...point, gain: point.value!, percentage: 0 })) };
     return {
       ...dataset,
       benchmark,
@@ -724,7 +780,7 @@ export async function renderAllTimeChart(
   datasets: AllTimeDataset[],
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  if (!datasets.length || datasets.some((dataset) => dataset.fundingReturnVersion !== 1)) {
+  if (!datasets.length || datasets.some((dataset) => dataset.fundingReturnVersion !== 3)) {
     throw new Error("This chart uses an older return calculation. Create a new chart with /chart.");
   }
   const key = await hash({ version: 16, datasets });
