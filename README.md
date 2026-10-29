@@ -498,9 +498,15 @@ unavailable or the hypothetical fund cannot cover a withdrawal. Existing chart
 sessions made with purchase-cost returns or the previous funding FX calculation
 must be recreated with `/chart`.
 The two curves and monetary gains appear together in the participant legend.
-The benchmark is available for `alltime` and `worth`; worth compares account
-values rather than profits. `perf` charts the open holdings without an account-funding
-benchmark. Compare retains the original chart's kind and asset filter.
+All three kinds show the same buy-and-hold index portfolio: `perf` displays its
+open-position P/L, `alltime` its funding-based lifetime P/L, and `worth` its value.
+Ordinary stock sales and reinvestments never sell or buy index units. For example,
+buying a stock for $10, selling it for $100 and reinvesting $100 contributes only
+$10 to the index if the original top-up was $10. Every top-up is invested immediately,
+including money left idle in the actual account. Asset filters change the actual
+holdings curve; the index retains the same full portfolio funding schedule.
+The explicit fresh-cash purchase assumption for shared buckets is retained.
+Compare retains the original chart's kind and asset filter.
 The **S&P 500** button beside Compare switches the index to **Momentum**, using
 the USD **IUMO.L** ETF with the same external funding schedule. Clicking
 **Momentum** switches back to S&P 500. The button names the current selection,

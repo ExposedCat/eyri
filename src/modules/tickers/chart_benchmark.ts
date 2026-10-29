@@ -26,7 +26,7 @@ export type ChartBenchmark = {
   label: string;
   symbol: string;
   asOf: string;
-  points: { date: string; percentage: number; gain: number; value?: number }[];
+  points: { date: string; percentage: number; gain: number; value?: number; openCostUsd?: number }[];
 };
 
 export function buildChartBenchmark(
@@ -89,6 +89,7 @@ export function buildChartBenchmark(
   const points: ChartBenchmark["points"] = [];
   let barIndex = 0, buyIndex = 0, cost = 0, withdrawals = 0;
   const shares = new Map<string, number>();
+  const bookCosts = new Map<string, number>();
   const costs = new Map<string, number>(), withdrawn = new Map<string, number>();
   const first = buys.length && buys[0].date < start ? buys[0].date : start;
   for (let date = first; date <= end; date = dayAfter(date)) {
@@ -105,8 +106,11 @@ export function buildChartBenchmark(
       else withdrawn.set(currency, (withdrawn.get(currency) ?? 0) - contribution);
     }
     for (const [currency, cashFlow] of cashFlows) {
-      const quantity = (shares.get(currency) ?? 0) + cashFlow / bars[barIndex].close;
+      const previous = shares.get(currency) ?? 0;
+      const quantity = previous + cashFlow / bars[barIndex].close;
       if (quantity < -1e-7) throw new Error(`${name} benchmark cannot fund the account's withdrawals.`);
+      bookCosts.set(currency, cashFlow >= 0 ? (bookCosts.get(currency) ?? 0) + cashFlow
+        : (bookCosts.get(currency) ?? 0) * (previous ? Math.max(0, quantity) / previous : 0));
       shares.set(currency, Math.max(0, quantity));
     }
     if (cost < -1e-7) throw new Error(`${name} benchmark allocation exceeds contributed capital.`);
@@ -127,7 +131,8 @@ export function buildChartBenchmark(
       dailyWithdrawals += (withdrawn.get(currency) ?? 0) / factor;
     }
     const gain = value + dailyWithdrawals - dailyCost;
-    points.push({ date, percentage: dailyCost === 0 ? 0 : gain / dailyCost * 100, gain, value });
+    points.push({ date, percentage: dailyCost === 0 ? 0 : gain / dailyCost * 100, gain, value,
+      openCostUsd: [...bookCosts.values()].reduce((sum, cost) => sum + cost, 0) });
   }
   return {
     label: `If ${name} (${symbol})`,

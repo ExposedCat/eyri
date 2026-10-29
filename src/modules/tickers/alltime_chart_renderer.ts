@@ -242,18 +242,16 @@ export function renderAllTimeDatasets(
               ? (dataset.displayCurrency ?? "USD")
               : "USD";
             const rate = single ? (dataset.displayRate ?? 1) : 1;
-            const lifetimeReturn = last.percentage === null ? "Lifetime % unavailable"
+            const lifetimeReturn = last.percentage === null ? ""
               : `${last.percentage >= 0 ? "+" : ""}${last.percentage.toFixed(2)}%`;
             const label = worth ? `${name}  ${money(last.gain * rate, currency).replace(/^\+/, "")}`
-              : `${name}  ${lifetimeReturn}  (${money(last.gain * rate, currency)})`;
+              : `${name}  ${lifetimeReturn ? `${lifetimeReturn}  ` : ""}(${money(last.gain * rate, currency)})`;
             const entries = [{ color, label, dashed: false }];
             if (dataset.benchmark) {
               const last = dataset.benchmark.points.at(-1)!;
               entries.push({
                 color: single ? "#E7C678" : palette[index % palette.length],
-                label: worth ? `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${money(last.gain * rate, currency).replace(/^\+/, "")}` : `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${last.percentage >= 0 ? "+" : ""}${
-                  last.percentage.toFixed(2)
-                }%  (${money(last.gain * rate, currency)})`,
+                label: worth ? `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${money(last.gain * rate, currency).replace(/^\+/, "")}` : `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${dataset.points.at(-1)!.percentage === null ? "" : `${last.percentage >= 0 ? "+" : ""}${last.percentage.toFixed(2)}%  `}(${money(last.gain * rate, currency)})`,
                 dashed: true,
               });
             }

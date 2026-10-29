@@ -194,7 +194,7 @@ export async function runReport(
     positions: name !== "history" && name !== "sold",
     history: ["alltime", "allnumber", "worth", "worthnumber", "sold", "chart"].includes(name),
     displayHistory: name === "history",
-    accountPerformance: !args.filter && ["alltime", "allnumber", "worth", "worthnumber", "chart"].includes(name) && !(name === "chart" && chartKind === "perf"),
+    accountPerformance: name === "chart" || !args.filter && ["alltime", "allnumber", "worth", "worthnumber"].includes(name),
   });
   const matches = args.filter === "stocks" ? isStockPosition : args.filter === "options" ? isOptionPosition : () => true;
   const view = { ...rawView, positions: rawView.positions.filter(matches), orders: rawView.orders.filter(matches),
@@ -215,7 +215,7 @@ export async function runReport(
   if (name === "chart") {
     const dataset = await runtime.chart(
       db,
-      { ...view, kind: chartKind as "perf" | "alltime" | "worth", filter: args.filter },
+      { ...view, benchmarkSource: rawView, kind: chartKind as "perf" | "alltime" | "worth", filter: args.filter },
       user.userId,
       String(user.userId),
       undefined,
