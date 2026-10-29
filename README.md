@@ -359,6 +359,15 @@ Shared buckets appear in `/buckets` and work with named views such as
 `/history NAME`, and `/chart NAME`.
 The owner's integrations provide the holdings and purchase/sale history. The
 recipient does not need an integration of their own to view a shared bucket.
+For bucket returns, each purchase is assumed to use fresh cash. Sale proceeds
+remain bucket cash rather than funding later purchases. Contributions, cash and
+the index's purchase schedule scale with the granted share. Complete accounts
+continue to use broker-reported deposits, preserving their reinvestment treatment.
+When your own portfolio excludes buckets, their cash purchase costs are allocated
+out of your actual account deposits, and their equity—including retained sale
+proceeds—is excluded from account value. Sales do not return that capital to the
+remaining portfolio. Including an owned bucket again restores its allocation;
+owned buckets are never added twice to the broker's deposits.
 
 Use `/bucket include NAME` to merge an accessible bucket into your default
 portfolio reports, including `/portfolio`, `/perf`,
@@ -384,8 +393,8 @@ For example: `/perf s`, `/dpnl options Core`, `/worth Core`, or
 also accept these filters. Filter words in the first argument are reserved.
 The separate `/stocks` and `/options` commands have been removed.
 
-Filtered `/alltime` and bucket views show selected open and sold P/L. Their
-lifetime percentage is unavailable because they have no allocated deposits or cash.
+Filtered `/alltime` views show selected open and sold P/L without allocating
+account cash. Bucket views use the fresh-cash purchase assumption described above.
 
 ## All-time performance
 
@@ -398,8 +407,9 @@ account equity and using gross deposits as the denominator. Reinvestments are no
 new deposits. Withdrawals preserve previously earned profit. Zero deposits or
 incomplete funding leave the percentage unavailable while preserving monetary P/L.
 Whole Trading 212 and Freedom24 accounts supply this reconciliation. Whole IBKR
-accounts require the Activity Flex funding sections described above. Filtered,
-partial bucket and unreconciled views have no capital-return percentage. Combined
+accounts require the Activity Flex funding sections described above. Buckets use
+the fresh-cash purchase assumption; filtered and unreconciled views may still lack
+a capital-return percentage. Combined
 accounts containing unclassified internal transfers also omit the percentage so
 those transfers cannot inflate deposits. `/allnumber` continues to show monetary P/L.
 Sold lots follow the bucket of their purchase transaction; unbucketed
@@ -437,25 +447,30 @@ The container includes DejaVu Sans fonts; local runs use installed system fonts.
 ## All-time chart
 
 Use `/chart` (or `/chart BUCKET`) for a daily time series of current plus realized
-performance in monetary terms. Historical points show reconstructed trade P/L;
-we do not have daily account cash balances to calculate historical lifetime
-percentages. The legend shows the current lifetime return on gross deposits when
-complete funding exists, otherwise it marks that percentage unavailable. The
-monetary endpoint matches `/alltime`. Sales retain realized gains, weekends carry
+performance. Cash-funded bucket views show percentage returns against cumulative
+assumed contributions. Complete-account histories show reconstructed monetary P/L
+because daily account cash balances are unavailable; their legend shows the current
+funding-based return. The monetary endpoint matches `/alltime`.
+Sales retain realized gains, weekends carry
 the last close, and splits adjust historical quantities and unit costs. Historical
 trade P/L uses the latest exchange rates and excludes historical FX effects,
 dividends and fees; current reconciled account P/L includes those adjustments.
 
 The chart is sent as a Telegram photo using the portfolio's dark background.
-Single-portfolio charts use a solid mint actual-performance line and an opaque
+Single-portfolio charts keep a solid mint actual-performance line above and below
+zero, including when the benchmark is unavailable, and use an opaque
 gold dashed **if S&P 500** line. Comparisons keep each participant's own color
 for their solid and opaque dashed lines. Benchmark lines draw behind actual
 lines; hollow circles draw on top. They mark turning points and the endpoint, with a
 minimum spacing to avoid crowding.
-The dashed line invests each external deposit into fractional shares of
+For complete accounts, the dashed line invests each external deposit into fractional shares of
 **CSPX.L**, the accumulating USD iShares S&P 500 ETF, at that date's closing price
 (or the preceding close). Withdrawals sell hypothetical units and remain part of
-lifetime proceeds. Actual purchases and reinvestments add no benchmark capital.
+lifetime proceeds. Actual purchases and reinvestments add no benchmark capital
+for these accounts. Bucket benchmarks instead receive fresh cash on each selected
+purchase date, scaled by the user's share; bucket sale proceeds remain cash.
+Allocations to excluded owned buckets reduce the remaining account's benchmark
+capital on their purchase dates; they are distinct from external withdrawals.
 Benchmark return is `(remaining value + withdrawals - deposits) / deposits * 100`.
 Benchmarks require complete dated external funding and are omitted when it is
 unavailable or the hypothetical fund cannot cover a withdrawal. Existing chart

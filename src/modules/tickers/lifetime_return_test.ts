@@ -1,4 +1,4 @@
-import { equal, match, ok, throws } from "node:assert/strict";
+import { equal, match, ok, rejects, throws } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import type { IntegrationAccountPerformance, IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import type { PriceHistory } from "../market_data/history.ts";
@@ -6,6 +6,7 @@ import { accountReturn } from "./account_return.ts";
 import { buildIntegratedAllTimePerformanceList, buildIntegratedAllTimeReport } from "./portfolio.ts";
 import { buildAllTimeSeries, instrumentKey, loadAllTimeDataset } from "./alltime_chart.ts";
 import { buildChartBenchmark } from "./chart_benchmark.ts";
+import { buildBucketCashAccounts, excludeBucketCapital } from "./bucket_funding.ts";
 
 const rates = new Map([["USD", 1]]);
 const orders: IntegrationOrder[] = [
@@ -34,6 +35,58 @@ const histories = new Map<string, PriceHistory>([
   [instrumentKey(orders[2]), { symbol: "SECOND", currency: "USD", instrumentType: "EQUITY", splits: [], bars: [{ date: "2025-01-02", close: 500 }, { date: "2025-01-03", close: 525 }] }],
 ]);
 const near = (actual: number, expected: number) => ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
+
+Deno.test("excluded bucket capital reduces real deposits without counting the remaining account's reinvestment", async () => {
+  for (const sold of [false, true]) {
+    const bucketOrders = [{ ...orders[0], ticker: "BUCKET" }, ...(sold ? [{ ...orders[0], ticker: "BUCKET", quantity: -1, price: 120, date: new Date("2025-01-03") }] : [])];
+    const bucket = await buildBucketCashAccounts({
+      orders: bucketOrders,
+      positions: sold ? [] : [{ ...position, ticker: "BUCKET", totalInput: 100, currentPrice: 120, totalNow: 120, unrealizedPnl: 20 }],
+      transactionBuckets: new Map(), bucketName: null,
+    });
+    const broker = { ...account, deposits: 200, netContributions: 200, totalValue: 645, pnl: 445, cash: sold ? 120 : 0, positionValue: sold ? 525 : 645, investmentValue: sold ? 525 : 645, fundingHistory: [{ date: "2025-01-01", amount: 200 }] };
+    const [remaining] = await excludeBucketCapital([broker], bucket);
+    equal(remaining.deposits, 100);
+    equal(remaining.totalValue, 525);
+    equal(remaining.cash, 0);
+    equal(remaining.pnl, 425);
+    equal(accountReturn([remaining], new Set([1]), rates).percentage, 425);
+    const report = await buildIntegratedAllTimeReport({ positions: [position], orders, accountPerformances: [remaining] });
+    equal(report?.totalReturnPercentage, 425);
+    await rejects(excludeBucketCapital([{ ...broker, deposits: 50 }], bucket), /exceeds account deposits/);
+  }
+});
+
+Deno.test("benchmark bucket allocations reduce contribution capital rather than counting as external withdrawals", () => {
+  const history: PriceHistory = { symbol: "CSPX.L", currency: "USD", instrumentType: "ETF", splits: [], bars: [{ date: "2025-01-01", close: 100 }, { date: "2025-01-02", close: 100 }, { date: "2025-01-03", close: 110 }] };
+  const benchmark = buildChartBenchmark(history, [{ date: "2025-01-01", amountUsd: 1000 }, { date: "2025-01-02", amountUsd: -300, allocation: true }], "2025-01-01", "2025-01-03");
+  near(benchmark.points.at(-1)!.gain, 70);
+  near(benchmark.points.at(-1)!.percentage, 10);
+  const withdrawal = buildChartBenchmark(history, [{ date: "2025-01-01", amountUsd: 1000 }, { date: "2025-01-02", amountUsd: -300 }], "2025-01-01", "2025-01-03");
+  near(withdrawal.points.at(-1)!.percentage, 7);
+});
+
+Deno.test("cash-funded buckets treat each purchase as fresh capital while broker accounts retain the reinvestment fix", async () => {
+  for (const share of [1, .5823]) {
+    const selectedOrders = orders.map(order => ({ ...order, quantity: order.quantity * share }));
+    const selectedPosition = { ...position, amount: share, totalInput: 500 * share, totalNow: 525 * share, unrealizedPnl: 25 * share };
+    const args = { positions: [selectedPosition], orders: selectedOrders, transactionBuckets: new Map<string, string>(), bucketName: null, now: new Date("2025-01-04") };
+    const accounts = await buildBucketCashAccounts(args);
+    equal(accounts[0].fundingSource, "bucket_cash");
+    near(accounts[0].deposits, 600 * share);
+    near(accounts[0].cash, 500 * share);
+    near(accounts[0].pnl, 425 * share);
+    const report = await buildIntegratedAllTimeReport({ ...args, accountPerformances: accounts });
+    near(report!.totalReturnPercentage!, 425 / 600 * 100);
+    equal(report!.performances.some(performance => performance.accountAdjustment), false);
+    const series = buildAllTimeSeries({ ...args, accountPerformances: accounts }, histories, rates);
+    near(series.at(-2)!.percentage!, 425 / 600 * 100);
+    near(series.at(-1)!.percentage!, report!.totalReturnPercentage!);
+    equal(accountReturn([account], new Set([1]), rates).percentage, 425);
+    const mixed = accountReturn([{ ...account, totalValue: 425, withdrawals: 100 }, { ...accounts[0], integrationId: 2 }], new Set([1, 2]), rates);
+    near(mixed.percentage!, (425 + 425 * share) / (100 + 600 * share) * 100);
+  }
+});
 
 Deno.test("lifetime return keeps the original deposit after reinvesting gains and after liquidation", async () => {
   for (const liquidated of [false, true]) {

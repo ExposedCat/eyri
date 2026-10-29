@@ -1223,7 +1223,7 @@ export async function buildIntegratedAllTimeReport({
       }),
     );
   }
-  if (bucketName !== null && accountPerformances.length) {
+  if (bucketName !== null && accountPerformances.some(account => account.fundingSource !== "bucket_cash")) {
     throw new Error("Account funding cannot be assigned to an individual bucket");
   }
   const ids = new Set<number>();
@@ -1233,6 +1233,7 @@ export async function buildIntegratedAllTimeReport({
     if (!account.reportedComponents) {
       throw new Error("Account reconciliation requires the matching position/trade snapshot");
     }
+    if (account.fundingSource === "bucket_cash") continue;
     const factor = account.currency === currency ? 1 : conversionFactor(account.currency, rates);
     const reported = account.reportedComponents.reduce((sum, c) => {
       const rate = c.currency === currency ? 1 : conversionFactor(c.currency, rates);

@@ -187,7 +187,7 @@ export function createChartComposer(
       try {
         const message = await ctx.replyWithPhoto(
           new InputFile(image, "alltime.png"),
-          { caption: dataset.notes?.join("\n").slice(0, 1024), reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
+          { reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
         );
         ctx.db.prepare(
           "UPDATE alltime_chart_sessions SET message_id = ? WHERE id = ?",
@@ -291,7 +291,7 @@ export function createChartComposer(
         }
       }
       const image = await runtime.render(ctx.db, next);
-      await ctx.editMessageMedia({ type: "photo", media: new InputFile(image, "alltime.png"), caption: [...new Set(next.flatMap(dataset => dataset.notes ?? []))].join("\n").slice(0, 1024) }, {
+      await ctx.editMessageMedia({ type: "photo", media: new InputFile(image, "alltime.png") }, {
         reply_markup: buttons(id, next, isPrivate),
       });
       ctx.db.prepare("UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?")

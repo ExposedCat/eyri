@@ -25,7 +25,7 @@ import {
   hasPortfolioViewIntegrations,
 } from "./portfolio_view.ts";
 
-Deno.test("whole included accounts retain wallet holdings and funding; partial buckets never inherit account cash", async () => {
+Deno.test("excluded buckets subtract allocated capital while complete included accounts retain broker funding", async () => {
   const db = new Database(":memory:");
   try {
     ensureSchema(db);
@@ -72,6 +72,7 @@ Deno.test("whole included accounts retain wallet holdings and funding; partial b
             pnl: 105,
             deposits: 300,
             withdrawals: 0,
+            fundingHistory: [{ date: "2025-01-01", amount: 300 }],
             cash: 5,
             ledgerCash: { USD: 5 },
             openedAt: new Date("2025-01-01"),
@@ -86,10 +87,20 @@ Deno.test("whole included accounts retain wallet holdings and funding; partial b
       history: true,
       accountPerformance: true,
     }, fetchers);
-    equal(calls, 0);
-    equal(view.accountPerformances.length, 0);
+    equal(calls, 1);
+    equal(view.accountPerformances.length, 1);
+    equal(view.accountPerformances[0].fundingSource, "account_allocated");
+    equal(view.accountPerformances[0].deposits, 200);
+    equal(view.accountPerformances[0].pnl, 5);
+    deepStrictEqual(view.accountPerformances[0].fundingHistory, [
+      { date: "2025-01-01", amount: 300 },
+      { date: "2025-01-02", amount: -100, allocation: true },
+    ]);
     equal(view.positions[0].amount, 1);
     ok(!view.positions[0].brokerValuations);
+    const partialReport = await buildIntegratedAllTimeReport(view);
+    equal(partialReport?.total.change, 5);
+    equal(partialReport?.totalReturnPercentage, 2.5);
     setBucketIncluded({
       database: db,
       userId: 1,
@@ -100,7 +111,7 @@ Deno.test("whole included accounts retain wallet holdings and funding; partial b
       history: true,
       accountPerformance: true,
     }, fetchers);
-    equal(calls, 1);
+    equal(calls, 2);
     equal(view.positions[0].amount, 2);
     deepStrictEqual(view.positions[0].brokerValuations, live.brokerValuations);
     const report = await buildIntegratedAllTimeReport(view);
@@ -111,7 +122,7 @@ Deno.test("whole included accounts retain wallet holdings and funding; partial b
       history: true,
       accountPerformance: true,
     }, fetchers);
-    equal(calls, 1);
+    equal(calls, 2);
   } finally {
     db.close();
   }

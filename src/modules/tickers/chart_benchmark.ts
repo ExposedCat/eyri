@@ -10,7 +10,7 @@ export type ChartBenchmarkIndex = keyof typeof CHART_BENCHMARKS;
 export function chartBenchmarkIndex(symbol?: string): ChartBenchmarkIndex {
   return symbol === CHART_BENCHMARKS.momentum.symbol ? "momentum" : "sp500";
 }
-export type BenchmarkPurchase = { date: string; amountUsd: number };
+export type BenchmarkPurchase = { date: string; amountUsd: number; allocation?: boolean };
 export type ChartBenchmark = {
   label: string;
   symbol: string;
@@ -72,14 +72,16 @@ export function buildChartBenchmark(
     while (buyIndex < buys.length && buys[buyIndex].date <= date) {
       const purchase = buys[buyIndex++];
       cashFlow += purchase.amountUsd;
-      if (purchase.amountUsd > 0) cost += purchase.amountUsd;
+      if (purchase.allocation || purchase.amountUsd > 0) cost += purchase.amountUsd;
       else withdrawals -= purchase.amountUsd;
     }
     shares += cashFlow / bars[barIndex].close;
     if (shares < -1e-7) throw new Error(`${name} benchmark cannot fund the account's withdrawals.`);
     shares = Math.max(0, shares);
+    if (cost < -1e-7) throw new Error(`${name} benchmark allocation exceeds contributed capital.`);
+    cost = Math.max(0, cost);
     if (date < start) continue;
-    const gain = cost === 0 ? 0 : shares * bars[barIndex].close + withdrawals - cost;
+    const gain = shares * bars[barIndex].close + withdrawals - cost;
     points.push({ date, percentage: cost === 0 ? 0 : gain / cost * 100, gain });
   }
   return {

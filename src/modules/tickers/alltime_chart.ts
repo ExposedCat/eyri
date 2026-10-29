@@ -227,20 +227,26 @@ export function buildAllTimeSeries(
     const current = totals.get(key) ?? { cost: 0, gain: 0 };
     totals.set(key, { cost: current.cost + cost, gain: current.gain + gain });
   };
+  const accounts = args.accountPerformances ?? [];
+  const cashFunded = accounts.length > 0 && accounts.every(account => account.fundingSource === "bucket_cash");
   const pointInUsd = (date: string, totals: Map<string, Totals>): AllTimePoint => {
     let gain = 0;
     for (const [currency, native] of totals) {
       const factor = usdFactor(currency, rates);
       gain += native.gain * factor;
     }
-    return { date, percentage: null, gain };
+    const deposits = cashFunded ? accounts.reduce((sum, account) =>
+      sum + (account.fundingHistory ?? []).filter(flow => flow.date <= date)
+        .reduce((amount, flow) => amount + flow.amount, 0) * usdFactor(account.currency, rates), 0) : 0;
+    const percentage = !cashFunded ? null : deposits > 0 ? gain / deposits * 100 : gain === 0 ? 0 : null;
+    return { date, percentage, gain };
   };
   const realized = new Map<string, Totals>();
   const nativeWalletRealized = new Map<string, Totals>();
   let orderIndex = 0;
   const points: AllTimePoint[] = [{
     date: dayAfter(first, -1),
-    percentage: null,
+    percentage: cashFunded ? 0 : null,
     gain: 0,
   }];
   // Replay earlier unselected lots too: sales must consume them before bucket lots.
@@ -442,7 +448,7 @@ export function buildAllTimeSeries(
     for (const c of account.reportedComponents) addTotals(totals, c.currency, -c.cost, -c.pnl);
     addTotals(totals, account.currency, account.netContributions, account.pnl);
   }
-  const selectedIntegrationIds = new Set([...args.positions, ...args.orders].map(item => item.integrationId));
+  const selectedIntegrationIds = new Set([...args.positions, ...selected].map(item => item.integrationId));
   const funding = accountReturn(args.accountPerformances ?? [], selectedIntegrationIds, rates);
   points[points.length - 1] = { ...pointInUsd(last, totals), percentage: funding.percentage };
   return points;
@@ -633,7 +639,7 @@ export async function loadAllTimeDataset(
     request,
   );
   const fingerprint = await hash({
-    version: 5,
+    version: 7,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],
@@ -656,9 +662,10 @@ export async function loadAllTimeDataset(
       "DELETE FROM alltime_series_cache WHERE cache_key IN (SELECT cache_key FROM alltime_series_cache ORDER BY created_at DESC LIMIT -1 OFFSET 128)",
     );
   }
-  const notes = ["Historical curve shows trade P/L. Historical lifetime percentages require daily account cash balances."];
   const accounts = args.accountPerformances ?? [];
-  const funding = accountReturn(accounts, new Set([...args.positions, ...args.orders].map(item => item.integrationId)), rates);
+  const notes = accounts.length && accounts.every(account => account.fundingSource === "bucket_cash")
+    ? [] : ["Historical curve shows trade P/L. Historical lifetime percentages require daily account cash balances."];
+  const funding = accountReturn(accounts, new Set([...args.positions, ...selected].map(item => item.integrationId)), rates);
   if (funding.reason) notes.push(funding.reason);
   const purchases: BenchmarkPurchase[] = [];
   const datedFunding = !funding.reason && accounts.every(account => {
@@ -668,9 +675,9 @@ export async function loadAllTimeDataset(
       if (!/^\d{4}-\d{2}-\d{2}$/.test(flow.date) || !Number.isFinite(flow.amount) || flow.date > through) {
         throw new Error("Invalid dated account funding");
       }
-      if (flow.amount > 0) deposits += flow.amount;
+      if (flow.allocation || flow.amount > 0) deposits += flow.amount;
       else withdrawals -= flow.amount;
-      purchases.push({ date: flow.date, amountUsd: flow.amount * usdFactor(account.currency, rates) });
+      purchases.push({ date: flow.date, amountUsd: flow.amount * usdFactor(account.currency, rates), ...(flow.allocation ? { allocation: true } : {}) });
     }
     if (Math.abs(deposits - account.deposits) > .02 || Math.abs(withdrawals - account.withdrawals) > .02) {
       throw new Error("Dated account funding does not reconcile with lifetime deposits and withdrawals");
@@ -720,7 +727,7 @@ export async function renderAllTimeChart(
   if (!datasets.length || datasets.some((dataset) => dataset.fundingReturnVersion !== 1)) {
     throw new Error("This chart uses an older return calculation. Create a new chart with /chart.");
   }
-  const key = await hash({ version: 13, datasets });
+  const key = await hash({ version: 16, datasets });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;

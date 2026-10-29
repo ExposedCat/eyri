@@ -86,7 +86,8 @@ export type IntegrationAdapter = {
 };
 
 export type IntegrationAccountPerformance = {
-  fundingHistory?: { date: string; amount: number }[];
+  fundingSource?: "bucket_cash" | "account_allocated";
+  fundingHistory?: { date: string; amount: number; allocation?: boolean }[];
   fundingIncludesTransfers?: boolean;
   integrationId: number;
   currency: string;

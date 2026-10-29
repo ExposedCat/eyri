@@ -1,4 +1,4 @@
-import type { Chart, ChartDataset, Color, ScriptableContext } from "chart.js";
+import type { Chart, ChartDataset, ScriptableContext } from "chart.js";
 import type { AllTimeDataset } from "./alltime_chart.ts";
 import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
 import {
@@ -49,23 +49,6 @@ export function benchmarkMarkerIndices(
   return selected.sort((first, second) => first - second);
 }
 
-// A sharp gradient colors the continuous stroke by its actual height, including
-// the exact zero crossing. Per-segment colors would move the transition.
-function performanceColor(chart: Chart): Color {
-  const area = chart.chartArea;
-  if (!area || !chart.scales.y) return colors.green;
-  const zero = chart.scales.y.getPixelForValue(0);
-  if (zero <= area.top) return colors.red;
-  if (zero >= area.bottom) return colors.green;
-  const gradient = chart.ctx.createLinearGradient(0, area.top, 0, area.bottom);
-  const stop = (zero - area.top) / (area.bottom - area.top);
-  gradient.addColorStop(0, colors.green);
-  gradient.addColorStop(stop, colors.green);
-  gradient.addColorStop(stop, colors.red);
-  gradient.addColorStop(1, colors.red);
-  return gradient;
-}
-
 function money(value: number, currency: string) {
   const amount = Math.abs(value).toLocaleString("en-US", {
     minimumFractionDigits: 2,
@@ -106,8 +89,6 @@ export function renderAllTimeDatasets(
   const percentagesAvailable = datasets.every(dataset => dataset.points.every(point => point.percentage !== null));
   const displayCurrency = single ? (datasets[0].displayCurrency ?? "USD") : "USD";
   const displayRate = single ? (datasets[0].displayRate ?? 1) : 1;
-  const hasBenchmarks = datasets.some((dataset) => dataset.benchmark);
-  const colorBySign = single && !hasBenchmarks;
   const monthTicks: { value: number }[] = [];
   for (
     let date = Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1);
@@ -131,9 +112,7 @@ export function renderAllTimeDatasets(
             y: percentagesAvailable ? point.percentage! : point.gain * displayRate,
           })),
           parsing: false,
-          borderColor: colorBySign
-            ? ({ chart }: ScriptableContext<"line">) => performanceColor(chart)
-            : palette[index % palette.length],
+          borderColor: palette[index % palette.length],
           borderWidth: 4.4,
           borderCapStyle: "round",
           borderJoinStyle: "round",
@@ -142,13 +121,8 @@ export function renderAllTimeDatasets(
           pointRadius: ({ dataIndex }: ScriptableContext<"line">) =>
             dataIndex === dataset.points.length - 1 ? 5 : 0,
           pointBorderWidth: 0,
-          pointBackgroundColor: colorBySign
-            ? ({ parsed }: ScriptableContext<"line">) =>
-              (parsed.y ?? 0) >= 0 ? colors.green : colors.red
-            : palette[index % palette.length],
-          fill: colorBySign
-            ? { target: "origin", above: "#63D8AB19", below: "#FA899119" }
-            : false,
+          pointBackgroundColor: palette[index % palette.length],
+          fill: false,
         })),
         ...datasets.flatMap<ChartDataset<"line">>((dataset, index) =>
           dataset.benchmark ? [{
@@ -259,9 +233,7 @@ export function renderAllTimeDatasets(
           ctx.textBaseline = "middle";
           const entries = datasets.flatMap((dataset, index) => {
             const last = dataset.points[dataset.points.length - 1];
-            const color = colorBySign
-              ? last.gain >= 0 ? colors.green : colors.red
-              : palette[index % palette.length];
+            const color = palette[index % palette.length];
             const name = dataset.label +
               (dataset.bucketName ? ` / ${dataset.bucketName}` : "");
             const currency = single

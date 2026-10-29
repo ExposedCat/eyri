@@ -28,7 +28,7 @@ const benchmark = buildChartBenchmark({
 }, [{ date: "2026-01-01", amountUsd: 1000 }], "2026-01-01", "2026-01-04");
 const withBenchmark = { ...dataset, benchmark };
 
-Deno.test("rendered stroke switches color exactly at zero, including between opposite-sign samples", async () => {
+Deno.test("portfolio stroke stays mint above and below zero when the benchmark is unavailable", async () => {
   const image = await loadImage(renderAllTimeDatasets([dataset]));
   const canvas = createCanvas(image.width, image.height);
   const context = canvas.getContext("2d");
@@ -47,21 +47,21 @@ Deno.test("rendered stroke switches color exactly at zero, including between opp
     }
   }
   ok(zero > 100, "Zero baseline is visible");
-  let green = 0,
+  let greenAbove = 0, greenBelow = 0,
     red = 0;
   for (let y = 100; y < 1100; y++) {
     for (let x = 250; x < 2000; x++) {
       if (matches(x, y, [99, 216, 171])) {
-        green++;
-        ok(y <= zero + 1, `Green stroke below zero at ${x},${y}`);
+        if (y < zero) greenAbove++;
+        if (y > zero) greenBelow++;
       }
       if (matches(x, y, [250, 137, 145])) {
         red++;
-        ok(y >= zero - 1, `Red stroke above zero at ${x},${y}`);
       }
     }
   }
-  ok(green > 100 && red > 100, "Both sides of the continuous stroke rendered");
+  ok(greenAbove > 100 && greenBelow > 100, "Both sides retain the portfolio color");
+  equal(red, 0, "Negative returns do not switch the portfolio to red");
 });
 
 Deno.test("renderer ignores cached images from the previous line styling", async () => {

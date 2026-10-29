@@ -23,6 +23,7 @@ import {
 import { portfolioValuations } from "../integrations/usd.ts";
 import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { adjustOrderForCorporateActions } from "../market_data/corporate_actions.ts";
+import { buildBucketCashAccounts, excludeBucketCapital } from "./bucket_funding.ts";
 
 type PortfolioSource = {
   ownerId: number;
@@ -110,6 +111,7 @@ type Options = {
   accountPerformance?: boolean;
 };
 type Runtime = {
+  request?: typeof fetch;
   portfolio: typeof fetchIntegratedPortfolio;
   orders: typeof fetchIntegratedOrderHistory;
   history: typeof fetchIntegratedHistoryOrders;
@@ -199,15 +201,20 @@ export async function fetchPortfolioView(
             transactionKey,
           };
         });
-        // A bucket does not own an account's cash or external contributions.
-        // Apply the funding reconciliation only when the complete owner's
-        // account is included, never to an excluded or transferred subset.
-        const accountPerformances =
-          options.accountPerformance && wholeAccount && fetchers.accounts
+        let accountPerformances =
+          options.accountPerformance && names.has(null) && fetchers.accounts
             ? await fetchers.accounts(db, ownerId, livePositions, sourceOrders)
             : [];
+        if (options.accountPerformance && names.has(null) && !wholeAccount && accountPerformances.length) {
+          const excludedPositions = [...new Set(assignments.values())].filter(name => !names.has(name)).flatMap(name =>
+            buildBucketedPortfolioPositions({ orders: sourceOrders, livePositions: mergePositions(livePositions), transactionBuckets: assignments, bucketName: name }));
+          const excluded = await buildBucketCashAccounts({
+            positions: excludedPositions, orders, transactionBuckets, bucketName: "__excluded",
+          }, fetchers.request);
+          accountPerformances = await excludeBucketCapital(accountPerformances, excluded, fetchers.request);
+        }
         for (const account of accountPerformances) {
-          const valuations = livePositions.filter((p) =>
+          const valuations = positions.filter((p) =>
             p.integrationId === account.integrationId
           ).flatMap(portfolioValuations);
           account.reportedComponents = valuations.map((v) => {
@@ -223,7 +230,7 @@ export async function fetchPortfolioView(
             };
           });
           const sold = buildIntegratedSoldPerformances(
-            sourceOrders.filter((o) =>
+            orders.filter((o) =>
               o.integrationId === account.integrationId
             )
               .map((o) =>
@@ -231,7 +238,7 @@ export async function fetchPortfolioView(
                   o,
                   new Date().toISOString().slice(0, 10),
                 )
-              ),
+              ), transactionBuckets, bucketName,
           );
           account.reportedComponents.push(
             ...sold.map((s) => ({
@@ -241,11 +248,17 @@ export async function fetchPortfolioView(
             })),
           );
         }
+        const selectedPositions = positions.map((position) => ({
+          ...position,
+          integrationId: integrationId(position.integrationId),
+        }));
+        if (options.accountPerformance && !names.has(null)) {
+          accountPerformances.push(...await buildBucketCashAccounts({
+            positions: selectedPositions, orders, transactionBuckets, bucketName,
+          }, fetchers.request));
+        }
         return {
-          positions: positions.map((position) => ({
-            ...position,
-            integrationId: integrationId(position.integrationId),
-          })),
+          positions: selectedPositions,
           orders,
           transactionBuckets,
           accountPerformances,

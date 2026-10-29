@@ -21,9 +21,10 @@ export function accountReturn(
     pnl += (requireReportNumber(account.totalValue, "account value") + withdrawn - contributed) * factor;
   }
   const complete = accounts.length > 0 && [...selectedIntegrationIds].every(id => ids.has(id));
-  const ambiguousTransfers = accounts.length > 1 && accounts.some(account =>
+  const brokerAccounts = accounts.filter(account => account.fundingSource !== "bucket_cash");
+  const ambiguousTransfers = brokerAccounts.length > 1 && brokerAccounts.some(account =>
     account.fundingIncludesTransfers || account.withdrawals > 0 &&
-      accounts.some(other => other.integrationId !== account.integrationId && other.deposits > 0)
+      brokerAccounts.some(other => other.integrationId !== account.integrationId && other.deposits > 0)
   );
   const reason = !complete
     ? "Lifetime return unavailable: complete account funding is required; filters and buckets have no allocated deposits or cash."

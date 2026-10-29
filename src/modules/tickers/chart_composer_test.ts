@@ -10,7 +10,7 @@ import { HistoricalDataError } from "../market_data/errors.ts";
 import { readYahooMapping } from "../market_data/mappings.ts";
 import { createBucket, transferBucketAccess } from "../database/bucket.ts";
 
-function harness(db: Database, currencies = new Map<number, string>()) {
+function harness(db: Database, currencies = new Map<number, string>(), notes?: string[]) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const fetched: number[] = [];
   const rendered: number[][] = [];
@@ -85,6 +85,7 @@ function harness(db: Database, currencies = new Map<number, string>()) {
       }];
       return Promise.resolve({
         fundingReturnVersion: 1 as const,
+        ...(notes ? { notes } : {}),
         userId: ctx.from!.id,
         label: ctx.from!.first_name,
         bucketName,
@@ -214,11 +215,12 @@ Deno.test("/chart sends one photo with Compare and compares only clickers' own a
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
-    const h = harness(db);
+    const h = harness(db, new Map(), ["Historical curve shows trade P/L.", "Benchmark unavailable: complete dated external funding is required."]);
     await h.command();
     const data = callback(h.calls);
     deepStrictEqual(h.calls.find(c => c.method === "sendPhoto")!.payload.reply_markup, chartKeyboard(data));
     equal(h.calls.filter((c) => c.method === "sendPhoto").length, 1);
+    equal(h.calls.find(c => c.method === "sendPhoto")!.payload.caption, undefined);
     equal(h.calls.filter((c) => c.method === "sendDocument").length, 0);
     ok(new TextEncoder().encode(data).length <= 64);
     await h.compare(data);
@@ -226,6 +228,7 @@ Deno.test("/chart sends one photo with Compare and compares only clickers' own a
     deepStrictEqual(h.rendered, [[1], [1, 2]]);
     const edit = h.calls.find((c) => c.method === "editMessageMedia")!;
     equal((edit.payload.media as { type: string }).type, "photo");
+    equal((edit.payload.media as { caption?: string }).caption, undefined);
     const session = readChartSession(db, data.split(":")[1], -1001, 100)!;
     deepStrictEqual(
       (JSON.parse(session.datasets) as AllTimeDataset[]).map((d) => d.userId),
