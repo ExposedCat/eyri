@@ -3,11 +3,15 @@ import { EventEmitter } from "node:events";
 import { Database } from "@db/sqlite";
 import { EventName, type IBApi } from "@stoqey/ib";
 import {
-  fetchIbkrAccountPerformance,
+  fetchIbkrAccountPerformance as readIbkrAccountPerformance,
+  cacheIbkrFundingBatch,
+  getIbkrFundingSyncRanges,
+  type IbkrAccountSnapshot,
   parseIbkrFundingBatch,
 } from "./ledger.ts";
-import { getFlexStatementRange } from "./flex.ts";
+import { getFlexStatementRange, type FlexStatementRange } from "./flex.ts";
 import { readIbkrAccountSnapshot, readIbkrCashBalances } from "./adapter.ts";
+import type { AccountPerformanceOptions } from "../types.ts";
 import { parseIntegrationCredentials } from "../composer.ts";
 
 const now = new Date("2026-10-22T12:00:00Z");
@@ -69,6 +73,27 @@ const snapshot = {
   totalValue: 800,
   cash: 300,
 };
+// Explicit fixture seeding follows the same range discovery as the background
+// poller. The production account reader has no network loader or fetch hook.
+async function fetchIbkrAccountPerformance(
+  db: Database, entry: typeof integration, live: IbkrAccountSnapshot,
+  request: (token: string, query: string, range: FlexStatementRange) => Promise<string>,
+  at = now, options: AccountPerformanceOptions = {},
+) {
+  for (let round = 0; round < 3; round++) {
+    let loaded = false;
+    for (const range of getIbkrFundingSyncRanges(db, entry, at)) {
+      const cached = db.prepare("SELECT payload FROM ibkr_funding_batches WHERE integration_id=? AND query_id=? AND from_date=? AND to_date=?")
+        .get(entry.id, entry.credentials.fundingFlexQueryId, range.from.toISOString(), range.to.toISOString());
+      if (cached) continue;
+      cacheIbkrFundingBatch(db, entry, range, await request(entry.credentials.flexToken, entry.credentials.fundingFlexQueryId, range), at);
+      loaded = true;
+    }
+    if (!loaded) break;
+  }
+  return readIbkrAccountPerformance(db, entry, live, at, options);
+}
+
 Deno.test("IBKR funding parses external flows with historical FX and validates independent broker totals", () => {
   const parsed = parseIbkrFundingBatch(
     statement(),

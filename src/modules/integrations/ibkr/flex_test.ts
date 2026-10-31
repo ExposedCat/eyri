@@ -1,5 +1,5 @@
-import { deepStrictEqual, equal } from "node:assert/strict";
-import { ensureFlexCommissions, getFlexStatement, getFlexStatementRange, readFlexOrders } from "./flex.ts";
+import { deepStrictEqual, equal, rejects } from "node:assert/strict";
+import { cacheFlexCommissions, FlexReportPending, getFlexCommissionRange, getFlexStatement, getFlexStatementRange, readFlexOrders } from "./flex.ts";
 import { Database } from "@db/sqlite";
 
 Deno.test("legacy Flex fills backfill execution fees without changing bucket identity or double counting fills", async () => {
@@ -9,14 +9,13 @@ Deno.test("legacy Flex fills backfill execution fees without changing bucket ide
   try {
     readFlexOrders(db, integration);
     db.prepare("INSERT INTO ibkr_flex_trades(integration_id,query_id,trade_key,ticker,date,quantity,price,currency,asset_category,synced_at) VALUES(1,'trades','legacy','A','2025-01-01',2,10,'EUR','STK','2025-01-02')").run();
-    let calls = 0;
-    await ensureFlexCommissions(db, integration, async () => { calls++; return '<FlexQueryResponse><Trade symbol="A" tradeDate="20250101" quantity="2" buySell="BUY" tradePrice="10" currency="EUR" assetCategory="STK" ibCommission="-1" ibCommissionCurrency="USD" /></FlexQueryResponse>'; });
+    const range = getFlexCommissionRange(db, integration)!;
+    cacheFlexCommissions(db, integration, range, '<FlexQueryResponse><Trade symbol="A" tradeDate="20250101" quantity="2" buySell="BUY" tradePrice="10" currency="EUR" assetCategory="STK" ibCommission="-1" ibCommissionCurrency="USD" /></FlexQueryResponse>');
     const orders = readFlexOrders(db, integration);
     equal(orders.length, 1);
     equal(orders[0].price, 10);
     deepStrictEqual(orders[0].commission, { amount: -1, currency: "USD" });
-    await ensureFlexCommissions(db, integration, async () => { calls++; throw new Error("Unexpected request"); });
-    equal(calls, 1);
+    equal(getFlexCommissionRange(db, integration), undefined);
   } finally { db.close(); }
 });
 
@@ -27,11 +26,9 @@ Deno.test("missing commission fields remain unknown, without breaking existing p
   try {
     readFlexOrders(db, integration);
     db.prepare("INSERT INTO ibkr_flex_trades(integration_id,query_id,trade_key,ticker,date,quantity,price,currency,asset_category,synced_at) VALUES(1,'trades','legacy','A','2025-01-01',2,10,'USD','STK','2025-01-02')").run();
-    let calls = 0;
-    const query = async () => { calls++; return '<FlexQueryResponse><Trade symbol="A" tradeDate="20250101" quantity="2" buySell="BUY" tradePrice="10" currency="USD" /></FlexQueryResponse>'; };
-    await ensureFlexCommissions(db, integration, query);
-    await ensureFlexCommissions(db, integration, query);
-    equal(calls, 1);
+    const range = getFlexCommissionRange(db, integration)!;
+    cacheFlexCommissions(db, integration, range, '<FlexQueryResponse><Trade symbol="A" tradeDate="20250101" quantity="2" buySell="BUY" tradePrice="10" currency="USD" /></FlexQueryResponse>');
+    equal(getFlexCommissionRange(db, integration), undefined);
     equal(readFlexOrders(db, integration)[0].commission, undefined);
   } finally { db.close(); }
 });
@@ -127,4 +124,33 @@ Deno.test("IBKR Flex shares request pacing across concurrent queries with the sa
   for (let index = 1; index < starts.length; index++) {
     equal(starts[index] - starts[index - 1] >= 6_100, true);
   }
+});
+
+Deno.test("background retrieval saves a pending reference and resumes without another SendRequest", async () => {
+  const calls: string[] = [];
+  let reference: string | undefined;
+  let ready = false;
+  let time = 0;
+  const request: typeof fetch = input => {
+    const url = new URL(String(input));
+    const method = url.pathname.split("/").at(-1)!;
+    calls.push(method);
+    if (method === "SendRequest") return Promise.resolve(new Response(
+      "<FlexStatementResponse><Status>Success</Status><ReferenceCode>saved</ReferenceCode></FlexStatementResponse>",
+    ));
+    equal(url.searchParams.get("q"), "saved");
+    return Promise.resolve(new Response(ready ? '<FlexQueryResponse type="AF" />' :
+      "<FlexStatementResponse><Status>Warn</Status><ErrorCode>1019</ErrorCode></FlexStatementResponse>"));
+  };
+  const sleep = (ms: number) => { time += ms; return Promise.resolve(); };
+  const range = getFlexStatementRange(0);
+  await rejects(getFlexStatement("token", "query", range, request, sleep, () => time, {
+    pollAttempts: 1, onReference: value => { reference = value; },
+  }), FlexReportPending);
+  equal(reference, "saved");
+  ready = true;
+  equal(await getFlexStatement("token", "query", range, request, sleep, () => time, {
+    pollAttempts: 1, referenceCode: reference,
+  }), '<FlexQueryResponse type="AF" />');
+  deepStrictEqual(calls, ["SendRequest", "GetStatement", "GetStatement"]);
 });

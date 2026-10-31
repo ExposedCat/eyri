@@ -143,8 +143,10 @@ Telegram chat with Eyri, send:
 ```
 
 The integration belongs to the command sender. `/portfolio` uses the live Gateway;
-historical commands need the initial Flex imports to finish. Flex imports one
-annual batch every five minutes and defaults to five batches per integration.
+historical commands need the initial Flex imports to finish. A shared background
+poller fetches one Flex report every five minutes across trade imports, funding
+queries and commission backfills. Trade history defaults to five annual batches
+per integration. Commands read cached Flex data and never start downloads.
 The API stays on the private container network; only the health endpoint is
 published on the server's loopback interface. VNC is not published.
 
@@ -154,12 +156,22 @@ Funding loads consecutive annual statements back to Date Funded (or Date Opened
 when Date Funded is absent), anchoring full annual batches at that date so
 a late-night first deposit and its report day stay together. It validates cash
 continuity and reconciles Cash Transactions against Cash Report and Change in NAV.
-Requests using the same token are paced together, including trade imports.
+Requests using the same token are paced together. Pending reports retain their
+reference code and are retrieved on later polls instead of submitting another
+generation request. Retry times, pending references and a shared polling lease
+are stored in SQLite and survive restarts. Failures back off exponentially;
+`1025` pauses every query sharing that token for at least one hour, doubling on
+repeated failures up to 24 hours. Invalid credentials pause for at least six hours.
+Other tokens continue polling. Completed funding refreshes daily, older funding
+weekly, and historical trade batches daily. Existing caches remain available when
+a refresh fails; an integration without complete cached funding reports that its
+history is syncing in the background.
 Historical transaction FX rates convert contributions into account base currency;
 Gateway NetLiquidation and TotalCashValue supply the live balance and cash.
 Native cash transactions, including dividends and withholding, are retained for
 historical reconstruction. The trade Flex Query must include commissions for
-account cash charts. Existing imported fills backfill commission fields on demand;
+account cash charts. Existing imported fills backfill commission fields through
+the same background poller;
 missing fees are never silently replaced with zero for account-ledger charts.
 Flex only publishes completed days. If live cash differs from the latest statement,
 the report fails with an explicit reconciliation error until the next daily statement;

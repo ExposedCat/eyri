@@ -4,7 +4,7 @@ import { runBot } from "../bot/runtime.ts";
 import type { Database } from "../database/setup.ts";
 import { connectToDb } from "../database/setup.ts";
 import { startIbkrExecutionSyncLoop } from "../integrations/ibkr/adapter.ts";
-import { startFlexSyncLoop } from "../integrations/ibkr/flex.ts";
+import { startFlexSyncLoop } from "../integrations/ibkr/flex_sync.ts";
 import { ensureTickerDisplaySchema } from "../tickers/decorations.ts";
 import { startMcpHttpServer } from "../mcp/server.ts";
 import { ensureYahooMappings } from "../market_data/mappings.ts";

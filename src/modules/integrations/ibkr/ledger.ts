@@ -2,7 +2,7 @@ import type { Integration } from "../../database/integration.ts";
 import type { Database } from "../../database/setup.ts";
 import type { AccountPerformanceOptions, IntegrationAccountPerformance } from "../types.ts";
 import {
-  getFlexStatement,
+  type FlexStatementRange,
   getFlexStatementRange,
   getXmlElements,
   parseDate,
@@ -341,11 +341,63 @@ function cashMatches(a: Record<string, number>, b: Record<string, number>) {
       Math.abs((a[currency] ?? 0) - (b[currency] ?? 0)) <= .02,
   );
 }
+export function ensureIbkrFundingSchema(database: Database) {
+  database.exec(`CREATE TABLE IF NOT EXISTS ibkr_funding_batches (
+    integration_id INTEGER NOT NULL, query_id TEXT NOT NULL, from_date TEXT NOT NULL,
+    to_date TEXT NOT NULL, payload TEXT NOT NULL, fetched_at REAL NOT NULL,
+    PRIMARY KEY (integration_id, query_id, from_date, to_date))`);
+}
+
+export function readLatestIbkrFundingBatch(database: Database, integration: Integration, now = new Date()) {
+  ensureIbkrFundingSchema(database);
+  const credentials = parseIbkrCredentials(integration.credentials);
+  const rows = database.prepare(
+    "SELECT payload FROM ibkr_funding_batches WHERE integration_id=? AND query_id=? AND to_date<=? ORDER BY to_date DESC,fetched_at DESC",
+  ).all(integration.id, credentials.fundingFlexQueryId ?? credentials.flexQueryId, now.toISOString()) as { payload: string }[];
+  for (const row of rows) {
+    const batch = JSON.parse(row.payload) as IbkrFundingBatch;
+    if (Array.isArray(batch.cashHistory)) return batch;
+  }
+}
+
+function fundingRanges(metadata: IbkrFundingBatch, latestRange: FlexStatementRange) {
+  const start = new Date(metadata.fundedAt ?? metadata.openedAt);
+  if (start >= latestRange.from) return [latestRange];
+  // Full years start at first funding, keeping late-night funding and its
+  // report day together. Historical ranges remain stable as new days arrive.
+  const ranges: FlexStatementRange[] = [];
+  for (let from = start; from <= latestRange.to;) {
+    if (ranges.length >= 100) throw new Error("IBKR funding history exceeds 100 annual statements");
+    const to = new Date(Math.min(+latestRange.to, +from + 364 * 86_400_000));
+    ranges.push({ from, to });
+    from = new Date(+to + 86_400_000);
+  }
+  return ranges.reverse();
+}
+
+export function getIbkrFundingSyncRanges(database: Database, integration: Integration, now = new Date()) {
+  const latestRange = getFlexStatementRange(0, now);
+  const metadata = readLatestIbkrFundingBatch(database, integration, now);
+  return metadata ? fundingRanges(metadata, latestRange) : [latestRange];
+}
+
+export function cacheIbkrFundingBatch(database: Database, integration: Integration, range: FlexStatementRange, xml: string, now = new Date()) {
+  ensureIbkrFundingSchema(database);
+  const credentials = parseIbkrCredentials(integration.credentials);
+  const batch = parseIbkrFundingBatch(xml, range, credentials.accountId);
+  database.prepare("INSERT OR REPLACE INTO ibkr_funding_batches VALUES (?,?,?,?,?,?)").run(
+    integration.id, credentials.fundingFlexQueryId ?? credentials.flexQueryId,
+    range.from.toISOString(), range.to.toISOString(), JSON.stringify(batch), +now,
+  );
+  return batch;
+}
+
+const fundingPending = "IBKR funding history is syncing in the background; a complete cached statement is not available yet. Retry after the next scheduled sync.";
+
 export async function fetchIbkrAccountPerformance(
   database: Database,
   integration: Integration,
   snapshot: IbkrAccountSnapshot,
-  requestStatement = getFlexStatement,
   now = new Date(),
   options: AccountPerformanceOptions = {},
 ): Promise<IntegrationAccountPerformance> {
@@ -353,45 +405,21 @@ export async function fetchIbkrAccountPerformance(
   const token = credentials.flexToken;
   const queryId = credentials.fundingFlexQueryId ?? credentials.flexQueryId;
   if (!token || !queryId) throw new Error(configurationError);
-  database.exec(`CREATE TABLE IF NOT EXISTS ibkr_funding_batches (
-    integration_id INTEGER NOT NULL, query_id TEXT NOT NULL, from_date TEXT NOT NULL,
-    to_date TEXT NOT NULL, payload TEXT NOT NULL, fetched_at REAL NOT NULL,
-    PRIMARY KEY (integration_id, query_id, from_date, to_date))`);
-  const latestRange = getFlexStatementRange(0, now);
-  const loadBatch = async (range: { from: Date; to: Date }) => {
-    const from = range.from.toISOString(), to = range.to.toISOString();
+  ensureIbkrFundingSchema(database);
+  const metadata = readLatestIbkrFundingBatch(database, integration, now);
+  if (!metadata) throw new Error(fundingPending);
+  const statementThrough = new Date(metadata.through);
+  const latestRange = { from: new Date(+statementThrough - 364 * 86_400_000), to: statementThrough };
+  const loadBatch = (range: FlexStatementRange) => {
     const cached = database.prepare(
-      "SELECT payload,fetched_at FROM ibkr_funding_batches WHERE integration_id=? AND query_id=? AND from_date=? AND to_date=?",
-    )
-      .get(integration.id, queryId, from, to) as {
-        payload: string;
-        fetched_at: number;
-      } | undefined;
-    const ttl = +range.to === +latestRange.to ? 60_000 : 86_400_000;
-    const batch: IbkrFundingBatch =
-      cached && Date.now() - cached.fetched_at < ttl && Array.isArray(JSON.parse(cached.payload).cashHistory)
-        ? JSON.parse(cached.payload)
-        : parseIbkrFundingBatch(
-          await requestStatement(token, queryId, range),
-          range,
-          snapshot.accountId,
-        );
-    if (!cached || Date.now() - cached.fetched_at >= ttl || !Array.isArray(JSON.parse(cached.payload).cashHistory)) {
-      database.prepare(
-        "INSERT OR REPLACE INTO ibkr_funding_batches VALUES (?,?,?,?,?,?)",
-      )
-        .run(
-          integration.id,
-          queryId,
-          from,
-          to,
-          JSON.stringify(batch),
-          Date.now(),
-        );
+      "SELECT payload FROM ibkr_funding_batches WHERE integration_id=? AND query_id=? AND from_date=? AND to_date=?",
+    ).get(integration.id, queryId, range.from.toISOString(), range.to.toISOString()) as { payload: string } | undefined;
+    if (cached) {
+      const batch = JSON.parse(cached.payload) as IbkrFundingBatch;
+      if (Array.isArray(batch.cashHistory)) return batch;
     }
-    return batch;
+    throw new Error(fundingPending);
   };
-  const metadata = await loadBatch(latestRange);
   if (
     metadata.accountId !== snapshot.accountId ||
     metadata.currency !== snapshot.currency
@@ -400,30 +428,14 @@ export async function fetchIbkrAccountPerformance(
       "IBKR funding statement does not match the live Gateway account and base currency",
     );
   }
-  const start = new Date(metadata.fundedAt ?? metadata.openedAt);
-  const ranges = [latestRange];
-  if (start < latestRange.from) {
-    // Anchor full years at first funding. A backwards scan can leave only the
-    // late-night funding date as its oldest period, for which IBKR publishes no
-    // statement until the next report day. Keep these days in the same batch.
-    ranges.length = 0;
-    for (let from = start; from <= latestRange.to;) {
-      if (ranges.length >= 100) {
-        throw new Error("IBKR funding history exceeds 100 annual statements");
-      }
-      const to = new Date(Math.min(+latestRange.to, +from + 364 * 86_400_000));
-      ranges.push({ from, to });
-      from = new Date(+to + 86_400_000);
-    }
-    ranges.reverse();
-  }
+  const ranges = fundingRanges(metadata, latestRange);
   let latest: IbkrFundingBatch | undefined,
     previous: IbkrFundingBatch | undefined;
   let deposits = 0, withdrawals = 0;
   const fundingHistory: { date: string; amount: number }[] = [];
   const cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]> = [];
   for (const range of ranges) {
-    const batch = await loadBatch(range);
+    const batch = loadBatch(range);
     if (
       batch.accountId !== snapshot.accountId ||
       batch.currency !== snapshot.currency ||

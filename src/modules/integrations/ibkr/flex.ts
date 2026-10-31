@@ -1,15 +1,11 @@
-import {
-  getAllIntegrations,
-  type Integration,
-} from "../../database/integration.ts";
+import type { Integration } from "../../database/integration.ts";
 import type { Database } from "../../database/setup.ts";
 import { logFetch } from "../../../utils/fetch_logging.ts";
 import type { IntegrationOrder } from "../types.ts";
-import { type IbkrCredentials, parseIbkrCredentials } from "./credentials.ts";
+import { parseIbkrCredentials } from "./credentials.ts";
 
 const FLEX_BASE_URL =
   "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService";
-const FLEX_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const FLEX_BATCH_DAYS = 365;
 const DEFAULT_FLEX_MAX_YEARS = 5;
 
@@ -24,7 +20,7 @@ export type FlexTrade = {
   assetCategory: string | null;
 };
 
-type FlexStatementRange = {
+export type FlexStatementRange = {
   from: Date;
   to: Date;
 };
@@ -44,24 +40,6 @@ type FlexTradeRow = {
   currency: string | null;
   asset_category: string | null;
 };
-
-type FlexSyncBatchRow = {
-  batch_index: number;
-  requested_at: string | null;
-  synced_at: string | null;
-};
-
-type FlexBatchCandidate = {
-  integration: Integration;
-  credentials: IbkrCredentials;
-  batchIndex: number;
-  range: FlexStatementRange;
-  requestedAt: string | null;
-  syncedAt: string | null;
-};
-
-let isFlexSyncRunning = false;
-let flexSyncTimer: ReturnType<typeof setInterval> | null = null;
 
 // Share pacing between trade imports and funding requests using the same token.
 // Spacing requests also keeps annual history scans below IBKR's 10/min limit.
@@ -93,7 +71,7 @@ async function paceFlexRequest<T>(
   return await pending;
 }
 
-function ensureFlexSchema(database: Database) {
+export function ensureFlexSchema(database: Database) {
   database.exec("CREATE TABLE IF NOT EXISTS ibkr_flex_commission_queries (integration_id INTEGER NOT NULL,query_id TEXT NOT NULL,supported INTEGER NOT NULL,checked_at REAL NOT NULL,PRIMARY KEY(integration_id,query_id))");
   database.exec(`
     CREATE TABLE IF NOT EXISTS ibkr_flex_trades (
@@ -134,7 +112,7 @@ function ensureFlexSchema(database: Database) {
   }
 }
 
-function getFlexMaxYears() {
+export function getFlexMaxYears() {
   const value = Deno.env.get("FLEX_MAX_YEARS");
   if (!value) {
     return DEFAULT_FLEX_MAX_YEARS;
@@ -205,6 +183,7 @@ async function fetchFlexXml(
 
     const response = await request(url, {
       headers: { "User-Agent": "eyri" },
+      signal: AbortSignal.timeout(20_000),
     });
     if (!response.ok) {
       throw new Error(`IBKR Flex request failed: ${response.status}`);
@@ -248,6 +227,20 @@ export function getFlexStatementRange(
   return { from, to: end };
 }
 
+export class FlexServiceError extends Error {
+  constructor(message: string, readonly code: string | null) {
+    super(message);
+    this.name = "FlexServiceError";
+  }
+}
+
+export class FlexReportPending extends FlexServiceError {
+  constructor(readonly referenceCode: string) {
+    super("IBKR Flex statement is still being generated; polling will resume in the background.", "1019");
+    this.name = "FlexReportPending";
+  }
+}
+
 export async function getFlexStatement(
   token: string,
   queryId: string,
@@ -256,38 +249,44 @@ export async function getFlexStatement(
   sleep = (milliseconds: number) =>
     new Promise((resolve) => setTimeout(resolve, milliseconds)),
   clock = Date.now,
+  progress: { referenceCode?: string; onReference?: (reference: string) => void; pollAttempts?: number } = {},
 ) {
-  const sendXml = await paceFlexRequest(
-    request,
-    token,
-    sleep,
-    clock,
-    () =>
-      fetchFlexXml(request, "/SendRequest", {
-        t: token,
-        q: queryId,
-        fd: formatFlexDate(range.from),
-        td: formatFlexDate(range.to),
-        v: "3",
-      }),
-  );
-  const status = getXmlText(sendXml, "Status");
-  if (status !== "Success") {
-    const code = getXmlText(sendXml, "ErrorCode");
-    const message = getXmlText(sendXml, "ErrorMessage");
-    throw new Error(
-      `IBKR Flex report generation failed${code ? ` (${code})` : ""}: ${
-        message ?? "unknown error"
-      }`,
-    );
-  }
-
-  const referenceCode = getXmlText(sendXml, "ReferenceCode");
+  let referenceCode = progress.referenceCode;
   if (!referenceCode) {
-    throw new Error("IBKR Flex response did not include a reference code");
+    const sendXml = await paceFlexRequest(
+      request,
+      token,
+      sleep,
+      clock,
+      () =>
+        fetchFlexXml(request, "/SendRequest", {
+          t: token,
+          q: queryId,
+          fd: formatFlexDate(range.from),
+          td: formatFlexDate(range.to),
+          v: "3",
+        }),
+    );
+    const status = getXmlText(sendXml, "Status");
+    if (status !== "Success") {
+      const code = getXmlText(sendXml, "ErrorCode");
+      const message = getXmlText(sendXml, "ErrorMessage");
+      throw new FlexServiceError(
+        `IBKR Flex report generation failed${code ? ` (${code})` : ""}: ${
+          message ?? "unknown error"
+        }`,
+        code,
+      );
+    }
+
+    referenceCode = getXmlText(sendXml, "ReferenceCode") ?? undefined;
+    if (!referenceCode) {
+      throw new Error("IBKR Flex response did not include a reference code");
+    }
+    progress.onReference?.(referenceCode);
   }
 
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < (progress.pollAttempts ?? 5); attempt++) {
     if (attempt > 0) {
       await sleep(3_000);
     }
@@ -300,7 +299,7 @@ export async function getFlexStatement(
       () =>
         fetchFlexXml(request, "/GetStatement", {
           t: token,
-          q: referenceCode,
+          q: referenceCode!,
           v: "3",
         }),
     );
@@ -312,15 +311,16 @@ export async function getFlexStatement(
     const code = getXmlText(statementXml, "ErrorCode");
     if (code !== "1003" && code !== "1004" && code !== "1019") {
       const message = getXmlText(statementXml, "ErrorMessage");
-      throw new Error(
+      throw new FlexServiceError(
         `IBKR Flex statement retrieval failed (${code}): ${
           message ?? "unknown error"
         }`,
+        code,
       );
     }
   }
 
-  throw new Error("IBKR Flex statement was not ready in time");
+  throw new FlexReportPending(referenceCode);
 }
 
 function getAttr(element: XmlElement, names: string[]) {
@@ -400,7 +400,7 @@ function parsePrice(element: XmlElement) {
   return Number.isNaN(value) ? null : value;
 }
 
-function parseTrades(xml: string) {
+export function parseTrades(xml: string) {
   const trades: FlexTrade[] = [];
   for (const element of getXmlElements(xml, ["Trade", "TradeConfirm"])) {
     const ticker = getAttr(element, [
@@ -458,182 +458,16 @@ function getTradeKey(trade: FlexTrade, index: number) {
   ].join(":");
 }
 
-function upsertFlexBatch(
-  database: Database,
-  integration: Integration,
-  queryId: string,
-  batchIndex: number,
-  range: FlexStatementRange,
-) {
-  ensureFlexSchema(database);
-  database
-    .prepare(`
-      INSERT INTO ibkr_flex_sync_batches (
-        integration_id,
-        query_id,
-        batch_index,
-        from_date,
-        to_date
-      ) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT(integration_id, query_id, batch_index) DO UPDATE SET
-        from_date = excluded.from_date,
-        to_date = excluded.to_date
-    `)
-    .run(
-      integration.id,
-      queryId,
-      batchIndex,
-      formatDateKey(range.from),
-      formatDateKey(range.to),
-    );
-}
-
-function getBatchRow(
-  database: Database,
-  integration: Integration,
-  queryId: string,
-  batchIndex: number,
-) {
-  ensureFlexSchema(database);
-  return database
-    .prepare(`
-      SELECT batch_index, requested_at, synced_at
-      FROM ibkr_flex_sync_batches
-      WHERE integration_id = ?
-        AND query_id = ?
-        AND batch_index = ?
-    `)
-    .get(integration.id, queryId, batchIndex) as FlexSyncBatchRow | undefined;
-}
-
-function getBatchLastRequestMs(candidate: FlexBatchCandidate) {
-  const lastRequest = candidate.requestedAt ?? candidate.syncedAt;
-  if (!lastRequest) {
-    return null;
-  }
-
-  const lastRequestMs = new Date(lastRequest).getTime();
-  return Number.isNaN(lastRequestMs) ? null : lastRequestMs;
-}
-
-function getNextFlexBatch(database: Database): {
-  integration: Integration;
-  credentials: IbkrCredentials;
-  batchIndex: number;
-  range: FlexStatementRange;
-} | null {
-  const maxYears = getFlexMaxYears();
-  const integrations = getAllIntegrations(database);
-  const candidates: FlexBatchCandidate[] = [];
-
-  for (const integration of integrations) {
-    if (integration.kind !== "ibkr") {
-      continue;
-    }
-
-    const credentials = parseIbkrCredentials(integration.credentials);
-    if (!credentials.flexToken || !credentials.flexQueryId) {
-      continue;
-    }
-
-    for (let batchIndex = 0; batchIndex < maxYears; batchIndex++) {
-      const range = getFlexStatementRange(batchIndex);
-      upsertFlexBatch(
-        database,
-        integration,
-        credentials.flexQueryId,
-        batchIndex,
-        range,
-      );
-      const row = getBatchRow(
-        database,
-        integration,
-        credentials.flexQueryId,
-        batchIndex,
-      );
-      candidates.push({
-        integration,
-        credentials,
-        batchIndex,
-        range,
-        requestedAt: row?.requested_at ?? null,
-        syncedAt: row?.synced_at ?? null,
-      });
-    }
-  }
-
-  const neverRequested = candidates.find(
-    (candidate) => !candidate.requestedAt && !candidate.syncedAt,
-  );
-  if (neverRequested) {
-    return neverRequested;
-  }
-
-  return (
-    candidates
-      .map((candidate) => ({
-        candidate,
-        lastRequestMs: getBatchLastRequestMs(candidate),
-      }))
-      .filter(
-        ({ lastRequestMs }) =>
-          lastRequestMs === null ||
-          Date.now() - lastRequestMs >= FLEX_SYNC_INTERVAL_MS,
-      )
-      .sort((a, b) => (a.lastRequestMs ?? 0) - (b.lastRequestMs ?? 0))
-      .at(0)?.candidate ?? null
-  );
-}
-
-function markBatchRequested(
-  database: Database,
-  integration: Integration,
-  queryId: string,
-  batchIndex: number,
-) {
-  ensureFlexSchema(database);
-  database
-    .prepare(`
-      UPDATE ibkr_flex_sync_batches
-      SET requested_at = ?,
-        last_error = NULL
-      WHERE integration_id = ?
-        AND query_id = ?
-        AND batch_index = ?
-    `)
-    .run(new Date().toISOString(), integration.id, queryId, batchIndex);
-}
-
-function markBatchFailed(
-  database: Database,
-  integration: Integration,
-  queryId: string,
-  batchIndex: number,
-  error: unknown,
-) {
-  ensureFlexSchema(database);
-  const message = error instanceof Error ? error.message : String(error);
-  database
-    .prepare(`
-      UPDATE ibkr_flex_sync_batches
-      SET last_error = ?
-      WHERE integration_id = ?
-        AND query_id = ?
-        AND batch_index = ?
-    `)
-    .run(message, integration.id, queryId, batchIndex);
-}
-
-function writeBatchTrades(
+export function writeBatchTrades(
   database: Database,
   integration: Integration,
   queryId: string,
   batchIndex: number,
   range: FlexStatementRange,
   trades: FlexTrade[],
+  syncedAt = new Date().toISOString(),
 ) {
   ensureFlexSchema(database);
-  const syncedAt = new Date().toISOString();
 
   database.exec("BEGIN");
   try {
@@ -704,92 +538,6 @@ function writeBatchTrades(
   }
 }
 
-async function syncFlexBatch(
-  database: Database,
-  integration: Integration,
-  credentials: IbkrCredentials,
-  batchIndex: number,
-  range: FlexStatementRange,
-) {
-  if (!credentials.flexToken || !credentials.flexQueryId) {
-    return;
-  }
-
-  markBatchRequested(
-    database,
-    integration,
-    credentials.flexQueryId,
-    batchIndex,
-  );
-  try {
-    const statement = await getFlexStatement(
-      credentials.flexToken,
-      credentials.flexQueryId,
-      range,
-    );
-    const trades = parseTrades(statement);
-    writeBatchTrades(
-      database,
-      integration,
-      credentials.flexQueryId,
-      batchIndex,
-      range,
-      trades,
-    );
-  } catch (error) {
-    markBatchFailed(
-      database,
-      integration,
-      credentials.flexQueryId,
-      batchIndex,
-      error,
-    );
-    console.error(
-      `Failed to sync IBKR Flex integration=${integration.id} batch=${batchIndex}:`,
-      error,
-    );
-  }
-}
-
-export async function syncNextFlexBatch(database: Database) {
-  const nextBatch = getNextFlexBatch(database);
-  if (!nextBatch) {
-    return false;
-  }
-
-  await syncFlexBatch(
-    database,
-    nextBatch.integration,
-    nextBatch.credentials,
-    nextBatch.batchIndex,
-    nextBatch.range,
-  );
-  return true;
-}
-
-export function startFlexSyncLoop(database: Database) {
-  ensureFlexSchema(database);
-  if (flexSyncTimer !== null) {
-    return;
-  }
-
-  const run = async () => {
-    if (isFlexSyncRunning) {
-      return;
-    }
-
-    isFlexSyncRunning = true;
-    try {
-      await syncNextFlexBatch(database);
-    } finally {
-      isFlexSyncRunning = false;
-    }
-  };
-
-  flexSyncTimer = setInterval(run, FLEX_SYNC_INTERVAL_MS);
-  run();
-}
-
 export function readFlexOrders(
   database: Database,
   integration: Integration,
@@ -833,33 +581,37 @@ export function readFlexOrders(
   }));
 }
 
-// Upgrade existing history on demand. Bucket transaction keys depend on date,
-// ticker and currency, so retaining fees does not change bucket assignments.
-export async function ensureFlexCommissions(
-  database: Database, integration: Integration, requestStatement = getFlexStatement,
-) {
+// The background poller backfills one annual range at a time. Report readers
+// never request Flex data, including when old executions lack commissions.
+export function getFlexCommissionRange(
+  database: Database, integration: Integration, now = new Date(),
+): FlexStatementRange | undefined {
   ensureFlexSchema(database);
   const credentials = parseIbkrCredentials(integration.credentials);
   if (!credentials.flexToken || !credentials.flexQueryId) return;
   const support = database.prepare("SELECT supported,checked_at FROM ibkr_flex_commission_queries WHERE integration_id=? AND query_id=?")
     .get(integration.id, credentials.flexQueryId) as { supported: number; checked_at: number } | undefined;
-  if (support?.supported === 0 && Date.now() - support.checked_at < 3_600_000) return;
+  if (support?.supported === 0 && +now - support.checked_at < 3_600_000) return;
   const missing = database.prepare("SELECT MIN(date) AS first,MAX(date) AS last FROM ibkr_flex_trades WHERE integration_id=? AND query_id=? AND commission IS NULL")
     .get(integration.id, credentials.flexQueryId) as { first: string | null; last: string | null };
   if (!missing.first || !missing.last) return;
-  const last = new Date(missing.last);
-  for (let from = new Date(missing.first); from <= last;) {
-    const to = new Date(Math.min(+last, +from + 364 * 86_400_000));
-    const trades = parseTrades(await requestStatement(credentials.flexToken, credentials.flexQueryId, { from, to }));
-    if (!trades.length) throw new Error("IBKR commission backfill returned no executions for existing history; cached trades were preserved.");
-    if (trades.some(trade => trade.commission === null)) {
-      // Open-position reports can still use broker book cost. Cash-ledger
-      // reconstruction rejects unknown fees explicitly instead of inventing zero.
-      database.prepare("INSERT OR REPLACE INTO ibkr_flex_commission_queries VALUES (?,?,0,?)").run(integration.id, credentials.flexQueryId, Date.now());
-      return;
-    }
-    writeBatchTrades(database, integration, credentials.flexQueryId, -1, { from, to }, trades);
-    from = new Date(+to + 86_400_000);
+  const from = new Date(missing.first);
+  return { from, to: new Date(Math.min(+new Date(missing.last), +from + 364 * 86_400_000)) };
+}
+
+export function cacheFlexCommissions(
+  database: Database, integration: Integration, range: FlexStatementRange,
+  xml: string, now = new Date(),
+) {
+  ensureFlexSchema(database);
+  const credentials = parseIbkrCredentials(integration.credentials);
+  const queryId = credentials.flexQueryId!;
+  const trades = parseTrades(xml);
+  if (!trades.length) throw new Error("IBKR commission backfill returned no executions for existing history; cached trades were preserved.");
+  if (trades.some(trade => trade.commission === null)) {
+    database.prepare("INSERT OR REPLACE INTO ibkr_flex_commission_queries VALUES (?,?,0,?)").run(integration.id, queryId, +now);
+    return;
   }
-  database.prepare("INSERT OR REPLACE INTO ibkr_flex_commission_queries VALUES (?,?,1,?)").run(integration.id, credentials.flexQueryId, Date.now());
+  writeBatchTrades(database, integration, queryId, -1, range, trades, now.toISOString());
+  database.prepare("INSERT OR REPLACE INTO ibkr_flex_commission_queries VALUES (?,?,1,?)").run(integration.id, queryId, +now);
 }

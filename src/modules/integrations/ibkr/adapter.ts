@@ -14,7 +14,7 @@ import type {
   IntegrationPortfolioPosition,
 } from "../types.ts";
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
-import { ensureFlexCommissions, readFlexOrders } from "./flex.ts";
+import { readFlexOrders } from "./flex.ts";
 import {
   fetchIbkrAccountPerformance,
   type IbkrAccountSnapshot,
@@ -991,7 +991,7 @@ export const ibkrAdapter: IntegrationAdapter = {
     } finally {
       api.disconnect();
     }
-    return fetchIbkrAccountPerformance(database, integration, snapshot, undefined, undefined, options);
+    return fetchIbkrAccountPerformance(database, integration, snapshot, undefined, options);
   },
   async fetchPortfolio(database: Database, integration: Integration) {
     const { config } = getConnectionConfig(integration);
@@ -1026,7 +1026,6 @@ export const ibkrAdapter: IntegrationAdapter = {
   },
 
   async fetchOrderHistory(database: Database, integration: Integration) {
-    await ensureFlexCommissions(database, integration);
     return readIbkrOrders(database, integration);
   },
 
