@@ -1,5 +1,5 @@
 import { accountReturn } from "./account_return.ts";
-import { buildHistoricalReportSeries } from "./historical_report.ts";
+import { buildHistoricalReportSeries, executionCash } from "./historical_report.ts";
 import { buildReportSnapshot } from "./report.ts";
 import type { ReportKind, ReportFilter } from "./performance_command.ts";
 import { benchmarkForKind, type BenchmarkSource } from "./benchmark_capital.ts";
@@ -647,6 +647,15 @@ export async function loadAllTimeDataset(
     throw new HistoricalDataError(failures);
   }
   const benchmarkAccounts = args.benchmarkSource?.accountPerformances ?? args.accountPerformances ?? [];
+  // This is a benchmark assumption, never a persisted broker deposit. Once a
+  // statement covers the purchase date, its real funding replaces the estimate.
+  const provisionalOrders = kind === "perf"
+    ? (args.benchmarkSource?.orders ?? selected).filter(order =>
+      order.integrationKind === "ibkr" && isDisplayableOrder(order) &&
+      order.quantity > 0 && dateOf(order.date) === through &&
+      benchmarkAccounts.some(account => account.integrationId === order.integrationId &&
+        dateOf(account.historyThrough) < through))
+    : [];
   const currencies = [...sources.values()].flatMap(portfolioPositionCurrencies).concat(
       [...histories.values()].map((h) => h.currency),
       (args.accountPerformances ?? []).flatMap(a => [a.currency, ...(a.reportedComponents?.map(c => c.currency) ?? [])]),
@@ -654,6 +663,7 @@ export async function loadAllTimeDataset(
       args.orders.flatMap(order => [order.currency, ...(order.commission ? [order.commission.currency] : []),
         ...(!isDisplayableOrder(order) ? order.ticker.split(/[./]/) : [])]),
       benchmarkAccounts.map(account => account.currency),
+      provisionalOrders.flatMap(order => [order.currency, ...(order.commission ? [order.commission.currency] : [])]),
     );
   const rates = await fetchUsdConversionRates(
     currencies,
@@ -743,6 +753,19 @@ export async function loadAllTimeDataset(
           }
         }
       }
+      for (const order of provisionalOrders) {
+        const account = accounts.find(account => account.integrationId === order.integrationId)!;
+        const amountUsd = -executionCash(order).reduce((sum, movement) =>
+          sum + movement.amount * historicalUsdFactor(historicalRates, movement.currency, through), 0);
+        if (!Number.isFinite(amountUsd) || amountUsd <= 0) throw new Error(`Invalid provisional purchase cost for ${order.ticker}`);
+        purchases.push({ date: through, amountUsd,
+          ...(account.currency !== "USD" ? {
+            contributionUsd: amountUsd * usdFactor(account.currency, rates) / historicalUsdFactor(historicalRates, account.currency, through),
+            valuationCurrency: account.currency,
+          } : {}),
+        });
+      }
+      if (provisionalOrders.length) notes.push("Index funding is provisional: today's purchases are treated as new cash until the next statement.");
       benchmark = await loadChartBenchmark(purchases, points[0].date, points.at(-1)!.date, cache, "sp500", benchmarkValuations);
       benchmark = benchmarkForKind(benchmark, kind);
     } catch (error) {

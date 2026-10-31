@@ -10,6 +10,7 @@ import { trading212Adapter } from "./trading212/adapter.ts";
 import { enrichPortfolioWithVontobelQuotes, VontobelQuoteCache } from "../market_data/vontobel.ts";
 import { portfolioValuations } from "./usd.ts";
 import type {
+  AccountPerformanceOptions,
   IntegrationAdapter,
   IntegrationPortfolioPosition,
   IntegrationOrder,
@@ -186,12 +187,13 @@ export async function fetchIntegratedPortfolio(
 export function fetchIntegratedAccountPerformances(
   database: Database, userId: number,
   positions: IntegrationPortfolioPosition[], orders: IntegrationOrder[],
+  options?: AccountPerformanceOptions,
 ) {
   return mapIntegrationData(database, getUserIntegrations(database, userId), async (adapter, db, integration) => {
     if (!adapter.fetchAccountPerformance) return [];
     return [await adapter.fetchAccountPerformance(db, integration,
       positions.filter(p => p.integrationId === integration.id),
-      orders.filter(o => o.integrationId === integration.id))];
+      orders.filter(o => o.integrationId === integration.id), options)];
   });
 }
 

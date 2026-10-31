@@ -68,12 +68,19 @@ export type IntegrationOrder = {
   historicalPriceMultiplier?: number;
 };
 
+export type AccountPerformanceOptions = {
+  // A position-performance benchmark only needs completed funding. It must not
+  // use the resulting snapshot to calculate live account-wide returns.
+  purpose?: "benchmark";
+};
+
 export type IntegrationAdapter = {
   fetchAccountPerformance?: (
     database: Database,
     integration: Integration,
     positions: IntegrationPortfolioPosition[],
     orders: IntegrationOrder[],
+    options?: AccountPerformanceOptions,
   ) => Promise<IntegrationAccountPerformance>;
   fetchCashHistory?: (
     database: Database,

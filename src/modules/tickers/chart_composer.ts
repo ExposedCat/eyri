@@ -58,6 +58,7 @@ async function datasetFor(ctx: CustomContext, bucketName: string | null,
   }
   const view = await fetchPortfolioView(ctx.db, userId, bucketName, {
     history: true, accountPerformance: true, warrantQuotes: selection.filter !== "stocks",
+    accountPerformanceOptions: selection.kind === "perf" ? { purpose: "benchmark" } : undefined,
   });
   const matches = selection.filter === "stocks" ? isStockPosition : selection.filter === "options" ? isOptionPosition : () => true;
   const label = [ctx.from!.first_name, ctx.from!.last_name].filter(Boolean)
@@ -66,7 +67,7 @@ async function datasetFor(ctx: CustomContext, bucketName: string | null,
     ctx.db,
     { ...view, positions: view.positions.filter(matches), orders: view.orders.filter(matches),
       accountPerformances: selection.filter ? [] : view.accountPerformances,
-      benchmarkSource: view, ...selection },
+      benchmarkSource: { ...view, orders: view.historyOrders }, ...selection },
     userId,
     label,
   );

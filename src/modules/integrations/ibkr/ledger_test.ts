@@ -267,6 +267,20 @@ Deno.test("IBKR funding scans back to account opening, caches completed batches 
     db.close();
   }
 });
+Deno.test("IBKR position benchmarks can use completed funding despite live cash changes without weakening account return checks", async () => {
+  const db = new Database(":memory:");
+  const changed = { ...snapshot, cash: 50, cashByCurrency: { USD: 50 } };
+  const request = (_token: string, _query: string, range: { from: Date; to: Date }) =>
+    Promise.resolve(requestedStatement(range));
+  try {
+    const result = await fetchIbkrAccountPerformance(db, integration, changed, request, now, { purpose: "benchmark" });
+    equal(result.deposits, 620);
+    equal(result.withdrawals, 120);
+    equal(result.fundingHistory?.reduce((sum, flow) => sum + flow.amount, 0), 500);
+    equal(result.historyThrough.toISOString().slice(0, 10), "2026-10-21");
+    await rejects(fetchIbkrAccountPerformance(db, integration, changed, request, now), /today's cash activity/);
+  } finally { db.close(); }
+});
 Deno.test("IBKR funding uses Report Date for late-night deposits on the first statement day", () => {
   const xml = statement().replace(
     'dateTime="20260103;120000"',

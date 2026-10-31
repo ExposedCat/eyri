@@ -66,3 +66,74 @@ Deno.test("every chart mode and asset filter invests all top-ups immediately, in
     }
   } finally { db.close(); }
 });
+
+Deno.test("perf benchmarks assume today's gross buys are new cash and replace them with statement funding next day", async () => {
+  const db = new Database(":memory:");
+  const orders = [order("FIRST", 1, 10, 1), order("FIRST", -1, 100, 3), order("SECOND", 1, 100, 3)];
+  const a = account();
+  a.historyThrough = new Date("2025-01-02");
+  const positions = [{ integrationId: 1, integrationKind: "ibkr", account: "A", ticker: "SECOND", assetCategory: "STK", currency: "USD", amount: 1,
+    averageUnitPrice: 100, totalInput: 100, currentPrice: 100, totalNow: 100, unrealizedPnl: 0, realizedPnl: 0, dailyPnl: 0, dailyPnlPercentage: 0,
+    dailyPnlBaseline: 100, openedAt: new Date("2025-01-03") }];
+  // A purchase outside the asset filter still funds the portfolio-wide index;
+  // sells and FX executions must not cancel or create provisional funding.
+  const extra = { ...order("EXTRA", 1, 50, 3), commission: { currency: "USD", amount: -1 } };
+  const sourceOrders = [...orders, extra, order("EUR.USD", 100, 1, 3)];
+  const cache = { resolve: (source: { ticker: string }) => Promise.resolve(source.ticker),
+    get: (symbol: string) => Promise.resolve(symbol === "CSPX.L" || symbol === "IUMO.L" ? { ...history, symbol } : {
+      ...history, symbol, instrumentType: "EQUITY", bars: history.bars.map(bar => ({ ...bar, close: symbol === "FIRST" && bar.date < "2025-01-03" ? 10 : 100 })),
+    }) };
+  try {
+    const args = { positions, orders, kind: "perf" as const, accountPerformances: [a], benchmarkSource: { orders: sourceOrders, accountPerformances: [a] },
+      transactionBuckets: new Map<string, string>(), bucketName: null, now: new Date("2025-01-03") };
+    const dataset = await loadAllTimeDataset(db, args, 1, "Person", cache as never);
+    ok(dataset.benchmark);
+    deepStrictEqual(dataset.benchmarkPurchases, [
+      { date: "2025-01-01", amountUsd: 10 }, { date: "2025-01-03", amountUsd: 100 }, { date: "2025-01-03", amountUsd: 51 },
+    ]);
+    near(dataset.benchmark.points.at(-1)!.gain, 2);
+    near(dataset.benchmark.points.at(-1)!.percentage, 2 / 161 * 100);
+    ok(dataset.notes?.some(note => note.includes("provisional")));
+    deepStrictEqual(a.fundingHistory, [{ date: "2025-01-01", amount: 10 }]);
+    const [switched] = await switchChartBenchmarks(db, JSON.parse(JSON.stringify([dataset])), "momentum", cache);
+    deepStrictEqual(switched.benchmarkPurchases, dataset.benchmarkPurchases);
+    near(switched.benchmark!.points.at(-1)!.percentage, dataset.benchmark.points.at(-1)!.percentage);
+
+    // Foreign buys and commission currencies outside the asset filter still
+    // use their native costs and preserve the account-base valuation for toggles.
+    a.currency = "CZK";
+    extra.currency = "EUR";
+    extra.commission = { currency: "GBP", amount: -1 };
+    const quotes: Record<string, number> = { CZK: 2, EUR: .5, GBP: .25 };
+    const request = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname.endsWith("/rates")) return Response.json(
+        url.searchParams.get("quotes")!.toUpperCase().split(",").flatMap(quote =>
+          ["2024-12-31", "2025-01-03"].map(date => ({ date, base: "USD", quote, rate: quotes[quote] }))),
+      );
+      const quote = url.pathname.split("/").at(-1)!.toUpperCase();
+      return Response.json({ base: "USD", quote, rate: quotes[quote] });
+    }) as typeof fetch;
+    const foreign = await loadAllTimeDataset(db, args, 1, "Person", cache as never, request);
+    deepStrictEqual(foreign.benchmarkPurchases?.slice(-2), [
+      { date: "2025-01-03", amountUsd: 100, contributionUsd: 100, valuationCurrency: "CZK" },
+      { date: "2025-01-03", amountUsd: 104, contributionUsd: 104, valuationCurrency: "CZK" },
+    ]);
+    const [foreignSwitched] = await switchChartBenchmarks(db, JSON.parse(JSON.stringify([foreign])), "momentum", cache);
+    near(foreignSwitched.benchmark!.points.at(-1)!.gain, foreign.benchmark!.points.at(-1)!.gain);
+    a.currency = "USD";
+    extra.currency = "USD";
+    extra.commission = { currency: "USD", amount: -1 };
+
+    // The next statement confirms reinvestment: no additional deposit occurred.
+    a.historyThrough = new Date("2025-01-03");
+    const recovered = await loadAllTimeDataset(db, { ...args, now: new Date("2025-01-04") }, 1, "Person", cache as never);
+    deepStrictEqual(recovered.benchmarkPurchases, [{ date: "2025-01-01", amountUsd: 10 }]);
+    near(recovered.benchmark!.points.at(-1)!.percentage, 20);
+    equal(recovered.notes?.length, 0);
+
+    // Even a same-day statement must prevent double counting purchases.
+    const covered = await loadAllTimeDataset(db, args, 1, "Person", cache as never);
+    deepStrictEqual(covered.benchmarkPurchases, recovered.benchmarkPurchases);
+  } finally { db.close(); }
+});

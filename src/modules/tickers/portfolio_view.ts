@@ -21,7 +21,7 @@ import {
   getOrderTransactionKey,
 } from "./portfolio.ts";
 import { portfolioValuations } from "../integrations/usd.ts";
-import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
+import type { AccountPerformanceOptions, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { adjustOrderForCorporateActions } from "../market_data/corporate_actions.ts";
 import { buildBucketCashAccounts, excludeBucketCapital } from "./bucket_funding.ts";
 
@@ -109,6 +109,7 @@ type Options = {
   history?: boolean;
   displayHistory?: boolean;
   accountPerformance?: boolean;
+  accountPerformanceOptions?: AccountPerformanceOptions;
   // Stock-only reports still need broker holdings for bucket/funding calculations,
   // but must not depend on issuer quotes for excluded warrants.
   warrantQuotes?: boolean;
@@ -206,7 +207,7 @@ export async function fetchPortfolioView(
         });
         let accountPerformances =
           options.accountPerformance && names.has(null) && fetchers.accounts
-            ? await fetchers.accounts(db, ownerId, livePositions, sourceOrders)
+            ? await fetchers.accounts(db, ownerId, livePositions, sourceOrders, options.accountPerformanceOptions)
             : [];
         if (options.accountPerformance && names.has(null) && !wholeAccount && accountPerformances.length) {
           const excludedPositions = [...new Set(assignments.values())].filter(name => !names.has(name)).flatMap(name =>

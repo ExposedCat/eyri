@@ -970,7 +970,7 @@ export async function enrichContractIdentity(database: Database, api: IBApi, pos
 }
 
 export const ibkrAdapter: IntegrationAdapter = {
-  async fetchAccountPerformance(database, integration) {
+  async fetchAccountPerformance(database, integration, _positions, _orders, options) {
     const { config } = getConnectionConfig(integration);
     config.clientId = 10_000 +
       crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000_000;
@@ -991,7 +991,7 @@ export const ibkrAdapter: IntegrationAdapter = {
     } finally {
       api.disconnect();
     }
-    return fetchIbkrAccountPerformance(database, integration, snapshot);
+    return fetchIbkrAccountPerformance(database, integration, snapshot, undefined, undefined, options);
   },
   async fetchPortfolio(database: Database, integration: Integration) {
     const { config } = getConnectionConfig(integration);

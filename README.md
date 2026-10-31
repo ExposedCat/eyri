@@ -495,7 +495,16 @@ For complete accounts, the dashed line invests each external deposit into fracti
 **CSPX.L**, the accumulating USD iShares S&P 500 ETF, at that date's closing price
 (or the preceding close). Withdrawals sell hypothetical units and remain part of
 lifetime proceeds. Actual purchases and reinvestments add no benchmark capital
-for these accounts. Non-USD deposits buy ETF shares using their funding-date FX
+for completed statement dates. For `/chart perf`, IBKR purchases made today after
+the funding statement cutoff provisionally add their full purchase costs to the
+index, even when funded by sales or existing cash. Available commissions are
+included; sales and FX conversions do not offset or add provisional funding.
+This assumption affects only the benchmark. Running `/chart perf` again after
+the next statement covers that day replaces the estimate with actual deposits
+and withdrawals; previously sent charts remain saved snapshots. This mode does
+not require live cash to match the completed statement. Account-wide `alltime`
+and `worth` reconciliation remains unchanged.
+Non-USD deposits buy ETF shares using their funding-date FX
 rate. Daily ETF values include currency movement in the broker account's base
 currency, then convert to the display currency, matching the account Total's
 funding basis. Both daily FX rates and contribution values are frozen with the

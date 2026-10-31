@@ -1,6 +1,6 @@
 import type { Integration } from "../../database/integration.ts";
 import type { Database } from "../../database/setup.ts";
-import type { IntegrationAccountPerformance } from "../types.ts";
+import type { AccountPerformanceOptions, IntegrationAccountPerformance } from "../types.ts";
 import {
   getFlexStatement,
   getFlexStatementRange,
@@ -347,6 +347,7 @@ export async function fetchIbkrAccountPerformance(
   snapshot: IbkrAccountSnapshot,
   requestStatement = getFlexStatement,
   now = new Date(),
+  options: AccountPerformanceOptions = {},
 ): Promise<IntegrationAccountPerformance> {
   const credentials = parseIbkrCredentials(integration.credentials);
   const token = credentials.flexToken;
@@ -466,8 +467,10 @@ export async function fetchIbkrAccountPerformance(
       }
       // Funding is only published through the last completed day. Any cash
       // change since that snapshot could be a new deposit/withdrawal; the trade
-      // API cannot distinguish it. Never silently use yesterday's funding.
+      // API cannot distinguish it. Live account returns require reconciliation;
+      // position benchmarks may explicitly use completed funding plus estimates.
       if (
+        options.purpose !== "benchmark" &&
         !(snapshot.cashByCurrency && latest.endingCashByCurrency
           ? cashMatches(snapshot.cashByCurrency, latest.endingCashByCurrency)
           : Math.abs(snapshot.cash - latest.endingCash) <= .02)
