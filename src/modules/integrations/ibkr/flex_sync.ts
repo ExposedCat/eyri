@@ -8,6 +8,7 @@ import {
   type FlexStatementRange, writeBatchTrades,
 } from "./flex.ts";
 import { cacheIbkrFundingBatch, getIbkrFundingSyncRanges } from "./ledger.ts";
+import { cacheIbkrStockGrants } from "./grants.ts";
 
 const interval = 5 * 60_000;
 const hour = 3_600_000;
@@ -27,7 +28,7 @@ type Work = {
   seedRequested?: number;
   seedSynced?: number;
 };
-type Job = { requested_at: number | null; next_attempt_at: number; failures: number };
+type Job = { requested_at: number | null; synced_at: number | null; next_attempt_at: number; failures: number };
 type Runtime = { requestStatement?: typeof getFlexStatement; now?: Date; maxYears?: number };
 const date = (value: Date) => value.toISOString().slice(0, 10);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -129,7 +130,7 @@ function registerJob(database: Database, work: Work) {
       credential_key=excluded.credential_key,from_date=excluded.from_date,to_date=excluded.to_date`)
     .run(...jobArgs(work), work.credentialKey, date(work.range.from), date(work.range.to), work.seedRequested ?? null,
       work.seedSynced ?? null, Math.max((work.seedRequested ?? -interval) + interval, (work.seedSynced ?? -work.refresh) + work.refresh));
-  return database.prepare("SELECT requested_at,next_attempt_at,failures FROM ibkr_flex_poll_jobs WHERE integration_id=? AND kind=? AND query_id=? AND job_key=?")
+  return database.prepare("SELECT requested_at,synced_at,next_attempt_at,failures FROM ibkr_flex_poll_jobs WHERE integration_id=? AND kind=? AND query_id=? AND job_key=?")
     .get(...jobArgs(work)) as Job;
 }
 
@@ -172,11 +173,15 @@ export async function syncNextFlexBatch(database: Database, runtime: Runtime = {
       }).sort((a, b) => (a.state.requested_at ?? 0) - (b.state.requested_at ?? 0) || a.item.priority - b.item.priority || a.item.integration.id - b.item.integration.id);
       const first = due[0]?.item;
       if (first) {
-        // A trade query can also contain funding. Reuse its generated report
-        // for every due consumer of that exact token/query/date range.
-        group = due.map(candidate => candidate.item).filter(item =>
+        // Reuse a report for due consumers and missing caches of this exact
+        // query/range. A corrected parser can recover from validation backoff
+        // using an already-requested trade report, without another API call.
+        const dueItems = new Set(due.map(candidate => candidate.item));
+        group = candidates.filter(({ item, state }) =>
+          (dueItems.has(item) || state.synced_at === null) &&
           item.tokenHash === first.tokenHash && item.queryId === first.queryId &&
-          +item.range.from === +first.range.from && +item.range.to === +first.range.to);
+          +item.range.from === +first.range.from && +item.range.to === +first.range.to)
+          .map(candidate => candidate.item);
         database.prepare("UPDATE ibkr_flex_poll_state SET next_poll_at=?,lease_until=? WHERE id=1").run(+now + interval, +now + interval);
         for (const item of group) {
           database.prepare("UPDATE ibkr_flex_poll_jobs SET requested_at=? WHERE integration_id=? AND kind=? AND query_id=? AND job_key=?").run(+now, ...jobArgs(item));
@@ -228,6 +233,7 @@ export async function syncNextFlexBatch(database: Database, runtime: Runtime = {
         .run(...jobArgs(item));
       try {
         if (!/<FlexQueryResponse\b/.test(xml)) throw new Error("IBKR Flex response is not a statement; cached data was preserved.");
+        cacheIbkrStockGrants(database, item.integration, item.queryId, item.range, xml);
         if (item.kind === "funding") cacheIbkrFundingBatch(database, item.integration, item.range, xml, now);
         else if (item.kind === "commissions") cacheFlexCommissions(database, item.integration, item.range, xml, now);
         else writeBatchTrades(database, item.integration, item.queryId, Number(item.key), item.range, parseTrades(xml), now.toISOString());

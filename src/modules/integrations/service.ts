@@ -6,6 +6,7 @@ import type { Database } from "../database/setup.ts";
 import { logFetch } from "../../utils/fetch_logging.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
+import { getIbkrHostPort } from "./ibkr/credentials.ts";
 import { trading212Adapter } from "./trading212/adapter.ts";
 import { enrichPortfolioWithVontobelQuotes, VontobelQuoteCache } from "../market_data/vontobel.ts";
 import { portfolioValuations } from "./usd.ts";
@@ -149,9 +150,17 @@ async function mapIntegrationData<T>(
       const reason = result.reason instanceof Error
         ? result.reason.message
         : String(result.reason);
+      let label = `${integration.kind} integration #${index + 1}`;
+      if (integration.kind === "ibkr") {
+        label = `ibkr integration ID ${integration.id}`;
+        try {
+          const { host, port } = getIbkrHostPort(String(integration.credentials.instanceUrl ?? ""));
+          label = `ibkr (${host}:${port})`;
+        } catch { /* Keep the record ID when the endpoint itself is invalid. */ }
+      }
       errors.push(
         new Error(
-          `${integration.kind} integration #${index + 1}: ${reason}`,
+          `${label}: ${reason}`,
         ),
       );
     }

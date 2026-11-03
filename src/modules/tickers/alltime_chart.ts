@@ -3,6 +3,7 @@ import { buildHistoricalReportSeries, executionCash } from "./historical_report.
 import { buildReportSnapshot } from "./report.ts";
 import type { ReportKind, ReportFilter } from "./performance_command.ts";
 import { benchmarkForKind, type BenchmarkSource } from "./benchmark_capital.ts";
+import { buildChartGifts, isGiftReceipt, withChartGifts, type ChartGiftPoint } from "./chart_gifts.ts";
 import type { Database } from "../database/setup.ts";
 import { renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
 import {
@@ -65,6 +66,7 @@ export type AllTimeDataset = {
   benchmark?: ChartBenchmark;
   benchmarkPurchases?: BenchmarkPurchase[];
   benchmarkValuations?: BenchmarkValuations;
+  benchmarkGifts?: ChartGiftPoint[];
   benchmarkSnapshots?: Partial<Record<ChartBenchmarkIndex, ChartBenchmark>>;
   // Points remain USD snapshots; only single-chart monetary labels use these.
   displayCurrency?: string;
@@ -104,8 +106,10 @@ export function selectedChartOrders(args: Args) {
 }
 
 function withFreeStockPurchases(args: Args): Args {
+  const positionKey = (item: Pick<IntegrationOrder, "integrationId" | "ticker" | "currency">) =>
+    JSON.stringify([item.integrationId, instrumentKey(item)]);
   const purchased = new Set(
-    args.orders.filter((o) => o.quantity > 0).map(instrumentKey),
+    args.orders.filter((o) => o.quantity > 0).map(positionKey),
   );
   const orders = [...args.orders];
   const transactionBuckets = new Map(args.transactionBuckets);
@@ -116,7 +120,7 @@ function withFreeStockPurchases(args: Args): Args {
   const positions = args.positions.map((position) => {
     const category = position.assetCategory?.trim().toUpperCase();
     if (
-      position.amount <= 0 || purchased.has(instrumentKey(position)) ||
+      position.amount <= 0 || purchased.has(positionKey(position)) ||
       (category && category !== "STK" && category !== "STOCK") ||
       yahooOptionContract(position.ticker) || isCfdAllocation(position)
     ) return position;
@@ -139,6 +143,8 @@ function withFreeStockPurchases(args: Args): Args {
       date: new Date(dateOf(args.now ?? new Date())),
       quantity: position.amount,
       price: 0,
+      receipt: "gift",
+      commission: { amount: 0, currency: position.currency },
       transactionKey,
       yahooSymbol: position.yahooSymbol,
       isin: position.isin,
@@ -517,6 +523,13 @@ export async function loadAllTimeDataset(
     })),
   };
   args = withFreeStockPurchases(args);
+  const giftOrders = new Map<string, IntegrationOrder>();
+  for (const order of [...(args.benchmarkSource?.orders ?? []), ...args.orders]) if (isGiftReceipt(order)) {
+    const adjusted = adjustOrderForCorporateActions(order, through);
+    giftOrders.set(getOrderTransactionKey(adjusted), adjusted);
+  }
+  const giftReceipts = [...giftOrders.values()];
+  const giftInstruments = new Set(giftReceipts.map(instrumentKey));
   const selected = selectedChartOrders(args);
   if (!selected.length && !args.accountPerformances?.some(account => account.fundingHistory?.length || account.cashHistory?.length)) {
     throw new Error(
@@ -527,16 +540,17 @@ export async function loadAllTimeDataset(
     string,
     IntegrationOrder | IntegrationPortfolioPosition
   >();
-  for (const p of [...selected, ...args.positions]) {
+  for (const p of [...selected, ...args.positions, ...giftReceipts]) {
     const key = instrumentKey(p), previous = sources.get(key);
     sources.set(key, {
+      ...previous,
       ...p,
       assetCategory: p.assetCategory ?? previous?.assetCategory ?? null,
       yahooSymbol: p.yahooSymbol ?? previous?.yahooSymbol,
       isin: p.isin ?? previous?.isin,
     });
   }
-  const relevant = args.orders.filter(isDisplayableOrder).filter((o) =>
+  const relevant = [...args.orders, ...giftReceipts.filter(gift => !args.orders.some(order => getOrderTransactionKey(order) === getOrderTransactionKey(gift)))].filter(isDisplayableOrder).filter((o) =>
     sources.has(instrumentKey(o))
   );
   for (const [key, source] of sources) {
@@ -571,7 +585,7 @@ export async function loadAllTimeDataset(
         const instrumentOrders = relevant.filter((o) =>
           instrumentKey(o) === key
         );
-        const held = args.positions.some((p) =>
+        const held = giftInstruments.has(key) || args.positions.some((p) =>
           instrumentKey(p) === key && p.amount !== 0
         );
         const end = held ? undefined : dayAfter(
@@ -652,7 +666,7 @@ export async function loadAllTimeDataset(
   const provisionalOrders = kind === "perf"
     ? (args.benchmarkSource?.orders ?? selected).filter(order =>
       order.integrationKind === "ibkr" && isDisplayableOrder(order) &&
-      order.quantity > 0 && dateOf(order.date) === through &&
+      order.quantity > 0 && !isGiftReceipt(order) && dateOf(order.date) === through &&
       benchmarkAccounts.some(account => account.integrationId === order.integrationId &&
         dateOf(account.historyThrough) < through))
     : [];
@@ -676,7 +690,7 @@ export async function loadAllTimeDataset(
     ]), ...benchmarkAccounts.flatMap(account => account.fundingHistory?.map(flow => flow.date) ?? [])].sort()[0];
   const historicalRates = await fetchHistoricalUsdConversionRates(currencies, historyStart, through, request);
   const fingerprint = await hash({
-    version: 10,
+    version: 11,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],
@@ -692,7 +706,7 @@ export async function loadAllTimeDataset(
   const points = stored
     ? JSON.parse(stored.payload)
     : buildHistoricalReportSeries(args, histories, rates, historicalRates, kind);
-  const snapshot = await buildReportSnapshot({ ...reportArgs, currency: "USD", request }, kind);
+  const snapshot = await buildReportSnapshot({ ...reportArgs, positions: args.positions, currency: "USD", request }, kind);
   points[points.length - 1] = { ...points.at(-1), gain: snapshot.value, percentage: snapshot.percentage };
   if (!stored) {
     db.prepare(
@@ -704,6 +718,9 @@ export async function loadAllTimeDataset(
   }
   const accounts = benchmarkAccounts;
   const notes: string[] = [];
+  if (giftReceipts.some(order => order.transactionKey?.includes('"free-stock"'))) {
+    notes.push("Gift receipt dates are unavailable; undated shares enter both portfolios at the current endpoint. Enable Grant Activity in the IBKR Flex Query for dated receipts.");
+  }
   const funding = accountReturn(accounts, new Set([...args.positions, ...selected].map(item => item.integrationId)), rates);
   const purchases: BenchmarkPurchase[] = [];
   const datedFunding = !funding.reason && accounts.every(account => {
@@ -723,6 +740,7 @@ export async function loadAllTimeDataset(
     return true;
   });
   let benchmark: ChartBenchmark | undefined;
+  let benchmarkGifts: ChartGiftPoint[] = [];
   const benchmarkValuations: BenchmarkValuations = {};
   if (datedFunding) {
     try {
@@ -767,12 +785,17 @@ export async function loadAllTimeDataset(
       }
       if (provisionalOrders.length) notes.push("Index funding is provisional: today's purchases are treated as new cash until the next statement.");
       benchmark = await loadChartBenchmark(purchases, points[0].date, points.at(-1)!.date, cache, "sp500", benchmarkValuations);
+      benchmarkGifts = buildChartGifts(giftReceipts, histories, historicalRates,
+        args.benchmarkSource?.positions ?? args.positions, rates, points[0].date, points.at(-1)!.date);
+      benchmark = withChartGifts(benchmark, benchmarkGifts);
       benchmark = benchmarkForKind(benchmark, kind);
     } catch (error) {
+      benchmark = undefined;
+      benchmarkGifts = [];
       notes.push(error instanceof Error ? error.message : String(error));
     }
   } else notes.push("Benchmark unavailable: complete dated external funding is required.");
-  return { fundingReturnVersion: 3, kind: args.kind, filter: args.filter, userId, label, bucketName: args.bucketName, points, notes, ...(benchmark ? { benchmark, benchmarkPurchases: purchases, benchmarkValuations } : {}) };
+  return { fundingReturnVersion: 3, kind: args.kind, filter: args.filter, userId, label, bucketName: args.bucketName, points, notes, ...(benchmark ? { benchmark, benchmarkPurchases: purchases, benchmarkValuations, ...(benchmarkGifts.length ? { benchmarkGifts } : {}) } : {}) };
 }
 
 export async function switchChartBenchmarks(
@@ -791,7 +814,7 @@ export async function switchChartBenchmarks(
       dataset.benchmarkPurchases!, dataset.points[0].date,
       dataset.points.at(-1)!.date, cache, index, dataset.benchmarkValuations,
     );
-    if (!dataset.benchmarkSnapshots?.[index]) benchmark = benchmarkForKind(benchmark, dataset.kind ?? "alltime");
+    if (!dataset.benchmarkSnapshots?.[index]) benchmark = benchmarkForKind(withChartGifts(benchmark, dataset.benchmarkGifts ?? []), dataset.kind ?? "alltime");
     return {
       ...dataset,
       benchmark,

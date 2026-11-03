@@ -32,7 +32,7 @@ import {
   hasUserIntegrations,
 } from "../database/integration.ts";
 import { fetchIntegratedHistoryOrders } from "../integrations/service.ts";
-import { getIbkrHostPort } from "../integrations/ibkr/credentials.ts";
+import { gatewayRecovery, getRestartContainerName } from "../integrations/ibkr/recovery.ts";
 import { fetchIntegratedIbkrStockQuotes } from "../integrations/ibkr/quotes.ts";
 import { getRsuAwards, removeRsuAwards, saveRsuAward } from "../database/rsu.ts";
 import { buildRsuGroups, buildRsuSummary, getRsuView, parseRsuAward, parseRsuDate } from "./rsu.ts";
@@ -478,124 +478,6 @@ async function replyRestartError(ctx: CustomContext, error: unknown) {
   );
 }
 
-const DEFAULT_PODMAN_SOCKET_PATH = "/run/podman/podman.sock";
-
-function getPodmanSocketPath() {
-  return Deno.env.get("PODMAN_SOCKET_PATH") ?? DEFAULT_PODMAN_SOCKET_PATH;
-}
-
-function getRestartContainerName(credentials: Record<string, unknown>) {
-  const instanceUrl = credentials.instanceUrl;
-  if (typeof instanceUrl !== "string" || instanceUrl.trim().length === 0) {
-    throw new Error(
-      "IBKR integration does not have an instance URL configured",
-    );
-  }
-
-  return getIbkrHostPort(instanceUrl).host;
-}
-
-function encodePodmanPathSegment(value: string) {
-  return encodeURIComponent(value);
-}
-
-function parseHttpStatus(response: string) {
-  const statusLine = response.split("\r\n", 1)[0];
-  const match = /^HTTP\/\d(?:\.\d)?\s+(\d+)/.exec(statusLine);
-  if (!match) {
-    throw new Error("Podman returned an invalid HTTP response");
-  }
-
-  return Number(match[1]);
-}
-
-function parseHttpBody(response: string) {
-  const separatorIndex = response.indexOf("\r\n\r\n");
-  if (separatorIndex === -1) {
-    return "";
-  }
-
-  return response.slice(separatorIndex + 4).trim();
-}
-
-async function readConnection(conn: Deno.Conn) {
-  const chunks: Uint8Array[] = [];
-  const buffer = new Uint8Array(8_192);
-
-  while (true) {
-    const bytesRead = await conn.read(buffer);
-    if (bytesRead === null) {
-      break;
-    }
-
-    chunks.push(buffer.slice(0, bytesRead));
-  }
-
-  const size = chunks.reduce((total, chunk) => total + chunk.length, 0);
-  const output = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return new TextDecoder().decode(output);
-}
-
-async function restartIbGateway(credentials: Record<string, unknown>) {
-  const containerName = getRestartContainerName(credentials);
-  const socketPath = getPodmanSocketPath();
-  const path = `/containers/${encodePodmanPathSegment(containerName)}/restart`;
-  const request = [
-    `POST ${path} HTTP/1.1`,
-    "Host: podman",
-    "Content-Length: 0",
-    "Connection: close",
-    "",
-    "",
-  ].join("\r\n");
-
-  let conn: Deno.Conn;
-  try {
-    conn = await Deno.connect({
-      transport: "unix",
-      path: socketPath,
-    });
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      throw new Error(
-        `Podman socket not found at ${socketPath}. Start the host user socket with "systemctl --user enable --now podman.socket" and mount it into the app container.`,
-      );
-    }
-
-    if (error instanceof Deno.errors.PermissionDenied) {
-      throw new Error(
-        `Podman socket at ${socketPath} is not accessible from the app container. Mount the host socket read-write and disable SELinux container labeling for this service.`,
-      );
-    }
-
-    throw error;
-  }
-
-  try {
-    await conn.write(new TextEncoder().encode(request));
-    const response = await readConnection(conn);
-    const status = parseHttpStatus(response);
-    if (status >= 200 && status < 300) {
-      return;
-    }
-
-    const body = parseHttpBody(response);
-    throw new Error(
-      body
-        ? `Podman returned ${status}: ${body.slice(0, 500)}`
-        : `Podman returned ${status}`,
-    );
-  } finally {
-    conn.close();
-  }
-}
-
 tickersComposer.command("buckets", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
@@ -797,7 +679,9 @@ tickersComposer.command("restart", async (ctx) => {
   }
 
   try {
-    await ctx.reply("Restarting IB Gateway...");
+    const force = typeof ctx.match === "string" && ctx.match.trim() === "force";
+    if (ctx.match && !force) { await ctx.reply("Use /restart, or /restart force after resolving a held session or authentication problem."); return; }
+    await ctx.reply("Checking IB Gateway. Recovery, if needed, can take up to three minutes plus shutdown time.");
 
     const integrations = getUserIntegrations(
       ctx.db,
@@ -811,10 +695,10 @@ tickersComposer.command("restart", async (ctx) => {
     for (const integration of integrations) {
       const host = getRestartContainerName(integration.credentials);
       if (restartedHosts.has(host)) continue;
-      await restartIbGateway(integration.credentials);
+      await ctx.reply(await gatewayRecovery.recover(integration, force));
       restartedHosts.add(host);
     }
-    await ctx.reply("IB Gateway container restart requested. Login may still be in progress; API readiness has not been confirmed.");
+
   } catch (error) {
     await replyRestartError(ctx, error);
   }

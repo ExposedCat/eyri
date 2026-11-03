@@ -3,7 +3,7 @@ import {
   EventName,
   type Execution,
   type ExecutionFilter,
-  IBApi,
+  type IBApi,
 } from "@stoqey/ib";
 import { getAllIntegrations } from "../../database/integration.ts";
 import type { Integration } from "../../database/integration.ts";
@@ -14,6 +14,8 @@ import type {
   IntegrationPortfolioPosition,
 } from "../types.ts";
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
+import { ibkrSessions } from "./session.ts";
+import { readIbkrStockGrants } from "./grants.ts";
 import { readFlexOrders } from "./flex.ts";
 import {
   fetchIbkrAccountPerformance,
@@ -21,14 +23,15 @@ import {
 } from "./ledger.ts";
 import { logFetch } from "../../../utils/fetch_logging.ts";
 import {
-  connectIbkr as connect,
+  connectIbkrOnce,
   type IbkrConnectionConfig,
+  isIbkrStatusMessage,
 } from "./connection.ts";
 
 const EXECUTION_SYNC_INTERVAL_MS = 15 * 1000;
 const EXECUTION_CLIENT_ID_OFFSET = 1000;
 const EXECUTION_SYNC_REQUEST_ID = 90_000;
-const DAILY_PNL_TIMEOUT_MS = 10_000;
+const DAILY_PNL_TIMEOUT_MS = 2_000;
 
 type IbkrPortfolioPosition = IntegrationPortfolioPosition & {
   conId?: number;
@@ -77,39 +80,43 @@ function normalizeIbkrCallbackError(args: unknown[]) {
 }
 
 async function getManagedAccount(api: IBApi, config: IbkrConnectionConfig) {
-  if (config.accountId) {
-    return config.accountId;
+  if (config.accountId) return config.accountId;
+  let cleanup = () => {};
+  try {
+    const accountIds = await withTimeout(
+      new Promise<string[]>((resolve, reject) => {
+        const onAccounts = (accounts: string) =>
+          resolve(accounts.split(",").filter(Boolean));
+        const onError = (error: unknown, code?: number) => {
+          if (isIbkrStatusMessage(code)) return;
+          reject(normalizeError(error));
+        };
+        const onDisconnected = () =>
+          reject(
+            new Error(
+              "IBKR Gateway disconnected while reading managed accounts",
+            ),
+          );
+        cleanup = () => {
+          api.off(EventName.managedAccounts, onAccounts);
+          api.off(EventName.error, onError);
+          api.off(EventName.disconnected, onDisconnected);
+        };
+        api.on(EventName.managedAccounts, onAccounts);
+        api.on(EventName.error, onError);
+        api.on(EventName.disconnected, onDisconnected);
+        api.reqManagedAccts();
+      }),
+      config.timeoutMs,
+      "Timed out waiting for IBKR managed accounts",
+    );
+    if (!accountIds[0]) {
+      throw new Error("IBKR Gateway returned no managed accounts");
+    }
+    return accountIds[0];
+  } finally {
+    cleanup();
   }
-
-  const accountIds = await withTimeout(
-    new Promise<string[]>((resolve, reject) => {
-      const cleanup = () => {
-        api.off(EventName.managedAccounts, onManagedAccounts);
-        api.off(EventName.error, onError);
-      };
-      const onManagedAccounts = (accounts: string) => {
-        cleanup();
-        resolve(accounts.split(",").filter(Boolean));
-      };
-      const onError = (error: unknown) => {
-        cleanup();
-        reject(normalizeError(error));
-      };
-
-      api.once(EventName.managedAccounts, onManagedAccounts);
-      api.once(EventName.error, onError);
-      api.reqManagedAccts();
-    }),
-    config.timeoutMs,
-    "Timed out waiting for IBKR managed accounts",
-  );
-
-  const accountId = accountIds.at(0);
-  if (!accountId) {
-    throw new Error("IBKR Gateway returned no managed accounts");
-  }
-
-  return accountId;
 }
 
 function getTicker(contract: Contract) {
@@ -289,48 +296,55 @@ async function fetchTodayExecutions(
   const orders: { execId: string; order: IntegrationOrder }[] = [];
   const filter: ExecutionFilter = { acctCode: accountId };
 
-  await withTimeout(
-    new Promise<void>((resolve, reject) => {
-      const cleanup = () => {
-        api.off(EventName.execDetails, onExecDetails);
-        api.off(EventName.execDetailsEnd, onExecDetailsEnd);
-        api.off(EventName.error, onError);
-      };
-      const onExecDetails = (
-        reqId: number,
-        contract: Contract,
-        execution: Execution,
-      ) => {
-        if (reqId !== EXECUTION_SYNC_REQUEST_ID) {
-          return;
-        }
+  let cleanup = () => {};
+  try {
+    await withTimeout(
+      new Promise<void>((resolve, reject) => {
+        cleanup = () => {
+          api.off(EventName.execDetails, onExecDetails);
+          api.off(EventName.execDetailsEnd, onExecDetailsEnd);
+          api.off(EventName.error, onError);
+        };
+        const onExecDetails = (
+          reqId: number,
+          contract: Contract,
+          execution: Execution,
+        ) => {
+          if (reqId !== EXECUTION_SYNC_REQUEST_ID) {
+            return;
+          }
 
-        const order = toExecutionOrder(integration, contract, execution);
-        if (order) {
-          orders.push(order);
-        }
-      };
-      const onExecDetailsEnd = (reqId: number) => {
-        if (reqId !== EXECUTION_SYNC_REQUEST_ID) {
-          return;
-        }
+          const order = toExecutionOrder(integration, contract, execution);
+          if (order) {
+            orders.push(order);
+          }
+        };
+        const onExecDetailsEnd = (reqId: number) => {
+          if (reqId !== EXECUTION_SYNC_REQUEST_ID) {
+            return;
+          }
 
-        cleanup();
-        resolve();
-      };
-      const onError = (...args: unknown[]) => {
-        cleanup();
-        reject(normalizeIbkrCallbackError(args));
-      };
+          cleanup();
+          resolve();
+        };
+        const onError = (...args: unknown[]) => {
+          const code = args[1];
+          if (typeof code === "number" && isIbkrStatusMessage(code)) return;
+          cleanup();
+          reject(normalizeIbkrCallbackError(args));
+        };
 
-      api.on(EventName.execDetails, onExecDetails);
-      api.once(EventName.execDetailsEnd, onExecDetailsEnd);
-      api.once(EventName.error, onError);
-      api.reqExecutions(EXECUTION_SYNC_REQUEST_ID, filter);
-    }),
-    config.timeoutMs,
-    `Timed out waiting for IBKR executions for ${accountId}`,
-  );
+        api.on(EventName.execDetails, onExecDetails);
+        api.on(EventName.execDetailsEnd, onExecDetailsEnd);
+        api.on(EventName.error, onError);
+        api.reqExecutions(EXECUTION_SYNC_REQUEST_ID, filter);
+      }),
+      config.timeoutMs,
+      `Timed out waiting for IBKR executions for ${accountId}`,
+    );
+  } finally {
+    cleanup();
+  }
 
   return orders;
 }
@@ -347,9 +361,7 @@ async function syncIntegrationExecutions(
         ...config,
         clientId: config.clientId + EXECUTION_CLIENT_ID_OFFSET,
       };
-      const api = await connect(executionConfig);
-
-      try {
+      return await ibkrSessions.run(executionConfig, async (api) => {
         const accountId = await getManagedAccount(api, executionConfig);
         const orders = await fetchTodayExecutions(
           api,
@@ -358,9 +370,7 @@ async function syncIntegrationExecutions(
           executionConfig,
         );
         writeExecutionOrders(database, integration, orders);
-      } finally {
-        api.disconnect();
-      }
+      });
     },
   );
 }
@@ -427,12 +437,13 @@ function getOpenLotCostBasis(
     )
     .sort((a, b) => a.date.getTime() - b.date.getTime());
   const lots: { quantity: number; price: number; date: Date }[] = [];
+  const gifted = matchingOrders.some(order => order.receipt === "gift");
 
   for (const order of matchingOrders) {
     if (order.quantity > 0) {
       lots.push({
         quantity: order.quantity,
-        price: order.price ?? 0,
+        price: (order.price ?? 0) - (gifted && order.commission?.currency === order.currency ? order.commission.amount / order.quantity : 0),
         date: order.date,
       });
       continue;
@@ -477,6 +488,7 @@ function getOpenLotCostBasis(
       averageUnitPrice: null,
       totalInput: null,
       openedAt: openLotDate,
+      gifted,
     };
   }
 
@@ -484,6 +496,7 @@ function getOpenLotCostBasis(
     averageUnitPrice: totalInput / targetQuantity,
     totalInput,
     openedAt: openLotDate,
+    gifted,
   };
 }
 
@@ -501,19 +514,22 @@ function enrichPortfolioWithOrders(
       return position;
     }
 
+    const giftBasis = basis.gifted && basis.totalInput !== null;
     return {
       ...position,
-      averageUnitPrice: position.averageUnitPrice ?? basis.averageUnitPrice,
-      totalInput: position.totalInput ?? basis.totalInput,
+      averageUnitPrice: giftBasis ? basis.averageUnitPrice : position.averageUnitPrice ?? basis.averageUnitPrice,
+      totalInput: giftBasis ? basis.totalInput : position.totalInput ?? basis.totalInput,
+      ...(giftBasis && position.totalNow !== null ? { unrealizedPnl: position.totalNow - basis.totalInput! } : {}),
       openedAt: position.openedAt ?? basis.openedAt,
     };
   });
 }
 
-async function readDailyPnl(
+export async function readDailyPnl(
   api: IBApi,
   positions: IbkrPortfolioPosition[],
   accountId: string,
+  timeoutMs = DAILY_PNL_TIMEOUT_MS,
 ) {
   const requestIdByConId = new Map<number, number>();
   const dailyPnlByConId = new Map<
@@ -533,7 +549,20 @@ async function readDailyPnl(
   }
 
   await new Promise<void>((resolve) => {
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const pending = new Set(requestIdByConId.values());
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      resolve();
+    };
+    const onError = (_error: unknown, code?: number, reqId?: number) => {
+      if (isIbkrStatusMessage(code)) return;
+      if (reqId !== undefined && reqId >= 0) pending.delete(reqId);
+      else pending.clear();
+      if (!pending.size) finish();
+    };
     const onPnlSingle = (
       reqId: number,
       _position: number,
@@ -554,16 +583,14 @@ async function readDailyPnl(
         marketValue: normalizePnlNumber(value),
       });
 
-      if (dailyPnlByConId.size === requestIdByConId.size) {
-        cleanup();
-        resolve();
-      }
+      pending.delete(reqId);
+      if (!pending.size) finish();
     };
     const cleanup = () => {
-      if (timeoutId !== undefined) {
-        clearTimeout(timeoutId);
-      }
+      clearTimeout(timeoutId);
       api.off(EventName.pnlSingle, onPnlSingle);
+      api.off(EventName.error, onError);
+      api.off(EventName.disconnected, finish);
       for (const reqId of requestIdByConId.values()) {
         try {
           api.cancelPnLSingle(reqId);
@@ -573,14 +600,19 @@ async function readDailyPnl(
       }
     };
 
+    const timeoutId = setTimeout(finish, timeoutMs);
+    api.on(EventName.error, onError);
+    api.on(EventName.disconnected, finish);
     api.on(EventName.pnlSingle, onPnlSingle);
     for (const [conId, reqId] of requestIdByConId.entries()) {
-      api.reqPnLSingle(reqId, accountId, "", conId);
+      if (finished) break;
+      try {
+        api.reqPnLSingle(reqId, accountId, "", conId);
+      } catch {
+        finish();
+        break;
+      }
     }
-    timeoutId = setTimeout(() => {
-      cleanup();
-      resolve();
-    }, DAILY_PNL_TIMEOUT_MS);
   });
 
   return dailyPnlByConId;
@@ -624,10 +656,11 @@ async function getAccountPortfolio(
 ) {
   const positions = new Map<string, IbkrPortfolioPosition>();
 
+  let cleanup = () => {};
   try {
     await withTimeout(
       new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
+        cleanup = () => {
           api.off(EventName.updatePortfolio, onUpdatePortfolio);
           api.off(EventName.accountDownloadEnd, onAccountDownloadEnd);
           api.off(EventName.error, onError);
@@ -642,7 +675,7 @@ async function getAccountPortfolio(
           realizedPnl?: number,
           accountName?: string,
         ) => {
-          if (amount === 0) {
+          if (amount === 0 || (accountName && accountName !== accountId)) {
             return;
           }
 
@@ -659,24 +692,27 @@ async function getAccountPortfolio(
           );
           positions.set(`${position.account}:${position.ticker}`, position);
         };
-        const onAccountDownloadEnd = () => {
+        const onAccountDownloadEnd = (account: string) => {
+          if (account !== accountId) return;
           cleanup();
           resolve();
         };
-        const onError = (error: unknown) => {
+        const onError = (error: unknown, code?: number) => {
+          if (isIbkrStatusMessage(code)) return;
           cleanup();
           reject(normalizeError(error));
         };
 
         api.on(EventName.updatePortfolio, onUpdatePortfolio);
-        api.once(EventName.accountDownloadEnd, onAccountDownloadEnd);
-        api.once(EventName.error, onError);
+        api.on(EventName.accountDownloadEnd, onAccountDownloadEnd);
+        api.on(EventName.error, onError);
         api.reqAccountUpdates(true, accountId);
       }),
       config.timeoutMs,
       `Timed out waiting for IBKR account portfolio for ${accountId}`,
     );
   } finally {
+    cleanup();
     api.reqAccountUpdates(false, accountId);
   }
 
@@ -705,7 +741,7 @@ export async function syncIbkrExecutions(database: Database) {
     (integration) => integration.kind === "ibkr",
   );
 
-  for (const integration of integrations) {
+  await Promise.all(integrations.map(async (integration) => {
     try {
       await syncIntegrationExecutions(database, integration);
     } catch (error) {
@@ -714,7 +750,7 @@ export async function syncIbkrExecutions(database: Database) {
         error,
       );
     }
-  }
+  }));
 }
 
 let isExecutionSyncRunning = false;
@@ -788,7 +824,7 @@ function readIbkrOrders(database: Database, integration: Integration) {
 
   // Stored rows already have unique Flex trade keys or execution IDs. Equal
   // dates, quantities and prices do not mean two fills are the same trade.
-  const merged = [...flexOrders];
+  const merged = [...flexOrders, ...readIbkrStockGrants(database, integration)];
   for (const order of readExecutionOrders(database, integration)) {
     if (latestFlexDate && order.date <= latestFlexDate) {
       continue;
@@ -834,7 +870,7 @@ export async function readIbkrAccountSnapshot(
     if (id === requestId) resolveRequest();
   };
   const onError = (error: unknown, code?: number) => {
-    if (code !== undefined && code >= 2100 && code <= 2199) return;
+    if (isIbkrStatusMessage(code)) return;
     rejectRequest(normalizeError(error));
   };
   try {
@@ -905,7 +941,7 @@ export async function readIbkrCashBalances(
     if (account === accountId) resolveRequest();
   };
   const onError = (error: unknown, code?: number) => {
-    if (code !== undefined && code >= 2100 && code <= 2199) return;
+    if (isIbkrStatusMessage(code)) return;
     rejectRequest(normalizeError(error));
   };
   try {
@@ -933,76 +969,134 @@ export async function readIbkrCashBalances(
   return balances;
 }
 
-export async function enrichContractIdentity(database: Database, api: IBApi, positions: IbkrPortfolioPosition[], timeoutMs: number) {
-  database.exec("CREATE TABLE IF NOT EXISTS ibkr_contract_identities(con_id INTEGER PRIMARY KEY,payload TEXT NOT NULL)");
+export async function enrichContractIdentity(
+  database: Database,
+  api: IBApi,
+  positions: IbkrPortfolioPosition[],
+  timeoutMs: number,
+) {
+  database.exec(
+    "CREATE TABLE IF NOT EXISTS ibkr_contract_identities(con_id INTEGER PRIMARY KEY,payload TEXT NOT NULL)",
+  );
   for (let offset = 0; offset < positions.length; offset += 3) {
-    await Promise.all(positions.slice(offset, offset + 3).map(async position => {
-      if (!position.conId || position.assetCategory !== "STK") return;
-      const cached = database.prepare("SELECT payload FROM ibkr_contract_identities WHERE con_id=?").get(position.conId) as { payload: string } | undefined;
-      let identity: { exchange?: string; isin?: string };
-      if (cached) identity = JSON.parse(cached.payload);
-      else {
-        identity = await new Promise((resolve, reject) => {
-          const requestId = position.conId!;
-          let found: { exchange?: string; isin?: string } | undefined;
-          const cleanup = () => { clearTimeout(timer); api.off(EventName.contractDetails, onDetails); api.off(EventName.contractDetailsEnd, onEnd); };
-          const timer = setTimeout(() => { cleanup(); reject(new Error(`IBKR contract identity unavailable for ${position.ticker}`)); }, timeoutMs);
-          const onDetails = (id: number, details: { contract: Contract; secIdList?: { tag: string; value: string }[] }) => {
-            if (id !== requestId) return;
-            found = { exchange: details.contract.primaryExch ?? details.contract.exchange,
-              isin: details.secIdList?.find(item => item.tag === "ISIN")?.value };
-          };
-          const onEnd = (id: number) => {
-            if (id !== requestId) return;
-            cleanup();
-            if (!found?.exchange) reject(new Error(`IBKR contract identity unavailable for ${position.ticker}`));
-            else resolve(found);
-          };
-          api.on(EventName.contractDetails, onDetails); api.on(EventName.contractDetailsEnd, onEnd);
-          api.reqContractDetails(requestId, { conId: position.conId });
-        });
-        database.prepare("INSERT OR REPLACE INTO ibkr_contract_identities VALUES(?,?)").run(position.conId, JSON.stringify(identity));
-      }
-      if (identity.exchange) position.exchange = identity.exchange;
-      if (identity.isin) position.isin = identity.isin;
-    }));
+    await Promise.all(
+      positions.slice(offset, offset + 3).map(async (position) => {
+        if (!position.conId || position.assetCategory !== "STK") return;
+        const cached = database.prepare(
+          "SELECT payload FROM ibkr_contract_identities WHERE con_id=?",
+        ).get(position.conId) as { payload: string } | undefined;
+        let identity: { exchange?: string; isin?: string };
+        if (cached) identity = JSON.parse(cached.payload);
+        else {
+          const requestId = position.conId;
+          identity = await new Promise((resolve, reject) => {
+            let found: { exchange?: string; isin?: string } | undefined;
+            const cleanup = () => {
+              clearTimeout(timer);
+              api.off(EventName.contractDetails, onDetails);
+              api.off(EventName.contractDetailsEnd, onEnd);
+              api.off(EventName.error, onError);
+            };
+            const timer = setTimeout(() => {
+              cleanup();
+              reject(
+                new Error(
+                  `IBKR contract identity unavailable for ${position.ticker}`,
+                ),
+              );
+            }, timeoutMs);
+            const onDetails = (
+              id: number,
+              details: {
+                contract: Contract;
+                secIdList?: { tag: string; value: string }[];
+              },
+            ) => {
+              if (id !== requestId) return;
+              found = {
+                exchange: details.contract.primaryExch ??
+                  details.contract.exchange,
+                isin: details.secIdList?.find((item) => item.tag === "ISIN")
+                  ?.value,
+              };
+            };
+            const onEnd = (id: number) => {
+              if (id !== requestId) return;
+              cleanup();
+              if (!found?.exchange) {
+                reject(
+                  new Error(
+                    `IBKR contract identity unavailable for ${position.ticker}`,
+                  ),
+                );
+              } else resolve(found);
+            };
+            const onError = (error: unknown, code?: number, id?: number) => {
+              if (isIbkrStatusMessage(code)) return;
+              if (id !== undefined && id >= 0 && id !== requestId) return;
+              cleanup();
+              reject(normalizeError(error));
+            };
+            api.on(EventName.error, onError);
+            api.on(EventName.contractDetails, onDetails);
+            api.on(EventName.contractDetailsEnd, onEnd);
+            api.reqContractDetails(requestId, { conId: position.conId });
+          });
+          database.prepare(
+            "INSERT OR REPLACE INTO ibkr_contract_identities VALUES(?,?)",
+          ).run(position.conId, JSON.stringify(identity));
+        }
+        if (identity.exchange) position.exchange = identity.exchange;
+        if (identity.isin) position.isin = identity.isin;
+      }),
+    );
+  }
+}
+
+// Recovery verifies the socket API independently of HTTP health. A broken
+// health URL must never cause a restart of an otherwise working broker.
+export async function probeIbkrApi(integration: Integration) {
+  const { config } = getConnectionConfig(integration);
+  const api = await connectIbkrOnce({
+    ...config,
+    clientId: 10_000 +
+      crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000_000,
+  });
+  try {
+    await getManagedAccount(api, { ...config, accountId: undefined });
+  } finally {
+    api.disconnect();
   }
 }
 
 export const ibkrAdapter: IntegrationAdapter = {
-  async fetchAccountPerformance(database, integration, _positions, _orders, options) {
+  async fetchAccountPerformance(
+    database,
+    integration,
+    _positions,
+    _orders,
+    options,
+  ) {
     const { config } = getConnectionConfig(integration);
-    config.clientId = 10_000 +
-      crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000_000;
-    const api = await connect(config);
-    let snapshot: IbkrAccountSnapshot;
-    try {
+    const snapshot = await ibkrSessions.run(config, async (api) => {
       const accountId = await getManagedAccount(api, config);
-      snapshot = await readIbkrAccountSnapshot(
-        api,
-        accountId,
-        config.timeoutMs,
-      );
-      snapshot.cashByCurrency = await readIbkrCashBalances(
-        api,
-        accountId,
-        config.timeoutMs,
-      );
-    } finally {
-      api.disconnect();
-    }
-    return fetchIbkrAccountPerformance(database, integration, snapshot, undefined, options);
+      const [snapshot, cashByCurrency] = await Promise.all([
+        readIbkrAccountSnapshot(api, accountId, config.timeoutMs),
+        readIbkrCashBalances(api, accountId, config.timeoutMs),
+      ]);
+      return { ...snapshot, cashByCurrency };
+    });
+    return fetchIbkrAccountPerformance(
+      database,
+      integration,
+      snapshot,
+      undefined,
+      options,
+    );
   },
   async fetchPortfolio(database: Database, integration: Integration) {
     const { config } = getConnectionConfig(integration);
-    // Independent requests may share a gateway. Avoid competing for client 0.
-    if (integration.credentials.clientId === undefined) {
-      config.clientId = 10_000 +
-        crypto.getRandomValues(new Uint32Array(1))[0] % 1_000_000_000;
-    }
-    const api = await connect(config);
-
-    try {
+    return await ibkrSessions.run(config, async (api) => {
       const accountId = await getManagedAccount(api, config);
       const positions = await getAccountPortfolio(
         api,
@@ -1010,19 +1104,22 @@ export const ibkrAdapter: IntegrationAdapter = {
         accountId,
         config,
       );
-      await enrichContractIdentity(database, api, positions, config.timeoutMs);
-      const positionsWithDailyPnl = await enrichPortfolioWithDailyPnl(
-        api,
-        positions,
-        accountId,
-      );
+      const [, positionsWithDailyPnl] = await Promise.all([
+        enrichContractIdentity(database, api, positions, config.timeoutMs),
+        enrichPortfolioWithDailyPnl(api, positions, accountId),
+      ]);
+      // Identity enrichment mutates the original positions. Copy its fields only
+      // after both requests complete so the P/L result retains exchange/ISIN.
       return enrichPortfolioWithOrders(
-        positionsWithDailyPnl,
+        positionsWithDailyPnl.map((position, index) => ({
+          ...positions[index],
+          dailyPnl: position.dailyPnl,
+          dailyPnlBaseline: position.dailyPnlBaseline,
+          dailyPnlPercentage: position.dailyPnlPercentage,
+        })),
         readIbkrOrders(database, integration),
       );
-    } finally {
-      api.disconnect();
-    }
+    });
   },
 
   async fetchOrderHistory(database: Database, integration: Integration) {
@@ -1031,12 +1128,8 @@ export const ibkrAdapter: IntegrationAdapter = {
 
   async probe(integration: Integration) {
     const { config } = getConnectionConfig(integration);
-    const api = await connect(config);
-
-    try {
+    await ibkrSessions.run(config, async (api) => {
       await getManagedAccount(api, config);
-    } finally {
-      api.disconnect();
-    }
+    });
   },
 };

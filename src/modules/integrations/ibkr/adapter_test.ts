@@ -2,9 +2,11 @@ import { deepStrictEqual, equal, throws } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import type { Integration } from "../../database/integration.ts";
 import type { IntegrationPortfolioPosition } from "../types.ts";
-import { enrichContractIdentity, ibkrAdapter } from "./adapter.ts";
+import { enrichContractIdentity, ibkrAdapter, readDailyPnl } from "./adapter.ts";
 import { EventEmitter } from "node:events";
 import { EventName, type IBApi } from "@stoqey/ib";
+import { ibkrSessions } from "./session.ts";
+import { cacheIbkrStockGrants } from "./grants.ts";
 import {
   buildAllTimeSeries,
   instrumentKey,
@@ -18,6 +20,109 @@ const integration: Integration = {
   createdAt: new Date("2026-10-01"),
   updatedAt: new Date("2026-10-01"),
 };
+
+Deno.test("IBKR portfolio keeps contract identity during parallel enrichment and ignores other account events", async () => {
+  const db = new Database(":memory:");
+  const original = ibkrSessions.run;
+  class Api extends EventEmitter {
+    reqManagedAccts() {
+      this.emit(EventName.error, new Error("farm ready"), 2104, -1);
+      this.emit(EventName.managedAccounts, "U1");
+    }
+    reqAccountUpdates(subscribe: boolean) {
+      if (!subscribe) return;
+      this.emit(EventName.updatePortfolio, { conId: 123, symbol: "AAPL", secType: "STK", currency: "USD" }, 999, 120, 119880, 100, 19980, 0, "OTHER");
+      this.emit(EventName.accountDownloadEnd, "OTHER");
+      this.emit(EventName.updatePortfolio, { conId: 123, symbol: "AAPL", secType: "STK", currency: "USD" }, 2, 120, 240, 100, 40, 0, "U1");
+      this.emit(EventName.accountDownloadEnd, "U1");
+    }
+    reqContractDetails(id: number) {
+      setTimeout(() => {
+        this.emit(EventName.contractDetails, id, { contract: { primaryExch: "NASDAQ" }, secIdList: [{ tag: "ISIN", value: "US0378331005" }] });
+        this.emit(EventName.contractDetailsEnd, id);
+      }, 0);
+    }
+    reqPnLSingle(id: number) { this.emit(EventName.pnlSingle, id, 2, 10, 40, 0, 240); }
+    cancelPnLSingle() {}
+  }
+  const api = new Api();
+  ibkrSessions.run = async (_config, action) => await action(api as unknown as IBApi);
+  try {
+    const [position] = await ibkrAdapter.fetchPortfolio(db, integration);
+    equal(position.account, "U1");
+    equal(position.amount, 2);
+    equal(position.exchange, "NASDAQ");
+    equal(position.isin, "US0378331005");
+    equal(position.dailyPnl, 10);
+    equal(position.dailyPnlBaseline, 230);
+    deepStrictEqual(api.eventNames(), []);
+  } finally { ibkrSessions.run = original; db.close(); }
+});
+
+Deno.test("IBKR P/L completes on data or a terminal request error without waiting for the timeout", async () => {
+  class Api extends EventEmitter {
+    cancelled: number[] = [];
+    reqPnLSingle(id: number) {
+      this.emit(EventName.error, new Error("farm connected"), 2104, -1);
+      if (id === 50_000) this.emit(EventName.pnlSingle, id, 1, 5, 1, 0, 105);
+      else this.emit(EventName.error, new Error("unsupported P/L"), 200, id);
+    }
+    cancelPnLSingle(id: number) { this.cancelled.push(id); }
+  }
+  const api = new Api();
+  const positions = [1, 2].map(conId => ({ conId }) as IntegrationPortfolioPosition & { conId: number });
+  const result = await readDailyPnl(api as unknown as IBApi, positions, "U1", 60_000);
+  equal(result.get(1)?.dailyPnl, 5);
+  equal(result.has(2), false);
+  deepStrictEqual(api.cancelled, [50_000, 50_001]);
+  deepStrictEqual(api.eventNames(), []);
+});
+
+Deno.test("received IBKR shares use zero investor cost in the main portfolio instead of their broker grant valuation", async () => {
+  const db = new Database(":memory:");
+  const original = ibkrSessions.run;
+  class Api extends EventEmitter {
+    reqManagedAccts() { this.emit(EventName.managedAccounts, "U1"); }
+    reqAccountUpdates(subscribe: boolean) {
+      if (!subscribe) return;
+      this.emit(EventName.updatePortfolio, { conId: 123, symbol: "IBKR", secType: "STK", currency: "USD" }, 2, 120, 240, 100, 40, 0, "U1");
+      this.emit(EventName.accountDownloadEnd, "U1");
+    }
+    reqContractDetails(id: number) {
+      this.emit(EventName.contractDetails, id, { contract: { primaryExch: "NASDAQ" }, secIdList: [{ tag: "ISIN", value: "US45841N1072" }] });
+      this.emit(EventName.contractDetailsEnd, id);
+    }
+    reqPnLSingle(id: number) { this.emit(EventName.pnlSingle, id, 2, 10, 40, 0, 240); }
+    cancelPnLSingle() {}
+  }
+  ibkrSessions.run = async (_config, action) => await action(new Api() as unknown as IBApi);
+  try {
+    cacheIbkrStockGrants(db, integration, "test", { from: new Date("2026-10-01"), to: new Date("2026-10-31") },
+      '<FlexQueryResponse><FlexStatement accountId="U1"><StockGrantActivities><StockGrantActivity accountId="U1" symbol="IBKR" currency="USD" reportDate="20261006" quantity="2" /></StockGrantActivities></FlexStatement></FlexQueryResponse>');
+    const [position] = await ibkrAdapter.fetchPortfolio(db, integration);
+    equal(position.totalInput, 0);
+    equal(position.averageUnitPrice, 0);
+    equal(position.totalNow, 240);
+    equal(position.unrealizedPnl, 240);
+    equal(position.openedAt?.toISOString().slice(0, 10), "2026-10-06");
+  } finally { ibkrSessions.run = original; db.close(); }
+});
+
+Deno.test("IBKR missing P/L remains unavailable and cleans up on deadline or disconnect", async () => {
+  class Api extends EventEmitter {
+    cancelled = false;
+    reqPnLSingle() {}
+    cancelPnLSingle() { this.cancelled = true; }
+  }
+  for (const disconnect of [false, true]) {
+    const api = new Api();
+    const request = readDailyPnl(api as unknown as IBApi, [{ conId: 1 } as IntegrationPortfolioPosition & { conId: number }], "U1", disconnect ? 60_000 : 1);
+    if (disconnect) api.emit(EventName.disconnected);
+    equal((await request).size, 0);
+    equal(api.cancelled, true);
+    deepStrictEqual(api.eventNames(), []);
+  }
+});
 
 Deno.test("IBKR preserves and caches the actual contract exchange and ISIN for ambiguous symbols", async () => {
   const db = new Database(":memory:");

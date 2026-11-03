@@ -82,6 +82,51 @@ Deno.test("one generated statement populates both trade and funding caches on th
   } finally { db.close(); }
 });
 
+Deno.test("shared trade reports recover missing funding during validation backoff and expose the failure until recovered", async () => {
+  const db = new Database(":memory:");
+  let calls = 0;
+  try {
+    const integration = addIntegration(db, "secret-token", "combined", "combined");
+    const requestStatement: typeof getFlexStatement = (_token, _query, range) => {
+      calls++;
+      const xml = funding(range, "20250101", trade())
+        .replace('<ChangeInNAV ', '<ChangeInNAV grantActivity="12.81" ');
+      return Promise.resolve(calls === 1 ? xml.replace('currency="USD" amount="100" type="Deposit"', 'levelOfDetail="SUMMARY" currency="USD" amount="100" type="Deposit"') : xml);
+    };
+    await syncNextFlexBatch(db, { now, maxYears: 1, requestStatement });
+    await rejects(fetchIbkrAccountPerformance(db, integration, snapshot, now), /funding history import failed:.*matching detail/);
+    const failure = db.prepare("SELECT next_attempt_at FROM ibkr_flex_poll_jobs WHERE kind='funding'").get() as { next_attempt_at: number };
+    ok(failure.next_attempt_at > +at(5));
+    await syncNextFlexBatch(db, { now: at(5), maxYears: 1, requestStatement });
+    const result = await fetchIbkrAccountPerformance(db, integration, { ...snapshot, totalValue: 112.81 }, at(5));
+    equal(calls, 2);
+    equal(result.deposits, 100);
+    equal(result.netContributions, 100);
+    ok(Math.abs(result.pnl - 12.81) < .00001);
+  } finally { db.close(); }
+});
+
+Deno.test("shared Flex reports import dated gifts alongside funding without creating cash deposits or duplicate fills", async () => {
+  const db = new Database(":memory:");
+  try {
+    const integration = addIntegration(db, "token", "combined", "combined");
+    const requestStatement: typeof getFlexStatement = (_token, _query, range) => Promise.resolve(
+      funding(range, "20250101", trade()).replace('</FlexStatement>', `<StockGrantActivities>
+        <StockGrantActivity accountId="U1" symbol="IBKR" currency="USD" assetCategory="STK" reportDate="20250102" quantity="0.5" serialNumber="award" />
+      </StockGrantActivities></FlexStatement>`),
+    );
+    await syncNextFlexBatch(db, { now, maxYears: 1, requestStatement });
+    await syncNextFlexBatch(db, { now: at(5), maxYears: 1, requestStatement });
+    const gifts = (await ibkrAdapter.fetchOrderHistory(db, integration)).filter(order => order.receipt === "gift");
+    equal(gifts.length, 1);
+    equal(gifts[0].date.toISOString().slice(0, 10), "2025-01-02");
+    equal(gifts[0].quantity, .5);
+    equal(gifts[0].price, 0);
+    equal(gifts[0].commission?.amount, 0);
+    equal((await fetchIbkrAccountPerformance(db, integration, snapshot, now)).deposits, 100);
+  } finally { db.close(); }
+});
+
 Deno.test("funding backfill discovers and imports annual ranges one report per poll until lifetime history is complete", async () => {
   const db = new Database(":memory:");
   try {

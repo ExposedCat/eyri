@@ -26,7 +26,7 @@ export type ChartBenchmark = {
   label: string;
   symbol: string;
   asOf: string;
-  points: { date: string; percentage: number; gain: number; value?: number; openCostUsd?: number }[];
+  points: { date: string; percentage: number; gain: number; value?: number; openCostUsd?: number; depositsUsd?: number }[];
 };
 
 export function buildChartBenchmark(
@@ -131,7 +131,7 @@ export function buildChartBenchmark(
       dailyWithdrawals += (withdrawn.get(currency) ?? 0) / factor;
     }
     const gain = value + dailyWithdrawals - dailyCost;
-    points.push({ date, percentage: dailyCost === 0 ? 0 : gain / dailyCost * 100, gain, value,
+    points.push({ date, percentage: dailyCost === 0 ? 0 : gain / dailyCost * 100, gain, value, depositsUsd: dailyCost,
       openCostUsd: [...bookCosts.values()].reduce((sum, cost) => sum + cost, 0) });
   }
   return {

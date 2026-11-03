@@ -7,6 +7,8 @@ import { startComposer } from "../start/composer.ts";
 import { currencyComposer } from "../start/currency.ts";
 import { tickersComposer } from "../tickers/composer.ts";
 import { chartComposer } from "../tickers/chart_composer.ts";
+import { statusComposer } from "../status/composer.ts";
+import { getAdminId } from "../status/access.ts";
 import type { Bot, CustomContext } from "./types.ts";
 import { createReplyWithTextFunc } from "./utils.ts";
 import { setupBotRuntime } from "./runtime.ts";
@@ -31,6 +33,7 @@ function extendContext(bot: Bot, database: Database) {
 function setupComposers(bot: Bot) {
   bot.use(startComposer);
   bot.use(currencyComposer);
+  bot.use(statusComposer);
   bot.use(integrationsComposer);
   bot.use(tickersComposer);
   bot.use(chartComposer);
@@ -85,4 +88,16 @@ const botCommands = [
 
 export async function setupBotCommands(bot: Bot) {
   await bot.api.setMyCommands(botCommands);
+  const adminId = getAdminId();
+  if (adminId) {
+    try {
+      await bot.api.setMyCommands([...botCommands, { command: "status", description: "Check every broker connector (admin)" }], {
+        scope: { type: "chat", chat_id: adminId },
+      });
+    } catch {
+      // The admin may not have started a private chat yet. The handler still
+      // accepts /status; command-menu registration must not stop the bot.
+      console.warn("Could not register the private admin /status command menu.");
+    }
+  }
 }

@@ -817,7 +817,7 @@ Deno.test("a current option holding with no purchase is a history error, not a Y
   }
 });
 
-Deno.test("a referral stock with no purchase starts at the current endpoint and preserves the text report's book cost", async () => {
+Deno.test("an undated referral stock enters at the current endpoint at zero cash cost without mutating the source", async () => {
   const db = new Database(":memory:");
   const buy = trade(1, 100, "2025-01-02");
   const gift = {
@@ -844,7 +844,7 @@ Deno.test("a referral stock with no purchase starts at the current endpoint and 
     } as never);
     deepStrictEqual(calls, [["AAPL", "2025-01-02"], ["IBKR", "2025-01-06"]]);
     equal(dataset.points.find((p) => p.date === "2025-01-05")!.gain, 10);
-    equal(dataset.points.at(-1)!.gain, 33.09);
+    equal(dataset.points.at(-1)!.gain, 38.09);
     equal(dataset.points.at(-1)!.percentage, null);
     equal(args.orders.length, 1);
     equal(gift.totalInput, 5);

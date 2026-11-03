@@ -1,18 +1,26 @@
 services:
   ib_gateway:
     container_name: ib_gateway
-    image: docker.io/gnzsnz/ib-gateway:10.34.1a@sha256:d1779edb24f50ca44d4bd20d4098ffd5b2b81ca98cf21e6676ed465befb7dd44
+    image: ghcr.io/code-hustler-ft3d/ibg-controller:0.15.0@sha256:a62023992fd1d705a9cb8d23c3fb449204cfc24ef0c3a4e25f7baa51311d7070
     restart: unless-stopped
+    stop_grace_period: 90s
     env_file:
       - .env-ibkr-1
     environment:
+      USE_IBG_CONTROLLER: "yes"
+      TRADING_MODE: live
+      READ_ONLY_API: "yes"
       TWS_SETTINGS_PATH: /home/ibgateway/Jts
       AUTO_RESTART_TIME: "11:59 PM"
-      TWOFA_TIMEOUT_ACTION: restart
+      AUTO_RESTART_ADOPT: "yes"
+      TWOFA_TIMEOUT_ACTION: none
+      TIME_ZONE: Etc/UTC
+      TZ: Etc/UTC
     ports:
       - "127.0.0.1:4001:4003"
       - "127.0.0.1:4002:4004"
       - "127.0.0.1:5900:5900"
+      - "127.0.0.1:9081:8080"
     volumes:
       - ib-gateway-settings:/home/ibgateway/Jts
 
@@ -31,6 +39,7 @@ services:
       READ_ONLY_API: "yes"
       TWS_SETTINGS_PATH: /home/ibgateway/Jts
       AUTO_RESTART_TIME: "11:59 PM"
+      AUTO_RESTART_ADOPT: "yes"
       TWOFA_TIMEOUT_ACTION: none
       TIME_ZONE: Etc/UTC
       TZ: Etc/UTC
@@ -50,6 +59,7 @@ services:
       - .env
     environment:
       PODMAN_SOCKET_PATH: /run/podman/podman.sock
+      IBKR_GATEWAY_HEALTH_URLS: '{"ib_gateway":"http://ib_gateway:8080/health","ib_gateway_2":"http://ib_gateway_2:8080/health"}'
       EYRI_MCP_HOST: "0.0.0.0"
       EYRI_MCP_PORT: "8000"
     ports:

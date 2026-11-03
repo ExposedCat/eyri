@@ -396,6 +396,30 @@ Deno.test("2 Freedom24 + 2 IBKR accounts fetch independently and aggregate holdi
   }
 });
 
+Deno.test("IBKR failures identify the gateway rather than its position among other brokers", async () => {
+  const db = new Database(":memory:");
+  const originalIbkr = ibkrAdapter.fetchPortfolio;
+  const originalFreedom = freedom24Adapter.fetchPortfolio;
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    for (let i = 0; i < 2; i++) createIntegration({ database: db, userId: 1, kind: "f24", credentials: {} });
+    createIntegration({ database: db, userId: 1, kind: "ibkr", credentials: { instanceUrl: "tcp://ib_gateway_2:4003" } });
+    freedom24Adapter.fetchPortfolio = () => Promise.resolve([]);
+    ibkrAdapter.fetchPortfolio = () => Promise.reject(new Error("Unavailable"));
+    await rejects(fetchIntegratedPortfolio(db, 1), error => {
+      ok(error instanceof Error);
+      match(error.message, /ibkr \(ib_gateway_2:4003\): Unavailable/);
+      ok(!error.message.includes("integration #3"));
+      return true;
+    });
+  } finally {
+    ibkrAdapter.fetchPortfolio = originalIbkr;
+    freedom24Adapter.fetchPortfolio = originalFreedom;
+    db.close();
+  }
+});
+
 Deno.test("account failures never silently produce incomplete portfolio or history totals", async () => {
   const db = new Database(":memory:");
   const originalPortfolio = freedom24Adapter.fetchPortfolio;

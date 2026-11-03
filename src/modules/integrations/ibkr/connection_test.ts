@@ -38,8 +38,22 @@ Deno.test("IBKR connection ignores farm status messages and preserves a successf
   api.start = () => {
     api.emit(EventName.error, new Error("Market data farm connected"), 2104);
     api.emit(EventName.connected);
+    api.emit(EventName.nextValidId, 1);
+    api.emit(EventName.error, new Error("farm ready in same packet"), 2104);
   };
   equal(await connectIbkrOnce(config, () => api as unknown as IBApi), api);
   equal(api.disconnected, false);
+  equal(api.listenerCount(EventName.nextValidId), 0);
+  api.disconnect();
   deepStrictEqual(api.eventNames(), []);
+});
+
+Deno.test("IBKR TCP connected is insufficient until the API handshake finishes", async () => {
+  const api = new Api();
+  api.start = () => api.emit(EventName.connected);
+  await rejects(
+    connectIbkrOnce(config, () => api as unknown as IBApi),
+    /Timed out/,
+  );
+  equal(api.disconnected, true);
 });

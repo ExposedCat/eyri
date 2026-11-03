@@ -8,6 +8,7 @@ import { findOrCreateUser, setUserCurrency } from "../database/user.ts";
 import { getUserBucket, readBucketAssignments } from "../database/bucket.ts";
 import { createIntegration } from "../database/integration.ts";
 import { ibkrAdapter } from "../integrations/ibkr/adapter.ts";
+import { gatewayRecovery } from "../integrations/ibkr/recovery.ts";
 import type { IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { getOrderTransactionKey } from "./portfolio.ts";
 import { tickersComposer } from "./composer.ts";
@@ -21,6 +22,35 @@ function fundedReport(holdings: { i: string; q: number; value: number }[], depos
       positions_from_ts: { ps: { acc: [{ curr: "USD", s: cash, net_assets: cash }], pos: holdings.map(holding => ({ i: holding.i, q: holding.q, net_assets: holding.value })) } } } },
     cash_in_outs: [flow], cash_flows: { detailed: [{ type_id: "bank", amount: deposits }], total: { USD: deposits } }, securities_in_outs: [] } };
 }
+
+Deno.test("IBKR recovery commands use only the sender's gateways and forward explicit force", async () => {
+  const db = new Database(":memory:");
+  const originalRecover = gatewayRecovery.recover;
+  const recovered: { id: number; force: boolean | undefined }[] = [];
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users(user_id) VALUES (123456789),(2)");
+    createIntegration({ database: db, userId: 123456789, kind: "ibkr", credentials: { instanceUrl: "tcp://own:4003" } });
+    createIntegration({ database: db, userId: 2, kind: "ibkr", credentials: { instanceUrl: "tcp://other:4003" } });
+    gatewayRecovery.recover = async (integration, force) => {
+      recovered.push({ id: integration.id, force });
+      return "Recovery finished.";
+    };
+    const bot = harness(db);
+    await bot.command("/restart");
+    await bot.command("/restart force");
+    equal(recovered.length, 2);
+    equal(recovered[0].id, 1);
+    equal(recovered[0].force, false);
+    equal(recovered[1].force, true);
+    await bot.command("/restart invalid");
+    equal(recovered.length, 2);
+    match(String(bot.calls.at(-1)!.payload.text), /Use \/restart/);
+  } finally {
+    gatewayRecovery.recover = originalRecover;
+    db.close();
+  }
+});
 
 function harness(db: Database) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];

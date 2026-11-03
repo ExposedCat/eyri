@@ -8,6 +8,51 @@
 - grammY
 - SQLite
 
+## IBKR availability and recovery
+
+Both gateways use the pinned ibg-controller image. The first retains its existing
+login credentials, phone approval and settings volume; the second uses TOTP.
+Routine daily restarts adopt the new Gateway JVM and preserve its session where
+IBKR permits. IBKR still invalidates authentication tokens weekly and can revoke
+them earlier. Restarting or recreating the container can require a fresh login.
+
+Use `/status` in the admin's private chat to check login state and actual API
+readiness alongside the other connectors. Gateway health
+is also available on the host's loopback ports 9081 and 9082 at `/health`.
+`IBKR_GATEWAY_HEALTH_URLS` maps gateway hostnames to controller health URLs for
+Eyri. Custom gateways without a configured health endpoint use API checks.
+An open forwarder port or a running container alone is not readiness.
+
+API requests reuse connections and serialize account subscriptions per client.
+Execution polling every 15 seconds keeps its connection active and reconnects
+after failures; idle report connections close after one minute. Connection
+failures have a 15-second retry cooldown rather than sleeping and reconnecting
+repeatedly within each report. Quotes finish 150 ms after all symbols have a
+price or error, allowing trailing last-price ticks to supersede a close price.
+Best-effort daily P/L waits at most two seconds; missing P/L remains unavailable.
+
+`/restart` checks readiness first, leaves healthy gateways and ongoing controller
+recovery alone, and shares concurrent restart requests. A necessary container
+restart explicitly allows 90 seconds for graceful logout, then checks the API
+for up to three minutes. Repeated attempts are limited to once per gateway per
+15 minutes within the running app. A restart acknowledgment is never presented
+as confirmed API readiness. After resolving a held session or authentication
+problem, `/restart force` resumes a deliberately halted controller; it also
+observes the cooldown.
+
+The background watchdog checks controller health every 30 seconds and attempts
+recovery after two minutes of persistent unreachability. It leaves authentication
+halts and the controller's own JVM/upstream recovery alone. The controller manages
+those transient failures internally, including re-authentication when unattended
+login is available. Phone-based login can still need your approval. Standalone
+MCP does not start the watchdog.
+
+Compose allows 90 seconds for gateway shutdown. On podman-compose 1.5 this affects
+Compose stop/down commands but does not persist into the container's default stop
+timeout; external direct Podman stop/restart calls must also specify 90 seconds.
+The bot does so explicitly. During migration, stop the old first gateway
+gracefully before replacing it; an initial phone approval may be needed.
+
 ## Eyri MCP
 
 Eyri exposes the reporting commands as MCP tools at
@@ -177,6 +222,17 @@ Flex only publishes completed days. If live cash differs from the latest stateme
 the report fails with an explicit reconciliation error until the next daily statement;
 it does not treat an unverified same-day deposit as profit. Missing sections,
 truncated history, unsupported asset transfers and failed broker requests are errors.
+
+Gifted shares enter both the real portfolio and the index comparison as the same
+shares on their receipt date, with zero investor cash cost. They remain gifted
+stock in the hypothetical portfolio; their value is never spent on index shares
+or counted as a deposit. Switching indices preserves the same gift history.
+For IBKR, enable **Grant Activity** in the Activity Flex Query with Account ID,
+Symbol, Currency, Report Date, Quantity, Serial Number, Award Date and Vesting
+Date (or select all fields). The background poller imports awards and returns
+alongside trades. An aggregate Change in NAV grant total cannot supply receipt
+dates or quantities. Undated free holdings enter both curves only at the current
+endpoint, with a chart note explaining that dated Grant Activity is needed.
 
 ### Other integrations
 
@@ -772,6 +828,22 @@ Unbucketed `/perf`, `/number`, `/worth`,
 `/perf NAME`, `/number NAME`, `/worth NAME`, `/worthnumber NAME`, `/alltime NAME`,
 `/allnumber NAME`, `/dpnl NAME`, or `/history NAME`
 to view a bucket.
+
+## Admin connector status
+
+Set `ADMIN_ID` to the administrator's Telegram user ID. In a private chat,
+`/status` lists every configured IBKR, Trading 212 and Freedom24 connector across
+all users, identified by integration ID and owner. Only that sender is authorized;
+an unset or invalid `ADMIN_ID` disables access. The command appears only in the
+admin's private command menu.
+
+Each connector gets an independent live API check. IBKR also shows its endpoint,
+Gateway login readiness, execution cache, Flex trade/funding/commission syncs,
+failures, and token cooldowns. Trading 212 shows cached order/cash history and
+pending ledger exports. Available last-success times and retry times use UTC.
+Status reads do not download Flex statements, start exports or restart services.
+Credentials are redacted, failed connectors do not hide healthy ones, and large
+reports are split into Telegram messages.
 
 ## Restarting IB Gateway
 

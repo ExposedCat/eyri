@@ -198,6 +198,25 @@ Deno.test("IBKR funding parses external flows with historical FX and validates i
     /truncated/,
   );
 });
+Deno.test("IBKR funding accepts grants and matching cash summaries without adding them to deposits", () => {
+  const range = getFlexStatementRange(0, now);
+  const xml = statement().replace('<ChangeInNAV accountId="U1"', '<ChangeInNAV grantActivity="12.8078857" accountId="U1"')
+    .replaceAll('<CashTransaction ', '<CashTransaction levelOfDetail="DETAIL" ')
+    .replace('<CashTransactions>', `<CashTransactions>
+      <CashTransaction accountId="-" levelOfDetail="SUMMARY" currency="EUR" type="Deposits/Withdrawals" amount="100" reportDate="20260103" />
+      <CashTransaction levelOfDetail="SUMMARY" currency="USD" type="Dividends" amount="10" reportDate="20260103" />`);
+  const batch = parseIbkrFundingBatch(xml, range);
+  equal(batch.deposits, 120);
+  equal(batch.withdrawals, 20);
+  equal(batch.fundingHistory.length, 2);
+  equal(batch.cashHistory.length, 4);
+  throws(() => parseIbkrFundingBatch(xml.replace('amount="100" reportDate=', 'amount="101" reportDate='), range), /matching detail/);
+  throws(() => parseIbkrFundingBatch(xml.replace('accountId="-"', 'accountId="OTHER"'), range), /another account/);
+  throws(() => parseIbkrFundingBatch(xml.replace(/<CashTransaction levelOfDetail="DETAIL"[^>]*\/>/g, ''), range), /matching detail/);
+  throws(() => parseIbkrFundingBatch(xml.replace('grantActivity="12.8078857"', 'grantActivity="invalid"'), range), /grant activity/);
+  throws(() => parseIbkrFundingBatch(xml.replace('grantActivity="12.8078857"', 'assetTransfers="12.8078857"'), range), /transfers require verified/);
+});
+
 Deno.test("IBKR funding scans back to account opening, caches completed batches and excludes income from contributions", async () => {
   const db = new Database(":memory:");
   let calls = 0;

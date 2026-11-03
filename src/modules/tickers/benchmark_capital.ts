@@ -1,4 +1,4 @@
-import type { IntegrationAccountPerformance, IntegrationOrder } from "../integrations/types.ts";
+import type { IntegrationAccountPerformance, IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import type { ChartBenchmark } from "./chart_benchmark.ts";
 
 // Keep full portfolio funding even when the actual curve filters asset classes.
@@ -6,6 +6,7 @@ export type BenchmarkSource = {
   accountPerformances: IntegrationAccountPerformance[];
   // Purchases before asset filtering, scoped and scaled to the selected view.
   orders?: IntegrationOrder[];
+  positions?: IntegrationPortfolioPosition[];
 };
 
 // One buy-and-hold portfolio, displayed using the selected report's metric.

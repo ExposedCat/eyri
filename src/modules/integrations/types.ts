@@ -41,6 +41,8 @@ export type IntegrationPortfolioPosition = {
 };
 
 export type IntegrationOrder = {
+  // A share award/return moves securities without spending or receiving cash.
+  receipt?: "gift";
   // Signed broker commission, normally negative; never add it to a live book
   // cost that already includes fees.
   commission?: { amount: number; currency: string };

@@ -2,6 +2,7 @@ import { run, sequentialize } from "grammy_runner";
 import type { Bot } from "./types.ts";
 
 const reportCommands = [
+  "status",
   "start",
   "portfolio",
   "chart",

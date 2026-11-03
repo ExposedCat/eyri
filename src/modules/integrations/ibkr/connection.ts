@@ -1,4 +1,5 @@
 import { EventName, IBApi } from "@stoqey/ib";
+import { assertGatewayReady } from "./gateway.ts";
 
 export type IbkrConnectionConfig = {
   host: string;
@@ -7,6 +8,11 @@ export type IbkrConnectionConfig = {
   clientId: number;
   timeoutMs: number;
 };
+
+export function isIbkrStatusMessage(code?: number) {
+  return code === 1101 || code === 1102 ||
+    (code !== undefined && code >= 2100 && code <= 2199);
+}
 
 export function connectIbkrOnce(
   config: IbkrConnectionConfig,
@@ -17,7 +23,7 @@ export function connectIbkrOnce(
     let settled = false;
     const cleanup = () => {
       clearTimeout(timer);
-      api.off(EventName.connected, onConnected);
+      api.off(EventName.nextValidId, onConnected);
       api.off(EventName.error, onError);
       api.off(EventName.disconnected, onDisconnected);
     };
@@ -36,19 +42,28 @@ export function connectIbkrOnce(
           reject(error);
         }
       } else {
-        cleanup();
+        clearTimeout(timer);
+        api.off(EventName.nextValidId, onConnected);
+        // Keep a lifetime error listener until disconnect. Farm notifications
+        // can arrive in the same packet as nextValidId, before the caller can
+        // install its request listeners.
         resolve(api);
       }
     };
     const onConnected = () => finish();
-    const onDisconnected = () =>
+    const onDisconnected = () => {
+      if (settled) {
+        cleanup();
+        return;
+      }
       finish(
         new Error(
           `IBKR Gateway disconnected during connection to ${config.host}:${config.port}`,
         ),
       );
+    };
     const onError = (error: unknown, code?: number) => {
-      if (code !== undefined && code >= 2100 && code <= 2199) return;
+      if (isIbkrStatusMessage(code)) return;
       finish(error instanceof Error ? error : new Error(String(error)));
     };
     const timer = setTimeout(() =>
@@ -57,7 +72,9 @@ export function connectIbkrOnce(
           `Timed out connecting to IBKR Gateway at ${config.host}:${config.port}`,
         ),
       ), config.timeoutMs);
-    api.on(EventName.connected, onConnected);
+    // A TCP connection alone is not API readiness. Wait for the completed
+    // handshake before sending requests (IBKR can otherwise drop them).
+    api.on(EventName.nextValidId, onConnected);
     api.on(EventName.error, onError);
     api.on(EventName.disconnected, onDisconnected);
     try {
@@ -69,17 +86,8 @@ export function connectIbkrOnce(
 }
 
 export async function connectIbkr(config: IbkrConnectionConfig) {
-  const deadline = Date.now() + config.timeoutMs;
-  while (true) {
-    try {
-      return await connectIbkrOnce({
-        ...config,
-        timeoutMs: Math.max(1, deadline - Date.now()),
-      });
-    } catch (error) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 1_000) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-    }
-  }
+  await assertGatewayReady(config.host);
+  // Reconnection belongs to background polling, not a retry/sleep loop in
+  // every user's report. A refused connection should fail immediately.
+  return await connectIbkrOnce(config);
 }

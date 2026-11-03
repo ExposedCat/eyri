@@ -5,6 +5,7 @@ import type { Database } from "../database/setup.ts";
 import { connectToDb } from "../database/setup.ts";
 import { startIbkrExecutionSyncLoop } from "../integrations/ibkr/adapter.ts";
 import { startFlexSyncLoop } from "../integrations/ibkr/flex_sync.ts";
+import { startGatewayWatchdog } from "../integrations/ibkr/watchdog.ts";
 import { ensureTickerDisplaySchema } from "../tickers/decorations.ts";
 import { startMcpHttpServer } from "../mcp/server.ts";
 import { ensureYahooMappings } from "../market_data/mappings.ts";
@@ -69,6 +70,7 @@ export async function startApp() {
   try {
     console.log("Starting IBKR execution sync loop...");
     startIbkrExecutionSyncLoop(database);
+    startGatewayWatchdog(database);
     console.log("IBKR execution sync loop started");
   } catch (error) {
     console.error(

@@ -146,7 +146,6 @@ export function parseIbkrFundingBatch(
         "paxosTransfers",
         "excessFundSweep",
         "linkingAdjustments",
-        "grantActivity",
       ]],
       [cash, [
         "accountTransfers",
@@ -168,6 +167,10 @@ export function parseIbkrFundingBatch(
       }
     }
   }
+  // Grants are awards, not money moved into the account by its owner. Their
+  // value stays in account gain (NAV minus net deposits), like other income;
+  // they do not change the cash ledger or external contributions.
+  if (nav.grantActivity !== undefined) requiredNumber(nav.grantActivity, "grant activity");
   const externalTypes = new Set([
     "Deposits/Withdrawals",
     "Deposits & Withdrawals",
@@ -193,11 +196,35 @@ export function parseIbkrFundingBatch(
   let deposits = 0, withdrawals = 0;
   const fundingHistory: { date: string; amount: number }[] = [];
   const cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]> = [];
-  for (const { attrs } of getXmlElements(body, ["CashTransaction"])) {
-    if (attrs.accountId && attrs.accountId !== header.accountId) {
+  const cashTransactions = getXmlElements(body, ["CashTransaction"]);
+  for (const { attrs } of cashTransactions) {
+    const cashAccount = attrs.levelOfDetail === "SUMMARY" && attrs.accountId === "-"
+      ? header.accountId : attrs.accountId ?? header.accountId;
+    if (cashAccount !== header.accountId) {
       throw new Error(
         "IBKR funding contains another account's cash transaction",
       );
+    }
+    if (attrs.levelOfDetail === "SUMMARY") {
+      // Flex can emit daily summaries alongside their transactions. Accept a
+      // summary only when its unique detail rows independently reproduce it.
+      // Never count both, or accept a summary-only cash ledger.
+      const at = requiredDate(attrs.reportDate ?? attrs.dateTime, "cash transaction report date");
+      const details = new Map<string, number>();
+      for (const { attrs: detail } of cashTransactions) {
+        if (detail.levelOfDetail !== "DETAIL" || detail.type !== attrs.type ||
+          detail.currency !== attrs.currency ||
+          (detail.accountId ?? header.accountId) !== cashAccount) continue;
+        const id = detail.transactionID ?? detail.transactionId;
+        if (id && +requiredDate(detail.reportDate ?? detail.dateTime, "cash transaction report date") === +at) {
+          details.set(id, requiredNumber(detail.amount, "cash transaction amount"));
+        }
+      }
+      if (!details.size || Math.abs([...details.values()].reduce((sum, amount) => sum + amount, 0) -
+        requiredNumber(attrs.amount, "cash summary amount")) > .02) {
+        throw new Error("IBKR Cash Transactions summary is missing matching detail rows; include DETAIL rows in the Flex Query.");
+      }
+      continue;
     }
     if (attrs.levelOfDetail && attrs.levelOfDetail !== "DETAIL") {
       throw new Error(
@@ -394,6 +421,22 @@ export function cacheIbkrFundingBatch(database: Database, integration: Integrati
 
 const fundingPending = "IBKR funding history is syncing in the background; a complete cached statement is not available yet. Retry after the next scheduled sync.";
 
+function fundingUnavailable(database: Database, integration: Integration, queryId: string, range: FlexStatementRange) {
+  if (database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ibkr_flex_poll_jobs'").get()) {
+    const job = database.prepare(`SELECT last_error,next_attempt_at FROM ibkr_flex_poll_jobs
+      WHERE integration_id=? AND kind='funding' AND query_id=? AND from_date=? AND to_date=?`)
+      .get(integration.id, queryId, range.from.toISOString().slice(0, 10), range.to.toISOString().slice(0, 10)) as {
+        last_error: string | null; next_attempt_at: number;
+      } | undefined;
+    if (job?.last_error) {
+      const token = parseIbkrCredentials(integration.credentials).flexToken;
+      const reason = token ? job.last_error.replaceAll(token, "[redacted]") : job.last_error;
+      return new Error(`IBKR funding history import failed: ${reason}\nNext scheduled retry: ${new Date(job.next_attempt_at).toISOString()}`);
+    }
+  }
+  return new Error(fundingPending);
+}
+
 export async function fetchIbkrAccountPerformance(
   database: Database,
   integration: Integration,
@@ -407,7 +450,7 @@ export async function fetchIbkrAccountPerformance(
   if (!token || !queryId) throw new Error(configurationError);
   ensureIbkrFundingSchema(database);
   const metadata = readLatestIbkrFundingBatch(database, integration, now);
-  if (!metadata) throw new Error(fundingPending);
+  if (!metadata) throw fundingUnavailable(database, integration, queryId, getFlexStatementRange(0, now));
   const statementThrough = new Date(metadata.through);
   const latestRange = { from: new Date(+statementThrough - 364 * 86_400_000), to: statementThrough };
   const loadBatch = (range: FlexStatementRange) => {
@@ -418,7 +461,7 @@ export async function fetchIbkrAccountPerformance(
       const batch = JSON.parse(cached.payload) as IbkrFundingBatch;
       if (Array.isArray(batch.cashHistory)) return batch;
     }
-    throw new Error(fundingPending);
+    throw fundingUnavailable(database, integration, queryId, range);
   };
   if (
     metadata.accountId !== snapshot.accountId ||

@@ -1,5 +1,5 @@
 import { deepStrictEqual, equal, ok } from "node:assert/strict";
-import type { IntegrationAccountPerformance, IntegrationOrder } from "../integrations/types.ts";
+import type { IntegrationAccountPerformance, IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import type { PriceHistory } from "../market_data/history.ts";
 import { benchmarkForKind } from "./benchmark_capital.ts";
 import { buildChartBenchmark } from "./chart_benchmark.ts";
@@ -25,6 +25,57 @@ Deno.test("all report kinds display the same virtual portfolio using their own m
   near(benchmarkForKind(benchmark, "perf").points.at(-1)!.gain, 2);
   near(benchmarkForKind(benchmark, "alltime").points.at(-1)!.gain, 4);
   near(benchmarkForKind(benchmark, "worth").points.at(-1)!.gain, 12);
+});
+
+Deno.test("received stock enters both portfolios on its receipt date and remains stock when the index changes", async () => {
+  const db = new Database(":memory:");
+  const gift = { ...order("IBKR", 1, 0, 2), receipt: "gift" as const, transactionKey: "gift:1" };
+  const orders = [order("FIRST", 1, 100, 1), gift, order("IBKR", -.5, 30, 3)];
+  const holding = (ticker: string, amount: number, cost: number, price: number): IntegrationPortfolioPosition => ({
+    integrationId: 1, integrationKind: "ibkr", account: "A", ticker, currency: "USD", assetCategory: "STK", amount,
+    averageUnitPrice: cost / amount, currentPrice: price, totalInput: cost, totalNow: amount * price, unrealizedPnl: amount * price - cost,
+    realizedPnl: 0, dailyPnl: 0, dailyPnlBaseline: 0, dailyPnlPercentage: 0, openedAt: new Date("2025-01-01"),
+  });
+  const positions = [holding("FIRST", 1, 100, 100), holding("IBKR", .5, 0, 30)];
+  const a = { ...account(100), totalValue: 130, pnl: 30, cash: 15, ledgerCash: { USD: 15 }, positionValue: 115, investmentValue: 115,
+    reportedComponents: [{ currency: "USD", cost: 100, pnl: 30 }] };
+  const cache = {
+    resolve: (source: { ticker: string }) => Promise.resolve(source.ticker),
+    get: (symbol: string) => Promise.resolve({ ...history, symbol,
+      instrumentType: symbol === "CSPX.L" || symbol === "IUMO.L" ? "ETF" : "EQUITY",
+      bars: history.bars.map(bar => ({ ...bar, close: symbol === "FIRST" ? 100 : symbol === "IBKR"
+        ? bar.date < "2025-01-02" ? 10 : bar.date === "2025-01-02" ? 20 : 30
+        : symbol === "IUMO.L" ? bar.close * 10 - 90 : bar.close * 10 })),
+    }),
+  };
+  try {
+    for (const kind of ["alltime", "worth", "perf"] as const) {
+      const dataset = await loadAllTimeDataset(db, { positions, orders, kind, accountPerformances: [a],
+        benchmarkSource: { positions, orders, accountPerformances: [a] }, transactionBuckets: new Map(), bucketName: null, now: new Date("2025-01-03") }, 1, "Person", cache as never);
+      ok(dataset.benchmark);
+      deepStrictEqual(dataset.benchmarkPurchases, [{ date: "2025-01-01", amountUsd: 100 }]);
+      equal(dataset.benchmarkGifts!.find(point => point.date === "2025-01-01")!.valueUsd, 0);
+      equal(dataset.benchmarkGifts!.find(point => point.date === "2025-01-02")!.valueUsd, 20);
+      equal(dataset.benchmarkGifts!.at(-1)!.valueUsd, 30);
+      near(dataset.benchmark.points.at(-1)!.gain, kind === "worth" ? 150 : 50);
+      near(dataset.points.at(-1)!.gain, kind === "worth" ? 130 : kind === "perf" ? 15 : 30);
+      // Persisted sessions retain the same gifted stock even after the actual
+      // portfolio sold half of it. Index changes fetch only the new ETF.
+      const calls: string[] = [];
+      const [changed] = await switchChartBenchmarks(db, JSON.parse(JSON.stringify([dataset])), "momentum", {
+        get: symbol => { calls.push(symbol); return cache.get(symbol); },
+      });
+      deepStrictEqual(calls, ["IUMO.L"]);
+      deepStrictEqual(changed.benchmarkGifts, dataset.benchmarkGifts);
+      near(changed.benchmark!.points.at(-1)!.gain, kind === "worth" ? 330 : 230);
+      const [restored] = await switchChartBenchmarks(db, [changed], "sp500", { get: () => { throw new Error("Frozen index refetched"); } });
+      deepStrictEqual(restored.benchmark, dataset.benchmark);
+      const clipped = { ...dataset, points: dataset.points.slice(-1), benchmark: { ...dataset.benchmark, points: dataset.benchmark.points.slice(-1) } };
+      const [clippedSwitch] = await switchChartBenchmarks(db, [clipped], "momentum", cache);
+      near(clippedSwitch.benchmark!.points[0].gain, kind === "worth" ? 330 : 230);
+      deepStrictEqual(a.fundingHistory, [{ date: "2025-01-01", amount: 100 }]);
+    }
+  } finally { db.close(); }
 });
 
 Deno.test("every chart mode and asset filter invests all top-ups immediately, including idle cash, and freezes capital for index switching", async () => {
