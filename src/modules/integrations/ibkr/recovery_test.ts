@@ -1,4 +1,4 @@
-import { equal, match } from "node:assert/strict";
+import { equal, match, rejects } from "node:assert/strict";
 import type { Integration } from "../../database/integration.ts";
 import type { GatewayHealth } from "./gateway.ts";
 import { GatewayRecovery, restartGatewayContainer } from "./recovery.ts";
@@ -35,7 +35,7 @@ Deno.test("recovery leaves healthy, recovering and authentication-halted gateway
   equal(probes, 2);
 });
 
-Deno.test("recovery coalesces commands, confirms API readiness and prevents repeated restart attempts", async () => {
+Deno.test("recovery coalesces concurrent commands and allows another forced restart immediately", async () => {
   let state: GatewayHealth["state"] = "unavailable",
     restarts = 0,
     probes = 0,
@@ -61,8 +61,23 @@ Deno.test("recovery coalesces commands, confirms API readiness and prevents repe
   match(await first, /API readiness confirmed/);
   equal(probes, 2);
   equal(restarts, 1);
-  match(await recovery.recover(integration, true), /15 minutes/);
-  equal(restarts, 1);
+  match(await recovery.recover(integration, true), /API readiness confirmed/);
+  equal(restarts, 2);
+});
+
+Deno.test("a failed restart can be retried immediately without force or a cooldown", async () => {
+  let restarts = 0;
+  const recovery = new GatewayRecovery(
+    async () => health("unavailable"),
+    async () => { if (restarts < 2) throw new Error("offline"); },
+    async () => { if (++restarts === 1) throw new Error("Podman unavailable"); },
+    () => {},
+    () => 0,
+    async () => { throw new Error("Unexpected wait"); },
+  );
+  await rejects(recovery.recover(integration), /Podman unavailable/);
+  match(await recovery.recover(integration), /API readiness confirmed/);
+  equal(restarts, 2);
 });
 
 Deno.test("restart success is not reported as API readiness when login never completes", async () => {

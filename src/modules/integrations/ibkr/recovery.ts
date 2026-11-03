@@ -139,7 +139,6 @@ export async function restartGatewayContainer(containerName: string) {
 
 export class GatewayRecovery {
   private pending = new Map<string, Promise<string>>();
-  private attempts = new Map<string, number>();
   constructor(
     private health = (host: string) => gatewayMonitor.read(host, true),
     private probe = probeIbkrApi,
@@ -182,11 +181,6 @@ export class GatewayRecovery {
         return `${host}: API is ready; restart was unnecessary.`;
       } catch { /* The API failed even if the container looks ready. */ }
     }
-    const lastAttempt = this.attempts.get(host);
-    if (lastAttempt !== undefined && this.now() - lastAttempt < 15 * 60_000) {
-      return `${host}: a restart was already attempted recently. Wait 15 minutes between attempts. The bot admin can check /status.`;
-    }
-    this.attempts.set(host, this.now());
     this.reset(host);
     await this.restart(host);
     const deadline = this.now() + 180_000;

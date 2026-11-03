@@ -34,11 +34,10 @@ Best-effort daily P/L waits at most two seconds; missing P/L remains unavailable
 `/restart` checks readiness first, leaves healthy gateways and ongoing controller
 recovery alone, and shares concurrent restart requests. A necessary container
 restart explicitly allows 90 seconds for graceful logout, then checks the API
-for up to three minutes. Repeated attempts are limited to once per gateway per
-15 minutes within the running app. A restart acknowledgment is never presented
+for up to three minutes. Manual restart requests have no cooldown; concurrent
+requests share the same in-progress attempt. A restart acknowledgment is never presented
 as confirmed API readiness. After resolving a held session or authentication
-problem, `/restart force` resumes a deliberately halted controller; it also
-observes the cooldown.
+problem, `/restart force` resumes a deliberately halted controller.
 
 The background watchdog checks controller health every 30 seconds and attempts
 recovery after two minutes of persistent unreachability. It leaves authentication
