@@ -31,13 +31,12 @@ repeatedly within each report. Quotes finish 150 ms after all symbols have a
 price or error, allowing trailing last-price ticks to supersede a close price.
 Best-effort daily P/L waits at most two seconds; missing P/L remains unavailable.
 
-`/restart` checks readiness first, leaves healthy gateways and ongoing controller
-recovery alone, and shares concurrent restart requests. A necessary container
-restart explicitly allows 90 seconds for graceful logout, then checks the API
-for up to three minutes. Manual restart requests have no cooldown; concurrent
-requests share the same in-progress attempt. A restart acknowledgment is never presented
-as confirmed API readiness. After resolving a held session or authentication
-problem, `/restart force` resumes a deliberately halted controller.
+`/restart` immediately restarts each distinct gateway belonging to the sender,
+regardless of its health or login state. It allows 90 seconds for graceful logout
+and replies when the container restart completes, without waiting for API
+readiness or asking for confirmation. Manual restart requests have no cooldown;
+concurrent requests share the same in-progress container restart. Use `/status`
+to check API readiness after restarting.
 
 The background watchdog checks controller health every 30 seconds and attempts
 recovery after two minutes of persistent unreachability. It leaves authentication

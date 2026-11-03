@@ -679,10 +679,6 @@ tickersComposer.command("restart", async (ctx) => {
   }
 
   try {
-    const force = typeof ctx.match === "string" && ctx.match.trim() === "force";
-    if (ctx.match && !force) { await ctx.reply("Use /restart, or /restart force after resolving a held session or authentication problem."); return; }
-    await ctx.reply("Checking IB Gateway. Recovery, if needed, can take up to three minutes plus shutdown time.");
-
     const integrations = getUserIntegrations(
       ctx.db,
       ctx.dbEntities.user.userId,
@@ -695,7 +691,7 @@ tickersComposer.command("restart", async (ctx) => {
     for (const integration of integrations) {
       const host = getRestartContainerName(integration.credentials);
       if (restartedHosts.has(host)) continue;
-      await ctx.reply(await gatewayRecovery.recover(integration, force));
+      await ctx.reply(await gatewayRecovery.restart(integration));
       restartedHosts.add(host);
     }
 

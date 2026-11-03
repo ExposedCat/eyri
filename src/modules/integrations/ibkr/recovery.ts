@@ -139,10 +139,11 @@ export async function restartGatewayContainer(containerName: string) {
 
 export class GatewayRecovery {
   private pending = new Map<string, Promise<string>>();
+  private pendingRestarts = new Map<string, Promise<string>>();
   constructor(
     private health = (host: string) => gatewayMonitor.read(host, true),
     private probe = probeIbkrApi,
-    private restart = restartGatewayContainer,
+    private restartContainer = restartGatewayContainer,
     private reset = (host: string) => {
       ibkrSessions.reset(host);
       gatewayMonitor.invalidate(host);
@@ -152,27 +153,39 @@ export class GatewayRecovery {
       new Promise<void>((resolve) => setTimeout(resolve, ms)),
   ) {}
 
-  recover(integration: Integration, force = false): Promise<string> {
+  restart(integration: Integration): Promise<string> {
+    const host = getRestartContainerName(integration.credentials);
+    const pending = this.pendingRestarts.get(host);
+    if (pending) return pending;
+    const request = (async () => {
+      this.reset(host);
+      await this.restartContainer(host);
+      return `${host}: restarted.`;
+    })().finally(() => this.pendingRestarts.delete(host));
+    this.pendingRestarts.set(host, request);
+    return request;
+  }
+
+  recover(integration: Integration): Promise<string> {
     const host = getRestartContainerName(integration.credentials);
     const pending = this.pending.get(host);
     if (pending) return pending;
-    const request = this.run(integration, host, force).finally(() =>
+    const request = this.run(integration, host).finally(() =>
       this.pending.delete(host)
     );
     this.pending.set(host, request);
     return request;
   }
 
-  private async run(integration: Integration, host: string, force: boolean) {
+  private async run(integration: Integration, host: string) {
     const health = await this.health(host);
-    if (!force && health.state === "blocked") {
-      return `${host}: ${health.message} After resolving it, use /restart force to resume login.`;
+    if (health.state === "blocked") {
+      return `${host}: ${health.message}`;
     }
-    if (!force && health.state === "recovering") {
+    if (health.state === "recovering") {
       return `${host}: ${health.message}`;
     }
     if (
-      !force &&
       (health.state === "ready" || health.state === "unknown" ||
         health.state === "unavailable")
     ) {
@@ -181,8 +194,7 @@ export class GatewayRecovery {
         return `${host}: API is ready; restart was unnecessary.`;
       } catch { /* The API failed even if the container looks ready. */ }
     }
-    this.reset(host);
-    await this.restart(host);
+    await this.restart(integration);
     const deadline = this.now() + 180_000;
     let status: GatewayHealth = health;
     while (this.now() < deadline) {

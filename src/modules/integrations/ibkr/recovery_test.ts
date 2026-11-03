@@ -30,12 +30,12 @@ Deno.test("recovery leaves healthy, recovering and authentication-halted gateway
   state = "recovering";
   match(await recovery.recover(integration), /recovering/);
   state = "blocked";
-  match(await recovery.recover(integration), /restart force/);
+  equal(await recovery.recover(integration), "gateway: blocked");
   equal(restarts, 0);
   equal(probes, 2);
 });
 
-Deno.test("recovery coalesces concurrent commands and allows another forced restart immediately", async () => {
+Deno.test("recovery coalesces concurrent attempts and confirms readiness after restarting", async () => {
   let state: GatewayHealth["state"] = "unavailable",
     restarts = 0,
     probes = 0,
@@ -61,8 +61,62 @@ Deno.test("recovery coalesces concurrent commands and allows another forced rest
   match(await first, /API readiness confirmed/);
   equal(probes, 2);
   equal(restarts, 1);
-  match(await recovery.recover(integration, true), /API readiness confirmed/);
-  equal(restarts, 2);
+});
+
+Deno.test("manual restart bypasses health checks and readiness waits in every gateway state", async () => {
+  const restarted: string[] = [], reset: string[] = [];
+  for (const state of ["ready", "recovering", "blocked", "unknown", "unavailable"] as const) {
+    const recovery = new GatewayRecovery(
+      () => { throw new Error(`Manual restart must not check ${state} health`); },
+      () => { throw new Error("Manual restart must not probe the API"); },
+      async (host) => { restarted.push(host); },
+      (host) => { reset.push(host); },
+      () => 0,
+      () => { throw new Error("Manual restart must not wait for readiness"); },
+    );
+    equal(await recovery.restart(integration), "gateway: restarted.");
+    equal(await recovery.restart(integration), "gateway: restarted.");
+  }
+  equal(restarted.length, 10);
+  equal(reset.length, 10);
+  equal(restarted.every(host => host === "gateway"), true);
+  equal(reset.every(host => host === "gateway"), true);
+});
+
+Deno.test("manual restart shares concurrent requests per host and waits for Podman completion", async () => {
+  let finish!: () => void;
+  const stopped = new Promise<void>(resolve => { finish = resolve; });
+  const restarted: string[] = [];
+  const recovery = new GatewayRecovery(
+    () => { throw new Error("Unexpected health check"); },
+    () => { throw new Error("Unexpected API probe"); },
+    async (host) => { restarted.push(host); await stopped; },
+    () => {},
+  );
+  const first = recovery.restart(integration);
+  equal(recovery.restart({ ...integration, id: 2 }), first);
+  const other = recovery.restart({ ...integration, credentials: { instanceUrl: "tcp://other:4003" } });
+  equal(restarted.join(","), "gateway,other");
+  let completed = false;
+  void first.then(() => { completed = true; });
+  await Promise.resolve();
+  equal(completed, false);
+  finish();
+  equal(await first, "gateway: restarted.");
+  equal(await other, "other: restarted.");
+});
+
+Deno.test("manual restart failures can be retried immediately", async () => {
+  let attempts = 0;
+  const recovery = new GatewayRecovery(
+    () => { throw new Error("Unexpected health check"); },
+    () => { throw new Error("Unexpected API probe"); },
+    async () => { if (++attempts === 1) throw new Error("Podman unavailable"); },
+    () => {},
+  );
+  await rejects(recovery.restart(integration), /Podman unavailable/);
+  equal(await recovery.restart(integration), "gateway: restarted.");
+  equal(attempts, 2);
 });
 
 Deno.test("a failed restart can be retried immediately without force or a cooldown", async () => {

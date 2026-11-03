@@ -23,31 +23,34 @@ function fundedReport(holdings: { i: string; q: number; value: number }[], depos
     cash_in_outs: [flow], cash_flows: { detailed: [{ type_id: "bank", amount: deposits }], total: { USD: deposits } }, securities_in_outs: [] } };
 }
 
-Deno.test("IBKR recovery commands use only the sender's gateways and forward explicit force", async () => {
+Deno.test("restart directly restarts each of the sender's gateways once without prompts", async () => {
   const db = new Database(":memory:");
-  const originalRecover = gatewayRecovery.recover;
-  const recovered: { id: number; force: boolean | undefined }[] = [];
+  const originalRestart = gatewayRecovery.restart;
+  const restarted: number[] = [];
   try {
     ensureSchema(db);
     db.exec("INSERT INTO users(user_id) VALUES (123456789),(2)");
     createIntegration({ database: db, userId: 123456789, kind: "ibkr", credentials: { instanceUrl: "tcp://own:4003" } });
     createIntegration({ database: db, userId: 2, kind: "ibkr", credentials: { instanceUrl: "tcp://other:4003" } });
-    gatewayRecovery.recover = async (integration, force) => {
-      recovered.push({ id: integration.id, force });
-      return "Recovery finished.";
+    createIntegration({ database: db, userId: 123456789, kind: "ibkr", credentials: { instanceUrl: "tcp://own:4003", accountId: "second" } });
+    createIntegration({ database: db, userId: 123456789, kind: "ibkr", credentials: { instanceUrl: "tcp://own2:4003" } });
+    gatewayRecovery.restart = async (integration) => {
+      restarted.push(integration.id);
+      return "Restarted.";
     };
     const bot = harness(db);
     await bot.command("/restart");
+    equal(restarted.join(","), "1,4");
+    equal(bot.calls.length, 2);
+    for (const call of bot.calls) {
+      equal(call.payload.text, "Restarted.");
+    }
+    // Existing clients using the old force argument still restart directly.
     await bot.command("/restart force");
-    equal(recovered.length, 2);
-    equal(recovered[0].id, 1);
-    equal(recovered[0].force, false);
-    equal(recovered[1].force, true);
-    await bot.command("/restart invalid");
-    equal(recovered.length, 2);
-    match(String(bot.calls.at(-1)!.payload.text), /Use \/restart/);
+    equal(restarted.join(","), "1,4,1,4");
+    equal(bot.calls.length, 4);
   } finally {
-    gatewayRecovery.recover = originalRecover;
+    gatewayRecovery.restart = originalRestart;
     db.close();
   }
 });
