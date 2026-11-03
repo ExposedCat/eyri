@@ -10,7 +10,7 @@ services:
       USE_IBG_CONTROLLER: "yes"
       TRADING_MODE: live
       READ_ONLY_API: "yes"
-      TWS_SETTINGS_PATH: /home/ibgateway/Jts
+      TWS_SETTINGS_PATH: /home/ibgateway/settings
       AUTO_RESTART_TIME: "11:59 PM"
       AUTO_RESTART_ADOPT: "yes"
       TWOFA_TIMEOUT_ACTION: none
@@ -22,7 +22,7 @@ services:
       - "127.0.0.1:5900:5900"
       - "127.0.0.1:9081:8080"
     volumes:
-      - ib-gateway-settings:/home/ibgateway/Jts
+      - ib-gateway-settings:/home/ibgateway/settings
 
   ib_gateway_2:
     container_name: ib_gateway_2
@@ -37,7 +37,7 @@ services:
       BYPASS_WARNING: "Continue Login,Reconnect This Session"
       TRADING_MODE: live
       READ_ONLY_API: "yes"
-      TWS_SETTINGS_PATH: /home/ibgateway/Jts
+      TWS_SETTINGS_PATH: /home/ibgateway/settings
       AUTO_RESTART_TIME: "11:59 PM"
       AUTO_RESTART_ADOPT: "yes"
       TWOFA_TIMEOUT_ACTION: none
@@ -46,7 +46,7 @@ services:
     ports:
       - "127.0.0.1:9082:8080"
     volumes:
-      - ib-gateway-2-settings:/home/ibgateway/Jts
+      - ib-gateway-2-settings:/home/ibgateway/settings
 
   eyri_app:
     build:

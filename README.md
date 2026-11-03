@@ -12,6 +12,9 @@
 
 Both gateways use the pinned ibg-controller image. The first retains its existing
 login credentials, phone approval and settings volume; the second uses TOTP.
+Settings volumes mount at `/home/ibgateway/settings`, separate from the image's
+Gateway installation in `/home/ibgateway/Jts`. Keep the existing volume names
+when upgrading so saved login settings are preserved.
 Routine daily restarts adopt the new Gateway JVM and preserve its session where
 IBKR permits. IBKR still invalidates authentication tokens weekly and can revoke
 them earlier. Restarting or recreating the container can require a fresh login.
