@@ -4,7 +4,7 @@ import { Bot, InlineKeyboard } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
 import { ensureSchema } from "../database/setup.ts";
 import { createChartComposer, readChartSession } from "./chart_composer.ts";
-import { type AllTimeDataset, switchChartBenchmarks } from "./alltime_chart.ts";
+import { type AllTimeDataset, ensureChartSchema, switchChartBenchmarks } from "./alltime_chart.ts";
 import { dayAfter } from "../market_data/history.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
 import { readYahooMapping } from "../market_data/mappings.ts";
@@ -146,7 +146,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
     benchmarkGates,
     invalidSymbols,
     validatedSymbols,
-    command: (text = "/chart", userId = 1, chatId = -1001) =>
+    command: (text = "/chart alltime", userId = 1, chatId = -1001) =>
       bot.handleUpdate({
         update_id: ++updateId,
         message: {
@@ -241,7 +241,7 @@ function indexCallback(calls: { method: string; payload: Record<string, unknown>
   return rows.flat().find(button => button.callback_data.startsWith("chart_index:"))!.callback_data;
 }
 
-Deno.test("/chart sends one photo with Compare and compares only clickers' own accounts", async () => {
+Deno.test("/chart alltime sends one photo with Compare and compares only clickers' own accounts", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
@@ -277,7 +277,7 @@ Deno.test("DM charts show only the index toggle and never accept Compare clicks"
   ensureSchema(db);
   try {
     const h = harness(db);
-    await h.command("/chart", 1, 1);
+    await h.command("/chart alltime", 1, 1);
     const photo = h.calls.find((c) => c.method === "sendPhoto")!;
     const toggle = indexCallback(h.calls);
     deepStrictEqual(photo.payload.reply_markup, chartKeyboard(toggle, null));
@@ -298,6 +298,47 @@ Deno.test("DM charts show only the index toggle and never accept Compare clicks"
   } finally {
     db.close();
   }
+});
+
+Deno.test("bare /chart preloads real SPYL and IUMO snapshots without altering photo chart sessions", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  ensureChartSchema(db);
+  try {
+    db.exec("INSERT INTO users(user_id) VALUES(1)");
+    const h = harness(db, new Map([[1, "EUR"]]));
+    await h.command("/chart@eyri_bot   ", 1, 1);
+    deepStrictEqual(h.selections, [{ userId: 1, bucketName: null, kind: "alltime", filter: null }]);
+    deepStrictEqual(h.fetched, [1]);
+    deepStrictEqual(h.benchmarkRequests.map(request => request.symbol), ["IUMO.L", "SPYL.L"]);
+    const widget = h.calls.find(call => call.method === "sendWidget")!;
+    ok(widget);
+    equal(widget.payload.chat_id, 1);
+    match(String(widget.payload.html), /SPYL\.L/);
+    match(String(widget.payload.html), /IUMO\.L/);
+    match(String(widget.payload.html), /"currency":"EUR"/);
+    equal(widget.payload.allow_queries, undefined);
+    equal(h.rendered.length, 0);
+    equal(h.calls.filter(call => call.method === "sendPhoto").length, 0);
+    equal(db.prepare("SELECT COUNT(*) AS n FROM alltime_chart_sessions").get()!.n, 0);
+
+    await h.command("/chart alltime");
+    equal(h.calls.filter(call => call.method === "sendPhoto").length, 1);
+    equal(h.benchmarkRequests.length, 2);
+    equal(h.renderedDatasets.at(-1)![0].benchmark!.symbol, "CSPX.L");
+  } finally { db.close(); }
+});
+
+Deno.test("bare /chart reports missing SPYL history instead of sending a substitute curve", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    h.benchmarkFailures.add("SPYL.L");
+    await h.command("/chart");
+    equal(h.calls.filter(call => call.method === "sendWidget" || call.method === "sendPhoto").length, 0);
+    match(String(h.calls.at(-1)!.payload.text), /SPYL.*unavailable/);
+  } finally { db.close(); }
 });
 
 Deno.test("Compare keeps the original date range and point values across older/newer histories and restarts", async () => {
@@ -676,7 +717,7 @@ Deno.test("index changes preserve single-chart preferred currency and DM keyboar
   ensureSchema(db);
   try {
     const first = harness(db, new Map([[1, "EUR"]]));
-    await first.command("/chart", 1, 1);
+    await first.command("/chart alltime", 1, 1);
     const before = first.renderedDatasets[0][0];
     const resumed = harness(db);
     await resumed.compare(indexCallback(first.calls), 1, 1);

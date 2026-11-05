@@ -60,7 +60,7 @@ const botCommands = [
   { command: "integrations", description: "Manage integration accounts" },
   { command: "t212", description: "Connect a Trading 212 account" },
   { command: "portfolio", description: "Chart stock allocation" },
-  { command: "chart", description: "Chart perf, alltime or worth; optional stocks/options filter" },
+  { command: "chart", description: "Interactive chart; add perf/alltime/worth for a photo chart" },
   { command: "yahoo", description: "Set a Yahoo symbol for historical prices" },
   { command: "rsu", description: "Show or record RSU vesting" },
   { command: "rsu_rm", description: "Remove RSU awards for a ticker" },

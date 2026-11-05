@@ -5,10 +5,12 @@ export const CHART_BENCHMARK_SYMBOL = "CSPX.L";
 export const CHART_BENCHMARKS = {
   sp500: { name: "S&P 500", symbol: CHART_BENCHMARK_SYMBOL },
   momentum: { name: "Momentum", symbol: "IUMO.L" },
+  spyl: { name: "SPYL", symbol: "SPYL.L" },
 } as const;
 export type ChartBenchmarkIndex = keyof typeof CHART_BENCHMARKS;
 export function chartBenchmarkIndex(symbol?: string): ChartBenchmarkIndex {
-  return symbol === CHART_BENCHMARKS.momentum.symbol ? "momentum" : "sp500";
+  return symbol === CHART_BENCHMARKS.momentum.symbol ? "momentum"
+    : symbol === CHART_BENCHMARKS.spyl.symbol ? "spyl" : "sp500";
 }
 export type BenchmarkPurchase = {
   date: string;

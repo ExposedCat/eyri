@@ -22,6 +22,7 @@ import {
 import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
 import { parseReportArgs, type ReportFilter } from "./performance_command.ts";
 import { isOptionPosition, isStockPosition } from "./portfolio.ts";
+import { renderChartWidget } from "./chart_widget.ts";
 
 type Session = {
   id: string;
@@ -168,6 +169,7 @@ export function createChartComposer(
   });
   composer.command("chart", async (ctx) => {
     if (!ctx.dbEntities.user || !ctx.from || !ctx.chat) return;
+    const widget = typeof ctx.match === "string" && !ctx.match.trim();
     const selection = parseReportArgs(ctx.match, "alltime");
     if (!selection) {
       await ctx.reply("Use /chart [perf|alltime|worth] [s/o/stocks/options] [BUCKET].");
@@ -189,6 +191,27 @@ export function createChartComposer(
         const rates = await fetchConversionRates(["USD"], currency, runtime.request);
         dataset.displayCurrency = currency;
         dataset.displayRate = rates.get("USD")!;
+      }
+      if (widget) {
+        const switchBenchmarks = runtime.switchBenchmarks ?? switchChartBenchmarks;
+        const [momentum] = await switchBenchmarks(ctx.db, [dataset], "momentum");
+        const [spyl] = await switchBenchmarks(ctx.db, [dataset], "spyl");
+        const html = renderChartWidget(dataset, spyl.benchmark!, momentum.benchmark!);
+        // grammY's raw API proxy supports new Bot API methods before its types
+        // catch up. Use the existing API client and its configured transformers.
+        const api = ctx.api.raw as unknown as {
+          sendWidget(args: { chat_id: number; html: string; height: number; message_thread_id?: number }): Promise<unknown>;
+        };
+        try {
+          await api.sendWidget({ chat_id: ctx.chat.id, html, height: 0,
+            ...(ctx.message?.is_topic_message ? { message_thread_id: ctx.message.message_thread_id } : {}) });
+        } catch (error) {
+          if (error && typeof error === "object" && "error_code" in error && error.error_code === 404) {
+            throw new Error("HTML chart widgets require Bot API 10.4 support on this bot's API endpoint. Use /chart alltime for the photo chart.");
+          }
+          throw error;
+        }
+        return;
       }
       const image = await runtime.render(ctx.db, [dataset]);
       ensureChartSchema(ctx.db);

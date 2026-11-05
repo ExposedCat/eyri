@@ -549,6 +549,22 @@ The container includes DejaVu Sans fonts; local runs use installed system fonts.
 
 ## Report charts
 
+Bare `/chart` sends an experimental HTML widget with an **SPYL / IUMO** selector.
+It requires Bot API 10.4 widget support and a compatible Telegram client.
+`/chart` with arguments, such as `/chart alltime`, `/chart perf stocks` or
+`/chart Core`, keeps sending the original photo chart with its existing controls.
+The widget preloads the portfolio curve and both **SPYL.L** and **IUMO.L**
+benchmarks using the same funding and return calculations as photo charts.
+The selector switches locally, without broker requests or bot callbacks.
+The widget is a fixed snapshot; plotted points are reduced to fit Telegram's
+32 KB HTML / 4 KB zlib limits, retaining endpoints and time-bucket extrema.
+The legend shows the final return or value in the selected reporting currency.
+It requires valid history for both ETFs over the complete funding schedule;
+SPYL.L's shorter history may make it unavailable for older portfolios. Missing
+history is reported explicitly; it is never replaced with CSPX.L or shifted to
+a later investment date. No ticker picker, date-range or asset-mode controls
+are included inside the widget yet.
+
 Use `/chart [perf|alltime|worth] [s|stocks|o|options] [BUCKET]` for a daily
 chart of the corresponding report. The default is `alltime`; `/chart BUCKET`
 continues to work. The live endpoint comes from the same calculation as the text
