@@ -12,6 +12,7 @@ import { getAdminId } from "../status/access.ts";
 import type { Bot, CustomContext } from "./types.ts";
 import { createReplyWithTextFunc } from "./utils.ts";
 import { setupBotRuntime } from "./runtime.ts";
+import { buildBotApiUrl } from "./api_url.ts";
 
 function extendContext(bot: Bot, database: Database) {
   bot.use(async (ctx, next) => {
@@ -45,7 +46,9 @@ export function createBot(database: Database): Bot {
     throw new Error("TOKEN environment variable is missing");
   }
 
-  const bot = new TelegramBot<CustomContext>(TOKEN);
+  const bot = new TelegramBot<CustomContext>(TOKEN, {
+    client: { buildUrl: buildBotApiUrl },
+  });
 
   setupBotRuntime(bot);
   extendContext(bot, database);
