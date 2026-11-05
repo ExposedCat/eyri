@@ -31,7 +31,7 @@ import {
 const EXECUTION_SYNC_INTERVAL_MS = 15 * 1000;
 const EXECUTION_CLIENT_ID_OFFSET = 1000;
 const EXECUTION_SYNC_REQUEST_ID = 90_000;
-const DAILY_PNL_TIMEOUT_MS = 2_000;
+const DAILY_PNL_TIMEOUT_MS = 5_000;
 
 type IbkrPortfolioPosition = IntegrationPortfolioPosition & {
   conId?: number;
@@ -578,12 +578,18 @@ export async function readDailyPnl(
         return;
       }
 
-      dailyPnlByConId.set(conId, {
-        dailyPnl: normalizePnlNumber(dailyPnL),
-        marketValue: normalizePnlNumber(value),
-      });
+      // IBKR can send unset values before the subscription has usable data.
+      // Keep listening, retaining usable fields from earlier partial updates.
+      const previous = dailyPnlByConId.get(conId);
+      const result = {
+        dailyPnl: normalizePnlNumber(dailyPnL) ?? previous?.dailyPnl ?? null,
+        marketValue: normalizePnlNumber(value) ?? previous?.marketValue ?? null,
+      };
+      dailyPnlByConId.set(conId, result);
 
-      pending.delete(reqId);
+      if (result.dailyPnl !== null && result.marketValue !== null) {
+        pending.delete(reqId);
+      }
       if (!pending.size) finish();
     };
     const cleanup = () => {

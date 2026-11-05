@@ -45,7 +45,8 @@ after failures; idle report connections close after one minute. Connection
 failures have a 15-second retry cooldown rather than sleeping and reconnecting
 repeatedly within each report. Quotes finish 150 ms after all symbols have a
 price or error, allowing trailing last-price ticks to supersede a close price.
-Best-effort daily P/L waits at most two seconds; missing P/L remains unavailable.
+Best-effort daily P/L waits at most five seconds and keeps listening through
+initial unset updates; missing P/L remains unavailable.
 
 `/restart` immediately restarts each distinct gateway belonging to the sender,
 regardless of its health or login state. It allows 90 seconds for graceful logout

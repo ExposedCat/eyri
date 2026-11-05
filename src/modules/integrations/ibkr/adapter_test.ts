@@ -78,6 +78,39 @@ Deno.test("IBKR P/L completes on data or a terminal request error without waitin
   deepStrictEqual(api.eventNames(), []);
 });
 
+Deno.test("IBKR P/L waits for usable data after unset updates and preserves partial values", async () => {
+  class Api extends EventEmitter {
+    cancelled: number[] = [];
+    reqPnLSingle(id: number) {
+      this.emit(EventName.pnlSingle, id, 1, Number.MAX_VALUE, 0, 0, Number.MAX_VALUE);
+      queueMicrotask(() => {
+        this.emit(EventName.pnlSingle, id, 1, 5, 0, 0, Number.MAX_VALUE);
+        this.emit(EventName.pnlSingle, id, 1, Number.MAX_VALUE, 0, 0, 105);
+      });
+    }
+    cancelPnLSingle(id: number) { this.cancelled.push(id); }
+  }
+  const api = new Api();
+  const result = await readDailyPnl(api as unknown as IBApi, [{ conId: 1 } as IntegrationPortfolioPosition & { conId: number }], "U1", 1000);
+  deepStrictEqual(result.get(1), { dailyPnl: 5, marketValue: 105 });
+  deepStrictEqual(api.cancelled, [50_000]);
+  deepStrictEqual(api.eventNames(), []);
+});
+
+Deno.test("IBKR P/L accepts a first response arriving after two seconds", async () => {
+  class Api extends EventEmitter {
+    timer: ReturnType<typeof setTimeout> | undefined;
+    reqPnLSingle(id: number) {
+      this.timer = setTimeout(() => this.emit(EventName.pnlSingle, id, 1, 5, 0, 0, 105), 2100);
+    }
+    cancelPnLSingle() { clearTimeout(this.timer); }
+  }
+  const api = new Api();
+  const result = await readDailyPnl(api as unknown as IBApi, [{ conId: 1 } as IntegrationPortfolioPosition & { conId: number }], "U1");
+  deepStrictEqual(result.get(1), { dailyPnl: 5, marketValue: 105 });
+  deepStrictEqual(api.eventNames(), []);
+});
+
 Deno.test("received IBKR shares use zero investor cost in the main portfolio instead of their broker grant valuation", async () => {
   const db = new Database(":memory:");
   const original = ibkrSessions.run;
