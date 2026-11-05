@@ -16,11 +16,13 @@ Deno.test("widget transport uses production beta while polling and messages stay
     sendWidget(args: { chat_id: number; html: string }): Promise<unknown>;
   };
   await raw.sendWidget({ chat_id: 1, html: "<p>Chart</p>" });
+  await api.forwardMessage(2, 1, 100);
   await api.sendMessage(1, "Photo commands stay on stable");
   await api.getUpdates({ timeout: 0 });
   deepStrictEqual(urls, [
     "https://api.telegram.org/bot123:test/getMe",
     "https://api.telegram.org/beta/bot123:test/sendWidget",
+    "https://api.telegram.org/beta/bot123:test/forwardMessage",
     "https://api.telegram.org/bot123:test/sendMessage",
     "https://api.telegram.org/bot123:test/getUpdates",
   ]);

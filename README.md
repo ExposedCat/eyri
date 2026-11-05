@@ -551,8 +551,13 @@ The container includes DejaVu Sans fonts; local runs use installed system fonts.
 
 Bare `/chart` sends an experimental HTML widget with an **SPYL / IUMO** selector.
 It requires Bot API 10.4 widget support and a compatible Telegram client.
-Widget sends use Telegram's `/beta` API endpoint with the existing production
-bot token; polling and all other bot methods continue using the stable endpoint.
+Widget sends and forwards use Telegram's `/beta` API endpoint with the existing
+production bot token; polling and ordinary messages use the stable endpoint.
+If Telegram refuses direct group delivery, Eyri silently creates the widget in
+the command sender's private chat and forwards it into the original group/topic,
+following Telegram's conformance publisher. The sender must first start the bot
+privately. The intermediate private message remains available there; no other
+user's private chat is used. Direct private-chat requests stay in that chat.
 `/chart` with arguments, such as `/chart alltime`, `/chart perf stocks` or
 `/chart Core`, keeps sending the original photo chart with its existing controls.
 The widget preloads the portfolio curve and both **SPYL.L** and **IUMO.L**

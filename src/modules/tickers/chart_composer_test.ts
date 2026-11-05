@@ -18,6 +18,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
   const renderedDatasets: AllTimeDataset[][] = [];
   const failures = new Set<number>();
   const apiFailures = new Set<string>();
+  const apiResponses = new Map<string, (payload: Record<string, unknown>) => unknown>();
   const datasetGates = new Map<number, () => Promise<void>>();
   const pointsByUser = new Map<number, AllTimeDataset["points"]>();
   const benchmarkRequests: { symbol: string; start: string; end: string }[] = [];
@@ -44,6 +45,8 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
       payload: payload as unknown as Record<string, unknown>,
     });
     if (apiFailures.has(method)) return Promise.reject(new Error(`${method} failed`));
+    const response = apiResponses.get(method);
+    if (response) return Promise.resolve(response(payload as unknown as Record<string, unknown>)) as never;
     return Promise.resolve({
       ok: true,
       result: method === "answerCallbackQuery" ? true : {
@@ -139,6 +142,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
     renderedDatasets,
     failures,
     apiFailures,
+    apiResponses,
     datasetGates,
     pointsByUser,
     benchmarkRequests,
@@ -146,7 +150,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
     benchmarkGates,
     invalidSymbols,
     validatedSymbols,
-    command: (text = "/chart alltime", userId = 1, chatId = -1001) =>
+    command: (text = "/chart alltime", userId = 1, chatId = -1001, threadId?: number) =>
       bot.handleUpdate({
         update_id: ++updateId,
         message: {
@@ -156,6 +160,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
             ? { id: chatId, type: "private", first_name: `User ${chatId}` }
             : { id: chatId, type: "supergroup", title: "Investing" },
           from: from(userId),
+          ...(threadId === undefined ? {} : { is_topic_message: true, message_thread_id: threadId }),
           text,
           entities: [{
             type: "bot_command",
@@ -338,6 +343,60 @@ Deno.test("bare /chart reports missing SPYL history instead of sending a substit
     await h.command("/chart");
     equal(h.calls.filter(call => call.method === "sendWidget" || call.method === "sendPhoto").length, 0);
     match(String(h.calls.at(-1)!.payload.text), /SPYL.*unavailable/);
+  } finally { db.close(); }
+});
+
+Deno.test("group widget rejection creates a silent requester-only DM and forwards into the original topic", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    h.apiResponses.set("sendWidget", payload => Number(payload.chat_id) < 0
+      ? { ok: false, error_code: 400, description: "Bad Request: INPUT_MEDIA_WIDGET_NOT_ALLOWED" }
+      : { ok: true, result: { message_id: 201 } });
+    await h.command("/chart", 2, -1001, 77);
+    const sends = h.calls.filter(call => call.method === "sendWidget");
+    equal(sends.length, 2);
+    equal(sends[0].payload.chat_id, -1001);
+    equal(sends[0].payload.message_thread_id, 77);
+    equal(sends[1].payload.chat_id, 2);
+    equal(sends[1].payload.disable_notification, true);
+    equal(sends[1].payload.message_thread_id, undefined);
+    equal(sends[1].payload.html, sends[0].payload.html);
+    deepStrictEqual(h.calls.find(call => call.method === "forwardMessage")!.payload,
+      { chat_id: -1001, from_chat_id: 2, message_id: 201, message_thread_id: 77 });
+    deepStrictEqual(h.fetched, [2]);
+    equal(h.rendered.length, 0);
+    equal(h.calls.filter(call => call.method === "sendMessage").length, 0);
+  } finally { db.close(); }
+});
+
+Deno.test("group widget delivery explains how to start the bot privately when DM creation is forbidden", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    h.apiResponses.set("sendWidget", payload => ({ ok: false,
+      error_code: Number(payload.chat_id) < 0 ? 400 : 403,
+      description: Number(payload.chat_id) < 0 ? "INPUT_MEDIA_WIDGET_NOT_ALLOWED" : "Forbidden: bot can't initiate conversation with a user" }));
+    await h.command("/chart");
+    match(String(h.calls.at(-1)!.payload.text), /@eyri_bot privately, press Start/);
+    equal(h.calls.filter(call => call.method === "forwardMessage" || call.method === "sendPhoto").length, 0);
+  } finally { db.close(); }
+});
+
+Deno.test("unrelated widget errors and private-chat rejections never redirect to another chat", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    for (const [chatId, description] of [[-1001, "INPUT_MEDIA_WIDGET_HTML_INVALID"], [1, "INPUT_MEDIA_WIDGET_NOT_ALLOWED"]] as const) {
+      const h = harness(db);
+      h.apiResponses.set("sendWidget", () => ({ ok: false, error_code: 400, description }));
+      await h.command("/chart", 1, chatId);
+      equal(h.calls.filter(call => call.method === "sendWidget").length, 1);
+      equal(h.calls.filter(call => call.method === "forwardMessage" || call.method === "sendPhoto").length, 0);
+      match(String(h.calls.at(-1)!.payload.text), chatId < 0 ? /HTML_INVALID/ : /not allowing widgets in this private chat/);
+    }
   } finally { db.close(); }
 });
 
