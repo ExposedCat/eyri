@@ -1,7 +1,7 @@
 services:
   ib_gateway:
     container_name: ib_gateway
-    image: ghcr.io/code-hustler-ft3d/ibg-controller:0.15.0@sha256:a62023992fd1d705a9cb8d23c3fb449204cfc24ef0c3a4e25f7baa51311d7070
+    image: ghcr.io/code-hustler-ft3d/ibg-controller:0.16.3@sha256:dcfbb07fb0c28ab9efae0e5b6c686306944bd67517db215d1c0228a3be666534
     restart: unless-stopped
     stop_grace_period: 90s
     env_file:
@@ -26,7 +26,7 @@ services:
 
   ib_gateway_2:
     container_name: ib_gateway_2
-    image: ghcr.io/code-hustler-ft3d/ibg-controller:0.15.0@sha256:a62023992fd1d705a9cb8d23c3fb449204cfc24ef0c3a4e25f7baa51311d7070
+    image: ghcr.io/code-hustler-ft3d/ibg-controller:0.16.3@sha256:dcfbb07fb0c28ab9efae0e5b6c686306944bd67517db215d1c0228a3be666534
     restart: on-failure
     stop_grace_period: 90s
     env_file:

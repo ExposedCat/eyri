@@ -28,7 +28,7 @@ Deno.test("gateway readiness is cached, shared, refreshed, and rejects a live fo
   equal(first.state, "blocked");
   equal(second.state, "blocked");
   equal(calls, 1);
-  match(first.message, /session lockout or authentication/);
+  match(first.message, /Check the gateway authentication logs/);
   payload = {
     status: "healthy",
     state: "READY",

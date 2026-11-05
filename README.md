@@ -12,6 +12,9 @@
 
 Both gateways use the pinned ibg-controller image. The first retains its existing
 login credentials, phone approval and settings volume; the second uses TOTP.
+Controller 0.16.3 fixes daily restart configuration and adoption: older versions
+could leave Gateway in its default daily logoff mode despite `AUTO_RESTART_TIME`,
+or interrupt Gateway while it restored a saved session after restarting.
 Settings volumes mount at `/home/ibgateway/settings`, separate from the image's
 Gateway installation in `/home/ibgateway/Jts`. Keep the existing volume names
 when upgrading so saved login settings are preserved.
@@ -25,6 +28,16 @@ is also available on the host's loopback ports 9081 and 9082 at `/health`.
 `IBKR_GATEWAY_HEALTH_URLS` maps gateway hostnames to controller health URLs for
 Eyri. Custom gateways without a configured health endpoint use API checks.
 An open forwarder port or a running container alone is not readiness.
+
+`HALTED` means the controller has stopped login attempts; it does not establish
+which authentication step failed. Inspect the controller logs and Gateway's
+`/home/ibgateway/settings/launcher.log` before changing credentials or clearing
+other sessions. In particular, `Passed pwd authentication` followed by
+`Authorization failed: incorrect security code` identifies a rejected 2FA code,
+even if the controller later calls it a persistent CCP lockout. A controller's
+`2FA handled successfully` line only confirms that it submitted the code.
+Verify recovery with `/status` and API readiness. Do not enable automatic
+restarts of halted containers to work around this diagnostic ambiguity.
 
 API requests reuse connections and serialize account subscriptions per client.
 Execution polling every 15 seconds keeps its connection active and reconnects

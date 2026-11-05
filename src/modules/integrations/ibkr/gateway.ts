@@ -45,7 +45,7 @@ export class GatewayMonitor {
         return {
           state: "blocked",
           message:
-            "IBKR login is halted. A session lockout or authentication problem needs attention. Clear the held session/authentication issue before restarting.",
+            "IBKR login is halted. Check the gateway authentication logs for the cause before restarting; the halted state alone does not identify a session lockout or invalid credentials.",
         };
       }
       if (
