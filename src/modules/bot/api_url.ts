@@ -1,6 +1,5 @@
 // Widgets are currently served by Telegram's beta Bot API on production chats.
-// Keep polling and ordinary messages on the stable API. Widget forwards also
-// use beta so the returned message retains its widget metadata. Custom API roots
+// Keep polling and all other methods on the stable API. Custom API roots
 // retain their own routing, including any explicitly configured beta prefix.
 export function buildBotApiUrl(
   root: string,
@@ -8,7 +7,7 @@ export function buildBotApiUrl(
   method: string,
   environment: "prod" | "test",
 ): string {
-  const beta = root === "https://api.telegram.org" && (method === "sendWidget" || method === "forwardMessage")
+  const beta = root === "https://api.telegram.org" && method === "sendWidget"
     ? "/beta"
     : "";
   const test = environment === "test" ? "test/" : "";

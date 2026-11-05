@@ -22,7 +22,7 @@ Deno.test("widget transport uses production beta while polling and messages stay
   deepStrictEqual(urls, [
     "https://api.telegram.org/bot123:test/getMe",
     "https://api.telegram.org/beta/bot123:test/sendWidget",
-    "https://api.telegram.org/beta/bot123:test/forwardMessage",
+    "https://api.telegram.org/bot123:test/forwardMessage",
     "https://api.telegram.org/bot123:test/sendMessage",
     "https://api.telegram.org/bot123:test/getUpdates",
   ]);

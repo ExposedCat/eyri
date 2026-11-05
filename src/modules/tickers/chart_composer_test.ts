@@ -346,56 +346,42 @@ Deno.test("bare /chart reports missing SPYL history instead of sending a substit
   } finally { db.close(); }
 });
 
-Deno.test("group widget rejection creates a silent requester-only DM and forwards into the original topic", async () => {
+Deno.test("widget delivery stays in the requesting chat and preserves its topic", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
-    const h = harness(db);
-    h.apiResponses.set("sendWidget", payload => Number(payload.chat_id) < 0
-      ? { ok: false, error_code: 400, description: "Bad Request: INPUT_MEDIA_WIDGET_NOT_ALLOWED" }
-      : { ok: true, result: { message_id: 201 } });
-    await h.command("/chart", 2, -1001, 77);
-    const sends = h.calls.filter(call => call.method === "sendWidget");
-    equal(sends.length, 2);
-    equal(sends[0].payload.chat_id, -1001);
-    equal(sends[0].payload.message_thread_id, 77);
-    equal(sends[1].payload.chat_id, 2);
-    equal(sends[1].payload.disable_notification, true);
-    equal(sends[1].payload.message_thread_id, undefined);
-    equal(sends[1].payload.html, sends[0].payload.html);
-    deepStrictEqual(h.calls.find(call => call.method === "forwardMessage")!.payload,
-      { chat_id: -1001, from_chat_id: 2, message_id: 201, message_thread_id: 77 });
-    deepStrictEqual(h.fetched, [2]);
-    equal(h.rendered.length, 0);
-    equal(h.calls.filter(call => call.method === "sendMessage").length, 0);
-  } finally { db.close(); }
-});
-
-Deno.test("group widget delivery explains how to start the bot privately when DM creation is forbidden", async () => {
-  const db = new Database(":memory:");
-  ensureSchema(db);
-  try {
-    const h = harness(db);
-    h.apiResponses.set("sendWidget", payload => ({ ok: false,
-      error_code: Number(payload.chat_id) < 0 ? 400 : 403,
-      description: Number(payload.chat_id) < 0 ? "INPUT_MEDIA_WIDGET_NOT_ALLOWED" : "Forbidden: bot can't initiate conversation with a user" }));
-    await h.command("/chart");
-    match(String(h.calls.at(-1)!.payload.text), /@eyri_bot privately, press Start/);
-    equal(h.calls.filter(call => call.method === "forwardMessage" || call.method === "sendPhoto").length, 0);
-  } finally { db.close(); }
-});
-
-Deno.test("unrelated widget errors and private-chat rejections never redirect to another chat", async () => {
-  const db = new Database(":memory:");
-  ensureSchema(db);
-  try {
-    for (const [chatId, description] of [[-1001, "INPUT_MEDIA_WIDGET_HTML_INVALID"], [1, "INPUT_MEDIA_WIDGET_NOT_ALLOWED"]] as const) {
+    for (const [chatId, threadId] of [[-1001, 77], [2, undefined]] as const) {
       const h = harness(db);
-      h.apiResponses.set("sendWidget", () => ({ ok: false, error_code: 400, description }));
-      await h.command("/chart", 1, chatId);
-      equal(h.calls.filter(call => call.method === "sendWidget").length, 1);
+      await h.command("/chart", 2, chatId, threadId);
+      const sends = h.calls.filter(call => call.method === "sendWidget");
+      equal(sends.length, 1);
+      equal(sends[0].payload.chat_id, chatId);
+      equal(sends[0].payload.message_thread_id, threadId);
       equal(h.calls.filter(call => call.method === "forwardMessage" || call.method === "sendPhoto").length, 0);
-      match(String(h.calls.at(-1)!.payload.text), chatId < 0 ? /HTML_INVALID/ : /not allowing widgets in this private chat/);
+      deepStrictEqual(h.fetched, [2]);
+    }
+  } finally { db.close(); }
+});
+
+Deno.test("widget denial never redirects privately and a later command retries normal delivery", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    for (const chatId of [-1001, 2]) {
+      const h = harness(db);
+      h.apiResponses.set("sendWidget", () => ({ ok: false, error_code: 400, description: "Bad Request: INPUT_MEDIA_WIDGET_NOT_ALLOWED" }));
+      await h.command("/chart", 2, chatId);
+      let sends = h.calls.filter(call => call.method === "sendWidget");
+      equal(sends.length, 1);
+      equal(sends[0].payload.chat_id, chatId);
+      match(String(h.calls.at(-1)!.payload.text), /not allowing widgets in this chat yet/);
+      h.apiResponses.delete("sendWidget");
+      await h.command("/chart", 2, chatId);
+      sends = h.calls.filter(call => call.method === "sendWidget");
+      equal(sends.length, 2);
+      equal(sends[1].payload.chat_id, chatId);
+      equal(h.calls.at(-1)!.method, "sendWidget");
+      equal(h.calls.filter(call => call.method === "forwardMessage" || call.method === "sendPhoto").length, 0);
     }
   } finally { db.close(); }
 });

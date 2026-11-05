@@ -206,38 +206,14 @@ export function createChartComposer(
         // grammY's raw API proxy supports new Bot API methods before its types
         // catch up. Use the existing API client and its configured transformers.
         const api = ctx.api.raw as unknown as {
-          sendWidget(args: { chat_id: number; html: string; height: number; message_thread_id?: number; disable_notification?: boolean }): Promise<{ message_id: number }>;
-          forwardMessage(args: { chat_id: number; from_chat_id: number; message_id: number; message_thread_id?: number }): Promise<unknown>;
+          sendWidget(args: { chat_id: number; html: string; height: number; message_thread_id?: number }): Promise<unknown>;
         };
         const topic = ctx.message?.is_topic_message ? { message_thread_id: ctx.message.message_thread_id } : {};
         try {
           await api.sendWidget({ chat_id: ctx.chat.id, html, height: 0, ...topic });
         } catch (error) {
           if (telegramError(error, 400, "INPUT_MEDIA_WIDGET_NOT_ALLOWED")) {
-            if (ctx.chat.type === "private") {
-              throw new Error("Telegram is not allowing widgets in this private chat yet. Use /chart alltime for the photo chart.");
-            }
-            // Telegram's conformance publisher uses the same path for bots
-            // whose widgets cannot be sent directly into a group: create the
-            // original in the requester's DM, then forward that exact message.
-            let original: { message_id: number };
-            try {
-              original = await api.sendWidget({ chat_id: ctx.from.id, html, height: 0, disable_notification: true });
-            } catch (privateError) {
-              if (telegramError(privateError, 403) || telegramError(privateError, 400, "chat not found")) {
-                throw new Error(`This group rejected direct widget delivery. Open @${ctx.me.username} privately, press Start, then run /chart here again so the bot can create the widget privately and forward it here.`);
-              }
-              if (telegramError(privateError, 400, "INPUT_MEDIA_WIDGET_NOT_ALLOWED")) {
-                throw new Error("Telegram is not allowing widget delivery for this bot and chat yet. Use /chart alltime for the photo chart.");
-              }
-              throw privateError;
-            }
-            try {
-              await api.forwardMessage({ chat_id: ctx.chat.id, from_chat_id: ctx.from.id, message_id: original.message_id, ...topic });
-            } catch {
-              throw new Error("The widget was created in your private chat, but Telegram could not forward it to this group. You can view it privately or use /chart alltime for the photo chart here.");
-            }
-            return;
+            throw new Error("Telegram is not allowing widgets in this chat yet. Use /chart alltime for the photo chart.");
           }
           if (telegramError(error, 404)) {
             throw new Error("HTML chart widgets require Bot API 10.4 support on this bot's API endpoint. Use /chart alltime for the photo chart.");
