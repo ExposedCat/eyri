@@ -210,6 +210,28 @@ export function buildFreedom24AccountPerformance(
       );
     }
   }
+  // Freedom24 reports execution charges, margin interest and other fees in a
+  // separate section, not in cash_in_outs. Costs are positive in that section;
+  // rebates are negative. Keep their actual dates and currencies in cash only,
+  // without treating them as funding or charging the execution a second time.
+  const commissions = object(report.commissions, "commissions");
+  const commissionTotals = new Map<string, number>();
+  for (const [index, row] of rows(commissions.detailed, "commissions.detailed").entries()) {
+    const currency = String(row.currency).trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(currency)) throw new Error("Invalid Freedom24 commission currency");
+    const amount = number(row.sum, "commission sum");
+    const at = date(row.datetime, "commission datetime");
+    if (at < openedAt || at > through) throw new Error("Freedom24 commission falls outside the account report");
+    commissionTotals.set(currency, (commissionTotals.get(currency) ?? 0) + amount);
+    cashHistory.push({ date: at.toISOString().slice(0, 10), currency, amount: -amount,
+      type: String(row.type ?? "Commission"), reference: `commission:${index}` });
+  }
+  const declaredCommissions = object(commissions.total, "commissions.total");
+  for (const currency of new Set([...commissionTotals.keys(), ...Object.keys(declaredCommissions)])) {
+    if (Math.abs((commissionTotals.get(currency) ?? 0) - number(declaredCommissions[currency], `${currency} commission total`)) > .02) {
+      throw new Error(`Freedom24 commissions do not reconcile with the broker total for ${currency}`);
+    }
+  }
   const actual = new Map<string, number>();
   for (const p of livePositions) {
     actual.set(

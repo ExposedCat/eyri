@@ -20,7 +20,8 @@ function fundedReport(holdings: { i: string; q: number; value: number }[], depos
     account_at_start: { account: { net_assets: 0, positions_from_ts: { ps: { acc: [{ curr: "USD", s: 0 }], pos: [] } } } },
     account_at_end: { account: { net_assets: cash + holdings.reduce((sum, holding) => sum + holding.value, 0),
       positions_from_ts: { ps: { acc: [{ curr: "USD", s: cash, net_assets: cash }], pos: holdings.map(holding => ({ i: holding.i, q: holding.q, net_assets: holding.value })) } } } },
-    cash_in_outs: [flow], cash_flows: { detailed: [{ type_id: "bank", amount: deposits }], total: { USD: deposits } }, securities_in_outs: [] } };
+    cash_in_outs: [flow], cash_flows: { detailed: [{ type_id: "bank", amount: deposits }], total: { USD: deposits } },
+    commissions: { detailed: [], total: {} }, securities_in_outs: [] } };
 }
 
 Deno.test("restart directly restarts each of the sender's gateways once without prompts", async () => {

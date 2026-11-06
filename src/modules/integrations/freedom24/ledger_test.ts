@@ -6,10 +6,11 @@ import {
   throws,
 } from "node:assert/strict";
 import { Database } from "@db/sqlite";
-import type { IntegrationPortfolioPosition } from "../types.ts";
+import type { IntegrationOrder, IntegrationPortfolioPosition } from "../types.ts";
 import { buildFreedom24AccountPerformance } from "./ledger.ts";
 import { freedom24Adapter } from "./adapter.ts";
 import { buildIntegratedAllTimePerformanceList } from "../../tickers/portfolio.ts";
+import { buildHistoricalReportSeries } from "../../tickers/historical_report.ts";
 
 const now = new Date("2026-10-22T12:00:00Z");
 const positions = [{
@@ -84,6 +85,7 @@ function fixture() {
         detailed: flows.map((f) => ({ type_id: f.type, amount: f.amount })),
         total: { USD: 490, EUR: 100 },
       },
+      commissions: { detailed: [] as { sum: number; currency: string; datetime: string; type: string }[], total: {} as Record<string, number> },
       securities_in_outs: [],
     },
   };
@@ -106,6 +108,53 @@ Deno.test("Freedom24 lifetime funding uses historical USD values, keeps income i
   equal(account.totalValue, 640);
   equal(account.positionValue, 628);
   deepStrictEqual(account.ledgerCash, { USD: -10, EUR: 20 });
+});
+
+Deno.test("Freedom24 dated commissions, margin interest and rebates reconcile historical cash without changing funding", () => {
+  const f = fixture();
+  f.report.cash_in_outs = [flow(1, "bank", 100)];
+  f.report.cash_flows = { detailed: [{ type_id: "bank", amount: 100 }], total: { USD: 100 } } as typeof f.report.cash_flows;
+  f.report.commissions = { detailed: [
+    { sum: 1, currency: "USD", datetime: "2025-01-02 12:00:00", type: "For trade: 1" },
+    { sum: 1, currency: "USD", datetime: "2025-01-02 12:00:00", type: "For trade: 2" },
+    { sum: .3, currency: "USD", datetime: "2025-01-03 04:00:00", type: "Interest on the use of funds USD" },
+    { sum: -.1, currency: "USD", datetime: "2025-01-04 12:00:00", type: "Rebate" },
+  ], total: { USD: 2.2 } };
+  f.report.account_at_end.account.net_assets = 97.8;
+  f.report.account_at_end.account.positions_from_ts.ps.acc = [{ curr: "USD", s: 17.8, net_assets: 17.8 }];
+  f.report.account_at_end.account.positions_from_ts.ps.pos = [{ i: "XYZ", q: 1, net_assets: 80 }];
+  const account = buildFreedom24AccountPerformance(1, f, positions, now);
+  equal(account.deposits, 100);
+  equal(account.withdrawals, 0);
+  equal(account.cashHistory?.length, 5);
+  equal(account.cashHistory?.at(-1)?.amount, .1);
+  const orders: IntegrationOrder[] = [{ integrationId: 1, integrationKind: "f24", account: "Freedom24", ticker: "XYZ",
+    quantity: 1, price: 80, currency: "USD", assetCategory: "STK", date: new Date("2025-01-02") }];
+  const args = { positions: [{ ...positions[0], integrationId: 1, currency: "USD" }], orders,
+    transactionBuckets: new Map<string, string>(), bucketName: null, accountPerformances: [account], now };
+  const histories = new Map([[JSON.stringify(["XYZ", "USD"]), {
+    symbol: "XYZ", currency: "USD", splits: [], bars: [{ date: "2025-01-02", close: 80 }],
+  }]]);
+  const rates = new Map([["USD", 1]]);
+  const lifetime = buildHistoricalReportSeries(args, histories, rates, new Map(), "alltime");
+  const worth = buildHistoricalReportSeries(args, histories, rates, new Map(), "worth");
+  equal(lifetime.at(-1)?.gain, account.pnl);
+  equal(worth.at(-1)?.gain, 97.8);
+  equal(orders[0].commission, undefined);
+});
+
+Deno.test("Freedom24 rejects incomplete, malformed and out-of-period commission details", () => {
+  for (const mutate of [
+    (f: any) => { delete f.report.commissions; },
+    (f: any) => { f.report.commissions.total = { USD: 1 }; },
+    (f: any) => { f.report.commissions.detailed = [{ sum: "invalid", currency: "USD", datetime: "2025-01-02" }]; },
+    (f: any) => { f.report.commissions.detailed = [{ sum: 1, currency: "INVALID", datetime: "2025-01-02" }]; },
+    (f: any) => { f.report.commissions.detailed = [{ sum: 1, currency: "USD", datetime: "2024-01-02" }]; },
+  ]) {
+    const f = fixture();
+    mutate(f);
+    throws(() => buildFreedom24AccountPerformance(1, f, positions, now), /Freedom24/);
+  }
 });
 Deno.test("Freedom24 funding rejects truncation, missing fields, unknown flows, stock transfers and mismatched holdings", () => {
   for (
