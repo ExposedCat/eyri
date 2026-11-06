@@ -442,7 +442,7 @@ export async function fetchIbkrAccountPerformance(
   integration: Integration,
   snapshot: IbkrAccountSnapshot,
   now = new Date(),
-  options: AccountPerformanceOptions = {},
+  _options: AccountPerformanceOptions = {},
 ): Promise<IntegrationAccountPerformance> {
   const credentials = parseIbkrCredentials(integration.credentials);
   const token = credentials.flexToken;
@@ -520,20 +520,12 @@ export async function fetchIbkrAccountPerformance(
           "IBKR account starts with assets; lifetime contributions are incomplete",
         );
       }
-      // Funding is only published through the last completed day. Any cash
-      // change since that snapshot could be a new deposit/withdrawal; the trade
-      // API cannot distinguish it. Live account returns require reconciliation;
-      // position benchmarks may explicitly use completed funding plus estimates.
-      if (
-        options.purpose !== "benchmark" &&
-        !(snapshot.cashByCurrency && latest.endingCashByCurrency
-          ? cashMatches(snapshot.cashByCurrency, latest.endingCashByCurrency)
-          : Math.abs(snapshot.cash - latest.endingCash) <= .02)
-      ) {
-        throw new Error(
-          "IBKR live cash differs from the latest completed Flex statement; today's cash activity cannot yet be reconciled. Retry after the next daily statement.",
-        );
-      }
+      // Flex trails live trading, income and funding. Keep every report usable
+      // with live balances and completed funding; never infer a deposit from
+      // the cash difference. Consumers can label the resulting return estimate.
+      const fundingProvisional = !(snapshot.cashByCurrency && latest.endingCashByCurrency
+        ? cashMatches(snapshot.cashByCurrency, latest.endingCashByCurrency)
+        : Math.abs(snapshot.cash - latest.endingCash) <= .02);
       const netContributions = deposits - withdrawals;
       return {
         integrationId: integration.id,
@@ -545,6 +537,10 @@ export async function fetchIbkrAccountPerformance(
         withdrawals,
         fundingHistory,
         cashHistory,
+        ...(fundingProvisional ? {
+          fundingProvisional: true,
+          statementCash: latest.endingCashByCurrency ?? { [snapshot.currency]: latest.endingCash },
+        } : {}),
         netContributions,
         ledgerCash: snapshot.cashByCurrency ?? { [snapshot.currency]: snapshot.cash },
         openedAt: new Date(batch.openedAt),

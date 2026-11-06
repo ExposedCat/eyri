@@ -233,9 +233,11 @@ historical reconstruction. The trade Flex Query must include commissions for
 account cash charts. Existing imported fills backfill commission fields through
 the same background poller;
 missing fees are never silently replaced with zero for account-ledger charts.
-Flex only publishes completed days. If live cash differs from the latest statement,
-the report fails with an explicit reconciliation error until the next daily statement;
-it does not treat an unverified same-day deposit as profit. Missing sections,
+Flex only publishes completed days. Every report keeps using live balances with
+the latest completed funding history when cash changes, marking returns as
+provisional until statements catch up. Cash differences are never inferred to
+be deposits or withdrawals. Historical cash validation uses the completed
+statement's balances while it lags the live account. Missing sections,
 truncated history, unsupported asset transfers and failed broker requests are errors.
 
 Gifted shares enter both the real portfolio and the index comparison as the same
@@ -551,6 +553,9 @@ The container includes DejaVu Sans fonts; local runs use installed system fonts.
 
 Bare `/chart` sends an experimental HTML widget with an **SPYL / IUMO** selector.
 It requires Bot API 10.4 widget support and a compatible Telegram client.
+Widgets use shared mode (`is_shared: true`), giving each chart a reusable Telegram
+widget ID. Shared mode follows the same chat delivery restrictions. The bot
+does not yet reuse these IDs or publish shared-state updates; charts stay snapshots.
 Widget sends use Telegram's `/beta` API endpoint with the existing production
 bot token; polling and all other methods use the stable endpoint.
 Widgets are sent directly to the chat/topic where `/chart` was requested.

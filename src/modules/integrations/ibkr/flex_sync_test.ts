@@ -291,7 +291,7 @@ Deno.test("transient failures back off without command retries and reset after a
   } finally { db.close(); }
 });
 
-Deno.test("a failed next-day funding refresh keeps the previous statement usable for perf benchmarks", async () => {
+Deno.test("a failed next-day funding refresh keeps the previous statement usable for every report", async () => {
   const db = new Database(":memory:");
   try {
     const integration = addIntegration(db, "token", "combined", "combined");
@@ -302,6 +302,10 @@ Deno.test("a failed next-day funding refresh keeps the previous statement usable
     const result = await fetchIbkrAccountPerformance(db, integration, live, tomorrow, { purpose: "benchmark" });
     equal(result.historyThrough.toISOString().slice(0, 10), "2025-01-03");
     equal(result.deposits, 100);
-    await rejects(fetchIbkrAccountPerformance(db, integration, live, tomorrow), /today's cash activity/);
+    const account = await fetchIbkrAccountPerformance(db, integration, live, tomorrow);
+    equal(account.fundingProvisional, true);
+    equal(account.cash, 50);
+    equal(account.deposits, result.deposits);
+    equal(account.historyThrough.toISOString(), result.historyThrough.toISOString());
   } finally { db.close(); }
 });

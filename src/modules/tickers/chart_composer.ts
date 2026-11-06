@@ -206,11 +206,11 @@ export function createChartComposer(
         // grammY's raw API proxy supports new Bot API methods before its types
         // catch up. Use the existing API client and its configured transformers.
         const api = ctx.api.raw as unknown as {
-          sendWidget(args: { chat_id: number; html: string; height: number; message_thread_id?: number }): Promise<unknown>;
+          sendWidget(args: { chat_id: number; html: string; height: number; is_shared: boolean; message_thread_id?: number }): Promise<unknown>;
         };
         const topic = ctx.message?.is_topic_message ? { message_thread_id: ctx.message.message_thread_id } : {};
         try {
-          await api.sendWidget({ chat_id: ctx.chat.id, html, height: 0, ...topic });
+          await api.sendWidget({ chat_id: ctx.chat.id, html, height: 0, is_shared: true, ...topic });
         } catch (error) {
           if (telegramError(error, 400, "INPUT_MEDIA_WIDGET_NOT_ALLOWED")) {
             throw new Error("Telegram is not allowing widgets in this chat yet. Use /chart alltime for the photo chart.");

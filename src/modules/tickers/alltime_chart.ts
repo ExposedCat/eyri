@@ -718,6 +718,9 @@ export async function loadAllTimeDataset(
   }
   const accounts = benchmarkAccounts;
   const notes: string[] = [];
+  if (kind !== "perf" && accounts.some(account => account.fundingProvisional)) {
+    notes.push("Returns are provisional: live balances use funding from the latest completed statement.");
+  }
   if (giftReceipts.some(order => order.transactionKey?.includes('"free-stock"'))) {
     notes.push("Gift receipt dates are unavailable; undated shares enter both portfolios at the current endpoint. Enable Grant Activity in the IBKR Flex Query for dated receipts.");
   }

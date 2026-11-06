@@ -189,7 +189,16 @@ export function buildHistoricalReportSeries(
     points.push({ date, gain, percentage });
   }
   if (kind !== "perf") for (const account of brokerAccounts) {
-    const actual = realCash.get(account.integrationId)!, expected = account.sourceCashBalances ?? account.ledgerCash;
+    // A lagging statement cannot validate today's live cash. Still verify the
+    // completed ledger, including its executions, against that statement.
+    const actual = account.statementCash
+      ? new Map<string, number>() : realCash.get(account.integrationId)!;
+    if (account.statementCash) for (const event of events) {
+      if (event.integrationId === account.integrationId && event.date <= dateOf(account.historyThrough)) {
+        add(actual, event.currency, event.amount);
+      }
+    }
+    const expected = account.statementCash ?? account.sourceCashBalances ?? account.ledgerCash;
     for (const currency of new Set([...actual.keys(), ...Object.keys(expected)])) {
       if (Math.abs((actual.get(currency) ?? 0) - (expected[currency] ?? 0)) > .02) {
         throw new Error(`Historical ${currency} cash does not reconcile for integration ${account.integrationId}; the ledger must include every cash movement and execution fee.`);

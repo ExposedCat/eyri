@@ -106,6 +106,26 @@ Deno.test("worth and lifetime reports use the same account valuation despite bro
   equal((await buildReportSnapshot({ ...args, accountPerformances: [] }, "worth")).value, 1100);
 });
 
+Deno.test("lagging statements allow live cash changes across report kinds while still validating completed history", async () => {
+  for (const liveCash of [0, 75, -25]) {
+    const a = account({
+      fundingProvisional: true, statementCash: { USD: 500 }, historyThrough: new Date("2025-01-01"),
+      cash: liveCash, ledgerCash: { USD: liveCash }, totalValue: 1100 + liveCash, pnl: 100 + liveCash,
+    });
+    const args = { positions: [position("A", 100, 1000, 11)],
+      orders: [trade("A", 50, 10), trade("A", 50, 10, "2025-01-02")],
+      transactionBuckets: new Map<string, string>(), bucketName: null, accountPerformances: [a], now };
+    for (const kind of ["perf", "alltime", "worth"] as const) {
+      const points = buildHistoricalReportSeries(args, histories(), usd, new Map(), kind);
+      ok(points.length > 0);
+      const report = await buildReportSnapshot(args, kind);
+      equal(report.value, kind === "worth" ? 1100 + liveCash : kind === "alltime" ? 100 + liveCash : 100);
+    }
+    throws(() => buildHistoricalReportSeries({ ...args, accountPerformances: [{ ...a, statementCash: { USD: 501 } }] },
+      histories(), usd, new Map(), "worth"), /cash does not reconcile/);
+  }
+});
+
 Deno.test("cash-only accounts chart their ledger without inventing a position", async () => {
   const a = account({ deposits: 100, netContributions: 100, totalValue: 110, pnl: 10, cash: 110, ledgerCash: { USD: 110 }, positionValue: 0, investmentValue: 0,
     fundingHistory: [{ date: "2025-01-01", amount: 100 }], cashHistory: [{ date: "2025-01-01", currency: "USD", amount: 100, type: "Deposit" }, { date: "2025-01-02", currency: "USD", amount: 10, type: "Interest" }], reportedComponents: [] });

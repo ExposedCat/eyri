@@ -274,29 +274,17 @@ Deno.test("IBKR funding scans back to account opening, caches completed batches 
       )).cash,
       350,
     );
-    await rejects(
-      fetchIbkrAccountPerformance(
-        db,
-        integration,
-        {
-          ...snapshot,
-          cashByCurrency: { USD: 301 },
-        },
-        request,
-        now,
-      ),
-      /today's cash activity/,
-    );
-    await rejects(
-      fetchIbkrAccountPerformance(
-        db,
-        integration,
-        { ...snapshot, cash: 350 },
-        request,
-        now,
-      ),
-      /today's cash activity/,
-    );
+    for (const live of [
+      { ...snapshot, cashByCurrency: { USD: 301 } },
+      { ...snapshot, cash: 350 },
+    ]) {
+      const provisional = await fetchIbkrAccountPerformance(db, integration, live, request, now);
+      equal(provisional.fundingProvisional, true);
+      equal(provisional.cash, live.cash);
+      equal(provisional.totalValue, live.totalValue);
+      equal(provisional.netContributions, 500);
+      deepStrictEqual(provisional.statementCash, { USD: 300 });
+    }
     await rejects(
       fetchIbkrAccountPerformance(
         db,
@@ -311,7 +299,7 @@ Deno.test("IBKR funding scans back to account opening, caches completed batches 
     db.close();
   }
 });
-Deno.test("IBKR position benchmarks can use completed funding despite live cash changes without weakening account return checks", async () => {
+Deno.test("IBKR all report purposes use completed funding and live balances despite cash changes", async () => {
   const db = new Database(":memory:");
   const changed = { ...snapshot, cash: 50, cashByCurrency: { USD: 50 } };
   const request = (_token: string, _query: string, range: { from: Date; to: Date }) =>
@@ -322,7 +310,13 @@ Deno.test("IBKR position benchmarks can use completed funding despite live cash 
     equal(result.withdrawals, 120);
     equal(result.fundingHistory?.reduce((sum, flow) => sum + flow.amount, 0), 500);
     equal(result.historyThrough.toISOString().slice(0, 10), "2026-10-21");
-    await rejects(fetchIbkrAccountPerformance(db, integration, changed, request, now), /today's cash activity/);
+    const account = await fetchIbkrAccountPerformance(db, integration, changed, request, now);
+    deepStrictEqual(account, result);
+    equal(account.fundingProvisional, true);
+    deepStrictEqual(account.ledgerCash, { USD: 50 });
+    const caughtUp = await fetchIbkrAccountPerformance(db, integration, { ...changed, cash: 300, cashByCurrency: { USD: 300 } }, request, now);
+    equal(caughtUp.fundingProvisional, undefined);
+    equal(caughtUp.statementCash, undefined);
   } finally { db.close(); }
 });
 Deno.test("IBKR funding uses Report Date for late-night deposits on the first statement day", () => {

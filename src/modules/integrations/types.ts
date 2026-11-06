@@ -71,8 +71,7 @@ export type IntegrationOrder = {
 };
 
 export type AccountPerformanceOptions = {
-  // A position-performance benchmark only needs completed funding. It must not
-  // use the resulting snapshot to calculate live account-wide returns.
+  // Position benchmarks use completed funding plus estimated recent purchases.
   purpose?: "benchmark";
 };
 
@@ -100,6 +99,11 @@ export type IntegrationAdapter = {
 };
 
 export type IntegrationAccountPerformance = {
+  // Live balances paired with completed funding while broker statements lag.
+  fundingProvisional?: boolean;
+  // Native cash at historyThrough, for validating completed history separately
+  // from cash movements that have not appeared in a statement yet.
+  statementCash?: Record<string, number>;
   // Complete cash ledger. IBKR stores non-trade events here; execution cash is
   // replayed from orders. CSV ledgers can include trade cash directly.
   cashHistory?: { date: string; currency: string; amount: number; type: string; reference?: string }[];

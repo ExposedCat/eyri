@@ -1301,10 +1301,11 @@ export async function buildIntegratedAllTimePerformanceList({
   if (!report) return "";
   const { performances, total } = report;
   type Performance = typeof total;
+  const provisional = report.accounts.some(account => account.fundingProvisional);
   if (numberOnly) {
     return buildNumberSummary(
       performances.map((p) => p.ticker),
-      formatCurrencyChange(requireReportNumber(total.change, "total P/L"), currency),
+      `${provisional ? "~" : ""}${formatCurrencyChange(requireReportNumber(total.change, "total P/L"), currency)}`,
       tickerDecorations,
       tickerEmojiMappings,
     );
@@ -1338,7 +1339,9 @@ export async function buildIntegratedAllTimePerformanceList({
         p,
       ),
   );
-  return [...lines, render("Total:", total, report.totalReturnPercentage), ...(report.returnUnavailableReason ? [report.returnUnavailableReason] : [])].join("\n\n");
+  return [...lines, render("Total:", total, report.totalReturnPercentage),
+    ...(provisional ? ["Returns are provisional: live balances use funding from the latest completed statement."] : []),
+    ...(report.returnUnavailableReason ? [report.returnUnavailableReason] : [])].join("\n\n");
 }
 
 export async function buildIntegratedDailyPerformanceList({

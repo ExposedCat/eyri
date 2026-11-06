@@ -61,6 +61,34 @@ Deno.test("cash-only funded accounts render a total without inventing an instrum
   match(await buildIntegratedAllTimePerformanceList(args), /^Total: \+10\.00% \+\$10\.00/);
 });
 
+Deno.test("lifetime text and number summaries label lagging funding without blocking the report", async () => {
+  const args = { positions: [position], orders, accountPerformances: [{ ...account, fundingProvisional: true }] };
+  match(await buildIntegratedAllTimePerformanceList(args), /Returns are provisional/);
+  match(await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true }), /~/);
+});
+
+Deno.test("all chart kinds keep live endpoints when funding statements lag", async () => {
+  const db = new Database(":memory:");
+  const live = { ...account, fundingProvisional: true, statementCash: { USD: 0 },
+    historyThrough: new Date("2025-01-01"), cash: 75, ledgerCash: { USD: 75 }, totalValue: 600, pnl: 500 };
+  const cache = {
+    resolve: (source: { ticker: string }) => Promise.resolve(source.ticker),
+    get: (symbol: string) => Promise.resolve(symbol === "CSPX.L" ? {
+      symbol, currency: "USD", instrumentType: "ETF", splits: [], bars: [{ date: "2025-01-01", close: 100 }],
+    } : [...histories.values()].find(history => history.symbol === symbol)!),
+  };
+  try {
+    for (const kind of ["perf", "alltime", "worth"] as const) {
+      const dataset = await loadAllTimeDataset(db, { positions: [position], orders,
+        transactionBuckets: new Map(), bucketName: null, now: new Date("2025-01-04"), accountPerformances: [live], kind },
+        1, "Test", cache as never);
+      equal(dataset.points.at(-1)!.gain, kind === "worth" ? 600 : kind === "alltime" ? 500 : 25);
+      ok(dataset.benchmark);
+      if (kind !== "perf") ok(dataset.notes?.some(note => note.includes("Returns are provisional")));
+    }
+  } finally { db.close(); }
+});
+
 Deno.test("funded chart endpoint uses the account Total despite small FIFO snapshot differences", () => {
   const snapshot = { ...account, reportedComponents: account.reportedComponents!.map((component, index) =>
     ({ ...component, pnl: component.pnl + (index === 0 ? .003 : 0) })) };

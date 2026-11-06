@@ -355,6 +355,8 @@ Deno.test("widget delivery stays in the requesting chat and preserves its topic"
       await h.command("/chart", 2, chatId, threadId);
       const sends = h.calls.filter(call => call.method === "sendWidget");
       equal(sends.length, 1);
+      equal(sends[0].payload.is_shared, true);
+      equal(sends[0].payload.allow_queries, undefined);
       equal(sends[0].payload.chat_id, chatId);
       equal(sends[0].payload.message_thread_id, threadId);
       equal(h.calls.filter(call => call.method === "forwardMessage" || call.method === "sendPhoto").length, 0);
