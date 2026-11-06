@@ -316,7 +316,7 @@ Deno.test("IBKR all report purposes use completed funding and live balances desp
     deepStrictEqual(account.ledgerCash, { USD: 50 });
     const caughtUp = await fetchIbkrAccountPerformance(db, integration, { ...changed, cash: 300, cashByCurrency: { USD: 300 } }, request, now);
     equal(caughtUp.fundingProvisional, undefined);
-    equal(caughtUp.statementCash, undefined);
+    deepStrictEqual(caughtUp.statementCash, { USD: 300 });
   } finally { db.close(); }
 });
 Deno.test("IBKR funding uses Report Date for late-night deposits on the first statement day", () => {

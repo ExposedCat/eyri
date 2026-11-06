@@ -668,7 +668,7 @@ export async function loadAllTimeDataset(
       order.integrationKind === "ibkr" && isDisplayableOrder(order) &&
       order.quantity > 0 && !isGiftReceipt(order) && dateOf(order.date) === through &&
       benchmarkAccounts.some(account => account.integrationId === order.integrationId &&
-        dateOf(account.historyThrough) < through))
+        !account.pendingCashAdjustment && dateOf(account.historyThrough) < through))
     : [];
   const currencies = [...sources.values()].flatMap(portfolioPositionCurrencies).concat(
       [...histories.values()].map((h) => h.currency),
@@ -720,6 +720,9 @@ export async function loadAllTimeDataset(
   const notes: string[] = [];
   if (kind !== "perf" && accounts.some(account => account.fundingProvisional)) {
     notes.push("Returns are provisional: live balances use funding from the latest completed statement.");
+  }
+  if (accounts.some(account => account.pendingCashAdjustment && Math.abs(account.pendingCashAdjustment.amount) > .02)) {
+    notes.push("Unclassified cash movements are treated as provisional funding, excluded from profit until the next statement.");
   }
   if (args.orders.some(order => order.integrationKind === "ibkr" && !order.commission &&
     accounts.some(account => account.integrationId === order.integrationId && dateOf(order.date) > dateOf(account.historyThrough)))) {

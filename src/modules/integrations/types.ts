@@ -101,6 +101,7 @@ export type IntegrationAdapter = {
 export type IntegrationAccountPerformance = {
   // Live balances paired with completed funding while broker statements lag.
   fundingProvisional?: boolean;
+  pendingCashAdjustment?: { date: string; amount: number; balances: Record<string, number> };
   // Native cash at historyThrough, for validating completed history separately
   // from cash movements that have not appeared in a statement yet.
   statementCash?: Record<string, number>;
@@ -111,7 +112,7 @@ export type IntegrationAccountPerformance = {
   // Original broker balances when cash-funded buckets have been excluded.
   sourceCashBalances?: Record<string, number>;
   fundingSource?: "bucket_cash" | "account_allocated";
-  fundingHistory?: { date: string; amount: number; allocation?: boolean }[];
+  fundingHistory?: { date: string; amount: number; allocation?: boolean; provisional?: boolean }[];
   fundingIncludesTransfers?: boolean;
   integrationId: number;
   currency: string;

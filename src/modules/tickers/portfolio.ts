@@ -1258,6 +1258,7 @@ export async function buildIntegratedAllTimeReport({
     endedAt: new Date(0),
   } as Performance);
   requireReportNumber(total.change, "total all-time P/L");
+  const instrumentPnl = total.change!;
   // Trade costs count the same money again whenever sale proceeds are reinvested.
   // Every selected integration must supply external funding and current cash.
   const selectedIntegrationIds = new Set(positions.map((p) => p.integrationId));
@@ -1276,7 +1277,8 @@ export async function buildIntegratedAllTimeReport({
     }
     total.endedAt = now;
   }
-  return { performances, total, totalReturnPercentage: funding.percentage, returnUnavailableReason: funding.reason, accounts: accountPerformances };
+  const accountAdjustment = total.change! - instrumentPnl;
+  return { performances, total, accountAdjustment, totalReturnPercentage: funding.percentage, returnUnavailableReason: funding.reason, accounts: accountPerformances };
 }
 
 export async function buildIntegratedAllTimePerformanceList({
@@ -1339,7 +1341,11 @@ export async function buildIntegratedAllTimePerformanceList({
         p,
       ),
   );
-  return [...lines, render("Total:", total, report.totalReturnPercentage),
+  return [...lines,
+    ...(performances.length && Math.abs(report.accountAdjustment) >= .005 ? [`Account cash, FX & income: ${formatCurrencyChange(report.accountAdjustment, currency)}`] : []),
+    render("Total:", total, report.totalReturnPercentage),
+    ...(report.accounts.some(account => account.pendingCashAdjustment && Math.abs(account.pendingCashAdjustment.amount) > .02)
+      ? ["Unclassified cash movements are treated as provisional funding, excluded from profit until the next statement."] : []),
     ...(provisional ? ["Returns are provisional: live balances use funding from the latest completed statement."] : []),
     ...(report.returnUnavailableReason ? [report.returnUnavailableReason] : [])].join("\n\n");
 }

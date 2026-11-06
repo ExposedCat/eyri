@@ -311,6 +311,7 @@ export async function runReport(
     return {
       ...context,
       positions: performances.map((p) => ({ ticker: p.ticker, ...item(p) })),
+      accountAdjustment: report?.accountAdjustment ?? 0,
       total: report ? {
         ...item(report.total),
         returnPct: report.totalReturnPercentage,

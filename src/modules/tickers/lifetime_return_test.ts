@@ -7,6 +7,7 @@ import { buildIntegratedAllTimePerformanceList, buildIntegratedAllTimeReport } f
 import { buildAllTimeSeries, instrumentKey, loadAllTimeDataset } from "./alltime_chart.ts";
 import { buildChartBenchmark } from "./chart_benchmark.ts";
 import { buildBucketCashAccounts, excludeBucketCapital } from "./bucket_funding.ts";
+import { reconcileIbkrPendingCash } from "../integrations/ibkr/cash.ts";
 
 const rates = new Map([["USD", 1]]);
 const orders: IntegrationOrder[] = [
@@ -46,9 +47,11 @@ Deno.test("funded totals include cash income while performance entries contain o
   equal(report!.total.change, 50);
   equal(report!.totalReturnPercentage, 10);
   const lines = (await buildIntegratedAllTimePerformanceList(args)).split("\n").filter(Boolean);
-  equal(lines.length, 2);
+  equal(lines.length, 3);
   match(lines[0], /^SECOND /);
-  match(lines[1], /^Total: \+10\.00% \+\$50\.00/);
+  match(lines[1], /^Account cash, FX & income: \+\$25\.00/);
+  match(lines[2], /^Total: \+10\.00% \+\$50\.00/);
+  equal(report!.performances.reduce((sum, row) => sum + row.change!, 0) + report!.accountAdjustment, report!.total.change);
 });
 
 Deno.test("cash-only funded accounts render a total without inventing an instrument", async () => {
@@ -89,6 +92,34 @@ Deno.test("all chart kinds keep live endpoints when funding statements and recen
       ok(dataset.notes?.some(note => note.includes("Recent execution fees are pending")));
     }
   } finally { db.close(); }
+});
+
+Deno.test("unclassified cash changes neither report profit nor the chart endpoint and benchmarks count funding once", async () => {
+  const now = new Date("2025-01-02T12:00:00Z");
+  for (const cash of [0, 75]) {
+    const db = new Database(":memory:");
+    const reconciled = await reconcileIbkrPendingCash({ ...account, totalValue: 525 + cash, cash,
+      ledgerCash: { USD: cash }, statementCash: { USD: 0 }, historyThrough: new Date("2025-01-01") }, orders, now);
+    const args = { positions: [position], orders, transactionBuckets: new Map<string, string>(), bucketName: null, now,
+      accountPerformances: [reconciled] };
+    const cache = {
+      resolve: (source: { ticker: string }) => Promise.resolve(source.ticker),
+      get: (symbol: string) => Promise.resolve(symbol === "CSPX.L" ? {
+        symbol, currency: "USD", instrumentType: "ETF", splits: [], bars: [{ date: "2025-01-01", close: 100 }],
+      } : [...histories.values()].find(history => history.symbol === symbol)!),
+    };
+    try {
+      const report = await buildIntegratedAllTimeReport(args);
+      equal(report!.total.change, 425);
+      equal(report!.performances.reduce((sum, p) => sum + p.change!, 0) + report!.accountAdjustment, 425);
+      for (const kind of ["alltime", "perf", "worth"] as const) {
+        const dataset = await loadAllTimeDataset(db, { ...args, kind }, 1, "Test", cache as never);
+        equal(dataset.points.at(-1)!.gain, kind === "worth" ? 525 + cash : kind === "alltime" ? 425 : 25);
+        equal(dataset.benchmarkPurchases!.reduce((sum, flow) => sum + flow.amountUsd, 0), 100 + cash);
+        if (cash) ok(dataset.notes?.some(note => note.includes("excluded from profit")));
+      }
+    } finally { db.close(); }
+  }
 });
 
 Deno.test("funded chart endpoint uses the account Total despite small FIFO snapshot differences", () => {

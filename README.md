@@ -235,10 +235,15 @@ the same background poller;
 Missing fees in completed statement history are errors. Recent Gateway
 executions can arrive before Flex publishes their fees; their chart points
 remain provisional, with an explicit note, and the endpoint uses live balances.
-Flex only publishes completed days. Every report keeps using live balances with
-the latest completed funding history when cash changes, marking returns as
-provisional until statements catch up. Cash differences are never inferred to
-be deposits or withdrawals. Historical cash validation uses the completed
+Flex only publishes completed days. Reports replay subsequent trades and FX
+conversions against statement cash, then compare the result with live native
+balances. Unclassified cash differences are neutralized as provisional funding
+in the report, so pending deposits cannot appear as profit. These estimates are
+never persisted as verified deposits or withdrawals; the next statement replaces
+them with classified activity. Charts and benchmarks use the same provisional
+funding without counting purchases funded by sale proceeds again.
+Lifetime text reports show a separate account cash, FX and income adjustment
+so their instrument rows reconcile to Total. Historical cash validation uses the completed
 statement's balances while it lags the live account. Missing sections,
 truncated history, unsupported asset transfers and failed broker requests are errors.
 

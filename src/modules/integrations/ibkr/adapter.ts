@@ -17,6 +17,7 @@ import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
 import { ibkrSessions } from "./session.ts";
 import { readIbkrStockGrants } from "./grants.ts";
 import { readFlexOrders } from "./flex.ts";
+import { reconcileIbkrPendingCash } from "./cash.ts";
 import {
   fetchIbkrAccountPerformance,
   type IbkrAccountSnapshot,
@@ -1080,7 +1081,7 @@ export const ibkrAdapter: IntegrationAdapter = {
     database,
     integration,
     _positions,
-    _orders,
+    orders,
     options,
   ) {
     const { config } = getConnectionConfig(integration);
@@ -1092,13 +1093,14 @@ export const ibkrAdapter: IntegrationAdapter = {
       ]);
       return { ...snapshot, cashByCurrency };
     });
-    return fetchIbkrAccountPerformance(
+    const account = await fetchIbkrAccountPerformance(
       database,
       integration,
       snapshot,
       undefined,
       options,
     );
+    return reconcileIbkrPendingCash(account, orders);
   },
   async fetchPortfolio(database: Database, integration: Integration) {
     const { config } = getConnectionConfig(integration);

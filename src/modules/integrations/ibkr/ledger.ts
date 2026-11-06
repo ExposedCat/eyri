@@ -537,10 +537,8 @@ export async function fetchIbkrAccountPerformance(
         withdrawals,
         fundingHistory,
         cashHistory,
-        ...(fundingProvisional ? {
-          fundingProvisional: true,
-          statementCash: latest.endingCashByCurrency ?? { [snapshot.currency]: latest.endingCash },
-        } : {}),
+        ...(fundingProvisional ? { fundingProvisional: true } : {}),
+        statementCash: latest.endingCashByCurrency ?? { [snapshot.currency]: latest.endingCash },
         netContributions,
         ledgerCash: snapshot.cashByCurrency ?? { [snapshot.currency]: snapshot.cash },
         openedAt: new Date(batch.openedAt),
