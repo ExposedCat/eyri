@@ -232,7 +232,9 @@ Native cash transactions, including dividends and withholding, are retained for
 historical reconstruction. The trade Flex Query must include commissions for
 account cash charts. Existing imported fills backfill commission fields through
 the same background poller;
-missing fees are never silently replaced with zero for account-ledger charts.
+Missing fees in completed statement history are errors. Recent Gateway
+executions can arrive before Flex publishes their fees; their chart points
+remain provisional, with an explicit note, and the endpoint uses live balances.
 Flex only publishes completed days. Every report keeps using live balances with
 the latest completed funding history when cash changes, marking returns as
 provisional until statements catch up. Cash differences are never inferred to

@@ -54,7 +54,11 @@ export function buildHistoricalReportSeries(
     throw new Error("Complete broker cash history is required to reconstruct this chart. Refresh the integration ledger.");
   }
   if (kind !== "perf") for (const account of brokerAccounts) {
-    if (!account.cashHistoryIncludesTrades && args.orders.some(order => order.integrationId === account.integrationId && order.integrationKind === "ibkr" && !order.commission)) {
+    // Gateway executions arrive before their completed Flex statement and may
+    // not have fees yet. Only require fees in the completed ledger we validate;
+    // recent points are provisional and the endpoint uses the live snapshot.
+    if (!account.cashHistoryIncludesTrades && args.orders.some(order => order.integrationId === account.integrationId &&
+      order.integrationKind === "ibkr" && !order.commission && dateOf(order.date) <= dateOf(account.historyThrough))) {
       throw new Error("IBKR historical cash requires Commission in the Flex trade query. Include commission amounts and refresh the trade history.");
     }
   }
@@ -189,15 +193,19 @@ export function buildHistoricalReportSeries(
     points.push({ date, gain, percentage });
   }
   if (kind !== "perf") for (const account of brokerAccounts) {
+    const pendingFees = orders.some(order => order.integrationId === account.integrationId &&
+      order.integrationKind === "ibkr" && !order.commission && dateOf(order.date) > dateOf(account.historyThrough));
     // A lagging statement cannot validate today's live cash. Still verify the
     // completed ledger, including its executions, against that statement.
-    const actual = account.statementCash
+    const actual = account.statementCash || pendingFees
       ? new Map<string, number>() : realCash.get(account.integrationId)!;
-    if (account.statementCash) for (const event of events) {
+    if (account.statementCash || pendingFees) for (const event of events) {
       if (event.integrationId === account.integrationId && event.date <= dateOf(account.historyThrough)) {
         add(actual, event.currency, event.amount);
       }
     }
+    // If cash still matches the completed statement, the funding reader may
+    // not have marked it provisional (e.g. offsetting same-day executions).
     const expected = account.statementCash ?? account.sourceCashBalances ?? account.ledgerCash;
     for (const currency of new Set([...actual.keys(), ...Object.keys(expected)])) {
       if (Math.abs((actual.get(currency) ?? 0) - (expected[currency] ?? 0)) > .02) {

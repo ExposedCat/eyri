@@ -721,6 +721,10 @@ export async function loadAllTimeDataset(
   if (kind !== "perf" && accounts.some(account => account.fundingProvisional)) {
     notes.push("Returns are provisional: live balances use funding from the latest completed statement.");
   }
+  if (args.orders.some(order => order.integrationKind === "ibkr" && !order.commission &&
+    accounts.some(account => account.integrationId === order.integrationId && dateOf(order.date) > dateOf(account.historyThrough)))) {
+    notes.push("Recent execution fees are pending; recent chart points are provisional until the next completed statement.");
+  }
   if (giftReceipts.some(order => order.transactionKey?.includes('"free-stock"'))) {
     notes.push("Gift receipt dates are unavailable; undated shares enter both portfolios at the current endpoint. Enable Grant Activity in the IBKR Flex Query for dated receipts.");
   }

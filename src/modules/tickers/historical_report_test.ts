@@ -126,6 +126,30 @@ Deno.test("lagging statements allow live cash changes across report kinds while 
   }
 });
 
+Deno.test("recent Gateway fees can remain unknown without blocking charts or weakening completed fee validation", () => {
+  const recent = { ...trade("A", 50, 10, "2025-01-02"), commission: undefined };
+  const a = account({ fundingProvisional: true, statementCash: { USD: 500 }, historyThrough: new Date("2025-01-01") });
+  const args = { positions: [position("A", 100, 1000, 11)], orders: [trade("A", 50, 10), recent],
+    transactionBuckets: new Map<string, string>(), bucketName: null, accountPerformances: [a], now };
+  for (const kind of ["alltime", "worth"] as const) {
+    ok(buildHistoricalReportSeries(args, histories(), usd, new Map(), kind).length > 0);
+    throws(() => buildHistoricalReportSeries({ ...args, orders: [{ ...args.orders[0], commission: undefined }, recent] },
+      histories(), usd, new Map(), kind), /Commission in the Flex/);
+    throws(() => buildHistoricalReportSeries({ ...args, accountPerformances: [{ ...a, statementCash: { USD: 501 } }] },
+      histories(), usd, new Map(), kind), /cash does not reconcile/);
+  }
+  equal(recent.commission, undefined);
+});
+
+Deno.test("offsetting recent executions with pending fees validate the unchanged completed cash balance", () => {
+  const a = account({ cash: 0, ledgerCash: { USD: 0 }, historyThrough: new Date("2025-01-01") });
+  const args = { positions: [position("A", 100, 1000, 11)],
+    orders: [trade("A", 100, 10), { ...trade("A", 10, 11, "2025-01-02"), commission: undefined },
+      { ...trade("A", -10, 11, "2025-01-02"), commission: undefined }],
+    transactionBuckets: new Map<string, string>(), bucketName: null, accountPerformances: [a], now };
+  ok(buildHistoricalReportSeries(args, histories(), usd, new Map(), "worth").length > 0);
+});
+
 Deno.test("cash-only accounts chart their ledger without inventing a position", async () => {
   const a = account({ deposits: 100, netContributions: 100, totalValue: 110, pnl: 10, cash: 110, ledgerCash: { USD: 110 }, positionValue: 0, investmentValue: 0,
     fundingHistory: [{ date: "2025-01-01", amount: 100 }], cashHistory: [{ date: "2025-01-01", currency: "USD", amount: 100, type: "Deposit" }, { date: "2025-01-02", currency: "USD", amount: 10, type: "Interest" }], reportedComponents: [] });

@@ -67,7 +67,7 @@ Deno.test("lifetime text and number summaries label lagging funding without bloc
   match(await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true }), /~/);
 });
 
-Deno.test("all chart kinds keep live endpoints when funding statements lag", async () => {
+Deno.test("all chart kinds keep live endpoints when funding statements and recent execution fees lag", async () => {
   const db = new Database(":memory:");
   const live = { ...account, fundingProvisional: true, statementCash: { USD: 0 },
     historyThrough: new Date("2025-01-01"), cash: 75, ledgerCash: { USD: 75 }, totalValue: 600, pnl: 500 };
@@ -79,12 +79,14 @@ Deno.test("all chart kinds keep live endpoints when funding statements lag", asy
   };
   try {
     for (const kind of ["perf", "alltime", "worth"] as const) {
-      const dataset = await loadAllTimeDataset(db, { positions: [position], orders,
+      const dataset = await loadAllTimeDataset(db, { positions: [position], orders: orders.map(order =>
+        order.date > live.historyThrough ? { ...order, commission: undefined } : order),
         transactionBuckets: new Map(), bucketName: null, now: new Date("2025-01-04"), accountPerformances: [live], kind },
         1, "Test", cache as never);
       equal(dataset.points.at(-1)!.gain, kind === "worth" ? 600 : kind === "alltime" ? 500 : 25);
       ok(dataset.benchmark);
       if (kind !== "perf") ok(dataset.notes?.some(note => note.includes("Returns are provisional")));
+      ok(dataset.notes?.some(note => note.includes("Recent execution fees are pending")));
     }
   } finally { db.close(); }
 });
