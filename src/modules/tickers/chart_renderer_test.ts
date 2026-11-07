@@ -11,7 +11,7 @@ import { benchmarkMarkerIndices, renderAllTimeDatasets } from "./alltime_chart_r
 import { buildChartBenchmark } from "./chart_benchmark.ts";
 
 const dataset: AllTimeDataset = {
-  fundingReturnVersion: 3,
+  fundingReturnVersion: 5,
   userId: 1,
   label: "Zero crossings",
   bucketName: null,

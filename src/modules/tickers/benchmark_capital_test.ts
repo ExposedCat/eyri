@@ -15,6 +15,39 @@ const account = (deposit = 10): IntegrationAccountPerformance => ({ integrationI
   pnl: 100 - deposit, deposits: deposit, withdrawals: 0, netContributions: deposit, cash: 0, ledgerCash: { USD: 0 },
   fundingHistory: [{ date: "2025-01-01", amount: deposit }], cashHistory: [{ date: "2025-01-01", amount: deposit, currency: "USD", type: "Deposit" }],
   openedAt: new Date("2025-01-01"), historyThrough: new Date("2025-01-03"), positionValue: 100, investmentValue: 100, reportedComponents: [{ currency: "USD", cost: 100, pnl: 0 }] });
+
+Deno.test("charts and frozen index switching use the original top-up currency rather than the broker base", async () => {
+  const db = new Database(":memory:");
+  const funded = { ...account(50000), currency: "CZK", totalValue: 60000,
+    fundingHistory: [{ date: "2025-01-01", amount: 50000 }],
+    cashHistory: [{ date: "2025-01-01", currency: "USD", amount: 1000, type: "Deposit" }] };
+  const stock = { integrationId: 1, integrationKind: "ibkr", account: "A", ticker: "STOCK", assetCategory: "STK",
+    currency: "USD", amount: 1, averageUnitPrice: 1000, currentPrice: 1000, totalInput: 1000, totalNow: 1000,
+    unrealizedPnl: 0, realizedPnl: 0, dailyPnl: 0, dailyPnlPercentage: 0, dailyPnlBaseline: 1000,
+    openedAt: new Date("2025-01-01") };
+  const cache = {
+    resolve: (source: { ticker: string }) => Promise.resolve(source.ticker),
+    get: (symbol: string) => Promise.resolve({ symbol, currency: "USD", splits: [], instrumentType: symbol === "STOCK" ? "EQUITY" : "ETF",
+      bars: ["2024-12-31", "2025-01-01", "2025-01-02", "2025-01-03"].map(date => ({ date,
+        close: symbol === "STOCK" ? 1000 : symbol === "IUMO.L" && date === "2025-01-03" ? 105 : 100 })) }),
+  };
+  const request: typeof fetch = url => Promise.resolve(Response.json(new URL(String(url)).pathname === "/v2/rates"
+    ? ["2024-12-31", "2025-01-01", "2025-01-02", "2025-01-03"].map(date => ({ date, base: "USD", quote: "CZK", rate: date < "2025-01-02" ? 50 : 60 }))
+    : { base: "USD", quote: "CZK", rate: 60 }));
+  try {
+    const dataset = await loadAllTimeDataset(db, { positions: [stock], orders: [order("STOCK", 1, 1000, 1)],
+      transactionBuckets: new Map(), bucketName: null, accountPerformances: [funded], kind: "alltime", now: new Date("2025-01-03") },
+      1, "Test", cache as never, request);
+    near(dataset.points.at(-1)!.gain, 0);
+    near(dataset.benchmarkPurchases![0].amountUsd, 1000);
+    near(dataset.benchmarkFundingBasis!.at(-1)!.deposits, 1000);
+    near(dataset.benchmark!.points.at(-1)!.gain, 0);
+    const [switched] = await switchChartBenchmarks(db, JSON.parse(JSON.stringify([dataset])), "momentum", cache);
+    near(switched.benchmark!.points.at(-1)!.gain, 50);
+    near(switched.benchmark!.points.at(-1)!.percentage, 5);
+    near(switched.points.at(-1)!.gain, 0);
+  } finally { db.close(); }
+});
 const history: PriceHistory = { symbol: "CSPX.L", currency: "USD", instrumentType: "ETF", splits: [], bars: [
   { date: "2024-12-31", close: 10 }, { date: "2025-01-01", close: 10 }, { date: "2025-01-02", close: 11 }, { date: "2025-01-03", close: 12 },
 ] };
@@ -144,7 +177,7 @@ Deno.test("perf benchmarks assume today's gross buys are new cash and replace th
     ]);
     near(dataset.benchmark.points.at(-1)!.gain, 2);
     near(dataset.benchmark.points.at(-1)!.percentage, 2 / 161 * 100);
-    ok(dataset.notes?.some(note => note.includes("provisional")));
+    deepStrictEqual(dataset.notes, []);
     deepStrictEqual(a.fundingHistory, [{ date: "2025-01-01", amount: 10 }]);
     const [switched] = await switchChartBenchmarks(db, JSON.parse(JSON.stringify([dataset])), "momentum", cache);
     deepStrictEqual(switched.benchmarkPurchases, dataset.benchmarkPurchases);

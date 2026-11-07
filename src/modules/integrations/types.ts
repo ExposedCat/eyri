@@ -107,7 +107,8 @@ export type IntegrationAccountPerformance = {
   statementCash?: Record<string, number>;
   // Complete cash ledger. IBKR stores non-trade events here; execution cash is
   // replayed from orders. CSV ledgers can include trade cash directly.
-  cashHistory?: { date: string; currency: string; amount: number; type: string; reference?: string }[];
+  cashHistory?: { date: string; currency: string; amount: number; type: string; reference?: string;
+    kind?: "funding" | "fx" | "fee" | "transfer" }[];
   cashHistoryIncludesTrades?: boolean;
   // Original broker balances when cash-funded buckets have been excluded.
   sourceCashBalances?: Record<string, number>;

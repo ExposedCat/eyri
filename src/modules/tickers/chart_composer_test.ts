@@ -89,7 +89,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
         date: "2025-01-02", percentage: 10, gain: 100,
       }];
       return Promise.resolve({
-        fundingReturnVersion: 3 as const,
+        fundingReturnVersion: 5 as const,
         ...selection,
         ...(notes ? { notes } : {}),
         userId: ctx.from!.id,

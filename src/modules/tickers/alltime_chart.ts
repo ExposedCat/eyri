@@ -1,8 +1,9 @@
-import { accountReturn } from "./account_return.ts";
+import { accountFxPnlAtDate, accountTopups, datedFxAccounts, nativeFundingFlows } from "./account_fx.ts";
+import { accountFunding } from "./account_return.ts";
 import { buildHistoricalReportSeries, executionCash } from "./historical_report.ts";
 import { buildReportSnapshot } from "./report.ts";
 import type { ReportKind, ReportFilter } from "./performance_command.ts";
-import { benchmarkForKind, type BenchmarkSource } from "./benchmark_capital.ts";
+import { benchmarkForKind, benchmarkWithFundingBasis, type BenchmarkSource, type FundingBasisPoint } from "./benchmark_capital.ts";
 import { buildChartGifts, isGiftReceipt, withChartGifts, type ChartGiftPoint } from "./chart_gifts.ts";
 import type { Database } from "../database/setup.ts";
 import { renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
@@ -54,7 +55,7 @@ import {
 
 export type AllTimePoint = { date: string; percentage: number | null; gain: number };
 export type AllTimeDataset = {
-  fundingReturnVersion?: 3;
+  fundingReturnVersion?: 5;
   kind?: Exclude<ReportKind, "dpnl">;
   filter?: ReportFilter;
   notes?: string[];
@@ -66,6 +67,7 @@ export type AllTimeDataset = {
   benchmark?: ChartBenchmark;
   benchmarkPurchases?: BenchmarkPurchase[];
   benchmarkValuations?: BenchmarkValuations;
+  benchmarkFundingBasis?: FundingBasisPoint[];
   benchmarkGifts?: ChartGiftPoint[];
   benchmarkSnapshots?: Partial<Record<ChartBenchmarkIndex, ChartBenchmark>>;
   // Points remain USD snapshots; only single-chart monetary labels use these.
@@ -252,6 +254,8 @@ export function buildAllTimeSeries(
       const factor = usdFactor(currency, rates);
       gain += native.gain * factor;
     }
+    gain += accountFxPnlAtDate(accounts, args.orders.filter(order => !isDisplayableOrder(order)), rates, date)
+      .reduce((sum, account) => sum + account.pnl, 0);
     const deposits = cashFunded ? accounts.reduce((sum, account) =>
       sum + (account.fundingHistory ?? []).filter(flow => flow.date <= date)
         .reduce((amount, flow) => amount + flow.amount, 0) * usdFactor(account.currency, rates), 0) : 0;
@@ -460,15 +464,10 @@ export function buildAllTimeSeries(
       addTotals(totals, p.currency, p.cost, p.realizedPnl);
     }
   }
-  for (const account of args.accountPerformances ?? []) {
-    if (!account.reportedComponents) throw new Error("Account reconciliation snapshot is missing");
-    for (const c of account.reportedComponents) addTotals(totals, c.currency, -c.cost, -c.pnl);
-    addTotals(totals, account.currency, account.netContributions, account.pnl);
-  }
   const selectedIntegrationIds = new Set([...args.positions, ...selected].map(item => item.integrationId));
-  const funding = accountReturn(args.accountPerformances ?? [], selectedIntegrationIds, rates);
+  const funding = accountFunding(args.accountPerformances ?? [], selectedIntegrationIds, rates);
   const endpoint = pointInUsd(last, totals);
-  points[points.length - 1] = { ...endpoint, gain: funding.complete ? funding.pnl : endpoint.gain, percentage: funding.percentage };
+  points[points.length - 1] = { ...endpoint, gain: endpoint.gain, percentage: funding.reason ? null : endpoint.gain / funding.deposits * 100 };
   return points;
 }
 
@@ -677,6 +676,7 @@ export async function loadAllTimeDataset(
       args.orders.flatMap(order => [order.currency, ...(order.commission ? [order.commission.currency] : []),
         ...(!isDisplayableOrder(order) ? order.ticker.split(/[./]/) : [])]),
       benchmarkAccounts.map(account => account.currency),
+      benchmarkAccounts.flatMap(account => nativeFundingFlows(account).map(flow => flow.nativeCurrency)),
       provisionalOrders.flatMap(order => [order.currency, ...(order.commission ? [order.commission.currency] : [])]),
     );
   const rates = await fetchUsdConversionRates(
@@ -690,7 +690,7 @@ export async function loadAllTimeDataset(
     ]), ...benchmarkAccounts.flatMap(account => account.fundingHistory?.map(flow => flow.date) ?? [])].sort()[0];
   const historicalRates = await fetchHistoricalUsdConversionRates(currencies, historyStart, through, request);
   const fingerprint = await hash({
-    version: 11,
+    version: 13,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],
@@ -718,20 +718,10 @@ export async function loadAllTimeDataset(
   }
   const accounts = benchmarkAccounts;
   const notes: string[] = [];
-  if (kind !== "perf" && accounts.some(account => account.fundingProvisional)) {
-    notes.push("Returns are provisional: live balances use funding from the latest completed statement.");
-  }
-  if (accounts.some(account => account.pendingCashAdjustment && Math.abs(account.pendingCashAdjustment.amount) > .02)) {
-    notes.push("Unclassified cash movements are treated as provisional funding, excluded from profit until the next statement.");
-  }
-  if (args.orders.some(order => order.integrationKind === "ibkr" && !order.commission &&
-    accounts.some(account => account.integrationId === order.integrationId && dateOf(order.date) > dateOf(account.historyThrough)))) {
-    notes.push("Recent execution fees are pending; recent chart points are provisional until the next completed statement.");
-  }
   if (giftReceipts.some(order => order.transactionKey?.includes('"free-stock"'))) {
     notes.push("Gift receipt dates are unavailable; undated shares enter both portfolios at the current endpoint. Enable Grant Activity in the IBKR Flex Query for dated receipts.");
   }
-  const funding = accountReturn(accounts, new Set([...args.positions, ...selected].map(item => item.integrationId)), rates);
+  const funding = accountFunding(accounts, new Set([...args.positions, ...selected].map(item => item.integrationId)), rates);
   const purchases: BenchmarkPurchase[] = [];
   const datedFunding = !funding.reason && accounts.every(account => {
     if (!account.fundingHistory) return false;
@@ -751,35 +741,31 @@ export async function loadAllTimeDataset(
   });
   let benchmark: ChartBenchmark | undefined;
   let benchmarkGifts: ChartGiftPoint[] = [];
+  let benchmarkFundingBasis: FundingBasisPoint[] = [];
   const benchmarkValuations: BenchmarkValuations = {};
   if (datedFunding) {
     try {
-      const foreign = accounts.filter(account => account.currency !== "USD" &&
-        account.fundingHistory!.some(flow => !flow.allocation && flow.amount !== 0));
-      if (foreign.length) {
-        const start = foreign.flatMap(account => account.fundingHistory!
-          .filter(flow => !flow.allocation && flow.amount !== 0).map(flow => flow.date)).sort()[0];
-        const historicalRates = await fetchHistoricalUsdConversionRates(foreign.map(account => account.currency), start, through, request);
-        for (const account of foreign) {
-          benchmarkValuations[account.currency] = historicalRates.get(account.currency)!.map(row => ({
-            date: row.date, factor: usdFactor(account.currency, rates) / row.factor,
-          }));
-        }
-        // Keep the contribution basis identical to the account Total, while
-        // buying ETF shares with the dollars available on each funding date.
-        purchases.length = 0;
-        for (const account of accounts) {
-          for (const flow of account.fundingHistory!) {
-            const contributionUsd = flow.amount * usdFactor(account.currency, rates);
-            const amountUsd = flow.allocation || flow.amount === 0 ? contributionUsd
-              : flow.amount * historicalUsdFactor(historicalRates, account.currency, flow.date);
-            purchases.push({ date: flow.date, amountUsd,
-              ...(account.currency !== "USD" && !flow.allocation ? { contributionUsd } : {}),
-              ...(account.currency !== "USD" ? { valuationCurrency: account.currency } : {}),
-              ...(flow.allocation ? { allocation: true } : {}),
-            });
-          }
-        }
+      const nativeFlows = accounts.flatMap(account => nativeFundingFlows(account).map(flow => ({ account, flow })));
+      const foreignCurrencies = [...new Set(nativeFlows.filter(({ flow }) => !flow.allocation && flow.amount !== 0)
+        .flatMap(({ account, flow }) => [account.currency, flow.nativeCurrency]))].filter(currency => currency !== "USD");
+      const start = nativeFlows.filter(({ flow }) => !flow.allocation && flow.amount !== 0)
+        .map(({ flow }) => flow.date).sort()[0] ?? points[0].date;
+      const fundingRates = await fetchHistoricalUsdConversionRates(foreignCurrencies, start, through, request);
+      for (const currency of foreignCurrencies) {
+        benchmarkValuations[currency] = fundingRates.get(currency)!.map(row => ({
+          date: row.date, factor: usdFactor(currency, rates) / row.factor,
+        }));
+      }
+      purchases.length = 0;
+      for (const { account, flow } of nativeFlows) {
+        const contributionUsd = flow.amount * usdFactor(account.currency, rates);
+        const amountUsd = flow.allocation || flow.amount === 0 ? contributionUsd
+          : flow.nativeAmount * historicalUsdFactor(fundingRates, flow.nativeCurrency, flow.date);
+        purchases.push({ date: flow.date, amountUsd,
+          ...(account.currency !== "USD" && !flow.allocation ? { contributionUsd } : {}),
+          ...(account.currency !== "USD" ? { valuationCurrency: account.currency } : {}),
+          ...(flow.allocation ? { allocation: true } : {}),
+        });
       }
       for (const order of provisionalOrders) {
         const account = accounts.find(account => account.integrationId === order.integrationId)!;
@@ -793,19 +779,24 @@ export async function loadAllTimeDataset(
           } : {}),
         });
       }
-      if (provisionalOrders.length) notes.push("Index funding is provisional: today's purchases are treated as new cash until the next statement.");
       benchmark = await loadChartBenchmark(purchases, points[0].date, points.at(-1)!.date, cache, "sp500", benchmarkValuations);
       benchmarkGifts = buildChartGifts(giftReceipts, histories, historicalRates,
         args.benchmarkSource?.positions ?? args.positions, rates, points[0].date, points.at(-1)!.date);
       benchmark = withChartGifts(benchmark, benchmarkGifts);
-      benchmark = benchmarkForKind(benchmark, kind);
+      benchmarkFundingBasis = benchmark.points.map(point => {
+        const topups = accountTopups(datedFxAccounts(accounts, point.date));
+        return { date: point.date,
+          deposits: topups.reduce((sum, topup) => sum + topup.deposits * historicalUsdFactor(historicalRates, topup.currency, point.date), 0),
+          withdrawals: topups.reduce((sum, topup) => sum + topup.withdrawals * historicalUsdFactor(historicalRates, topup.currency, point.date), 0) };
+      });
+      benchmark = benchmarkForKind(benchmarkWithFundingBasis(benchmark, benchmarkFundingBasis), kind);
     } catch (error) {
       benchmark = undefined;
       benchmarkGifts = [];
       notes.push(error instanceof Error ? error.message : String(error));
     }
   } else notes.push("Benchmark unavailable: complete dated external funding is required.");
-  return { fundingReturnVersion: 3, kind: args.kind, filter: args.filter, userId, label, bucketName: args.bucketName, points, notes, ...(benchmark ? { benchmark, benchmarkPurchases: purchases, benchmarkValuations, ...(benchmarkGifts.length ? { benchmarkGifts } : {}) } : {}) };
+  return { fundingReturnVersion: 5, kind: args.kind, filter: args.filter, userId, label, bucketName: args.bucketName, points, notes, ...(benchmark ? { benchmark, benchmarkPurchases: purchases, benchmarkValuations, benchmarkFundingBasis, ...(benchmarkGifts.length ? { benchmarkGifts } : {}) } : {}) };
 }
 
 export async function switchChartBenchmarks(
@@ -814,7 +805,7 @@ export async function switchChartBenchmarks(
   index: ChartBenchmarkIndex,
   cache: Parameters<typeof loadChartBenchmark>[3] = historyCache(db),
 ): Promise<AllTimeDataset[]> {
-  if (datasets.some((dataset) => dataset.fundingReturnVersion !== 3 || !dataset.benchmarkPurchases || !dataset.benchmark)) {
+  if (datasets.some((dataset) => dataset.fundingReturnVersion !== 5 || !dataset.benchmarkPurchases || !dataset.benchmark)) {
     throw new Error("This chart predates index switching. Create a new chart with /chart.");
   }
   return await Promise.all(datasets.map(async (dataset) => {
@@ -824,7 +815,7 @@ export async function switchChartBenchmarks(
       dataset.benchmarkPurchases!, dataset.points[0].date,
       dataset.points.at(-1)!.date, cache, index, dataset.benchmarkValuations,
     );
-    if (!dataset.benchmarkSnapshots?.[index]) benchmark = benchmarkForKind(withChartGifts(benchmark, dataset.benchmarkGifts ?? []), dataset.kind ?? "alltime");
+    if (!dataset.benchmarkSnapshots?.[index]) benchmark = benchmarkForKind(benchmarkWithFundingBasis(withChartGifts(benchmark, dataset.benchmarkGifts ?? []), dataset.benchmarkFundingBasis), dataset.kind ?? "alltime");
     return {
       ...dataset,
       benchmark,
@@ -838,7 +829,7 @@ export async function renderAllTimeChart(
   datasets: AllTimeDataset[],
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  if (!datasets.length || datasets.some((dataset) => dataset.fundingReturnVersion !== 3)) {
+  if (!datasets.length || datasets.some((dataset) => dataset.fundingReturnVersion !== 5)) {
     throw new Error("This chart uses an older return calculation. Create a new chart with /chart.");
   }
   const key = await hash({ version: 17, datasets });

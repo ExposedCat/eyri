@@ -26,7 +26,7 @@ const histories = (ticker = "A", first = 10, last = 11) => new Map<string, Price
 }]]);
 const usd = new Map([["USD", 1]]);
 
-Deno.test("ledger reconstruction includes native funding, FX, fees, dividends and withholding on their actual dates", async () => {
+Deno.test("historical alltime adds stock P/L and FX while worth replays all cash movements", async () => {
   const foreign = account({ currency: "CZK", deposits: 50000, netContributions: 50000, totalValue: 66299, pnl: 16299,
     cash: 299, ledgerCash: { CZK: -1, USD: 5 }, positionValue: 66000, investmentValue: 66000,
     fundingHistory: [{ date: "2025-01-01", amount: 50000 }],
@@ -45,7 +45,7 @@ Deno.test("ledger reconstruction includes native funding, FX, fees, dividends an
     const points = buildHistoricalReportSeries(args, histories(), rates, historical, kind);
     const report = await buildReportSnapshot({ ...args, request }, kind);
     near(points.at(-1)!.gain, report.value);
-    if (kind === "alltime") { near(points[1].gain, -2.02); near(points.at(-1)!.gain, 16299 / 60); }
+    if (kind === "alltime") { near(points[1].gain, -2); near(points.at(-1)!.gain, 98 + 1000 - 50000 / 60); }
     if (kind === "perf") near(points.at(-1)!.gain, 98);
     if (kind === "worth") near(points.at(-1)!.gain, 66299 / 60);
   }
@@ -90,19 +90,19 @@ Deno.test("trade-inclusive CSV cash is not charged twice, and incomplete ledgers
   const args = { positions: [position("A", 100, 1000, 11)], orders: [trade("A", 100, 10)],
     transactionBuckets: new Map<string, string>(), bucketName: null, accountPerformances: [a], now };
   equal(buildHistoricalReportSeries(args, histories(), usd, new Map(), "alltime").at(-1)!.gain, 100);
-  throws(() => buildHistoricalReportSeries({ ...args, accountPerformances: [{ ...a, cashHistory: undefined }] }, histories(), usd, new Map(), "alltime"), /Complete broker cash history/);
+  throws(() => buildHistoricalReportSeries({ ...args, accountPerformances: [{ ...a, cashHistory: undefined }] }, histories(), usd, new Map(), "worth"), /Complete broker cash history/);
   throws(() => buildHistoricalReportSeries({ ...args, accountPerformances: [{ ...a, ledgerCash: { USD: 10 } }] }, histories(), usd, new Map(), "worth"), /cash does not reconcile/);
   deepStrictEqual(executionCash(trade("A", 2, 10, "2025-01-01", 1)), [{ currency: "USD", amount: -20 }, { currency: "USD", amount: -1 }]);
 });
 
-Deno.test("worth and lifetime reports use the same account valuation despite broker-vs-quote differences", async () => {
+Deno.test("worth uses account valuation while alltime uses stock performance", async () => {
   const a = account({ totalValue: 1105, pnl: 105, cash: 10, ledgerCash: { USD: 10 }, positionValue: 1095 });
   const args = { positions: [position("A", 100, 1000, 11)], orders: [trade("A", 100, 10)], accountPerformances: [a] };
   const worth = await buildReportSnapshot(args, "worth");
   const lifetime = await buildReportSnapshot(args, "alltime");
   equal(worth.value, 1105);
   equal(worth.cash, 10);
-  equal(worth.value - a.deposits + a.withdrawals, lifetime.value);
+  equal(lifetime.value, 100);
   equal((await buildReportSnapshot({ ...args, accountPerformances: [] }, "worth")).value, 1100);
 });
 
@@ -119,7 +119,7 @@ Deno.test("lagging statements allow live cash changes across report kinds while 
       const points = buildHistoricalReportSeries(args, histories(), usd, new Map(), kind);
       ok(points.length > 0);
       const report = await buildReportSnapshot(args, kind);
-      equal(report.value, kind === "worth" ? 1100 + liveCash : kind === "alltime" ? 100 + liveCash : 100);
+      equal(report.value, kind === "worth" ? 1100 + liveCash : 100);
     }
     throws(() => buildHistoricalReportSeries({ ...args, accountPerformances: [{ ...a, statementCash: { USD: 501 } }] },
       histories(), usd, new Map(), "worth"), /cash does not reconcile/);
@@ -135,7 +135,7 @@ Deno.test("recent Gateway fees can remain unknown without blocking charts or wea
     ok(buildHistoricalReportSeries(args, histories(), usd, new Map(), kind).length > 0);
     throws(() => buildHistoricalReportSeries({ ...args, orders: [{ ...args.orders[0], commission: undefined }, recent] },
       histories(), usd, new Map(), kind), /Commission in the Flex/);
-    throws(() => buildHistoricalReportSeries({ ...args, accountPerformances: [{ ...a, statementCash: { USD: 501 } }] },
+    if (kind === "worth") throws(() => buildHistoricalReportSeries({ ...args, accountPerformances: [{ ...a, statementCash: { USD: 501 } }] },
       histories(), usd, new Map(), kind), /cash does not reconcile/);
   }
   equal(recent.commission, undefined);
@@ -156,5 +156,5 @@ Deno.test("cash-only accounts chart their ledger without inventing a position", 
   const args = { positions: [], orders: [], accountPerformances: [a], transactionBuckets: new Map<string, string>(), bucketName: null, now };
   equal(buildHistoricalReportSeries(args, new Map(), usd, new Map(), "worth").at(-1)!.gain, 110);
   equal((await buildReportSnapshot(args, "worth")).value, 110);
-  equal(buildHistoricalReportSeries(args, new Map(), usd, new Map(), "alltime").at(-1)!.gain, 10);
+  equal(buildHistoricalReportSeries(args, new Map(), usd, new Map(), "alltime").at(-1)!.gain, 0);
 });

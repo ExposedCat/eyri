@@ -264,7 +264,7 @@ export function createChartComposer(
       return;
     }
     const datasets = JSON.parse(session.datasets) as AllTimeDataset[];
-    if (datasets.some((dataset) => dataset.fundingReturnVersion !== 3)) {
+    if (datasets.some((dataset) => dataset.fundingReturnVersion !== 5)) {
       await ctx.answerCallbackQuery({
         text: "This chart uses an older return calculation. Create a new chart with /chart.",
         show_alert: true,

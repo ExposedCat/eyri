@@ -38,20 +38,49 @@ const histories = new Map<string, PriceHistory>([
 ]);
 const near = (actual: number, expected: number) => ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 
-Deno.test("funded totals include cash income while performance entries contain only actual instruments", async () => {
-  const snapshot = { ...account, deposits: 500, netContributions: 500, totalValue: 550, pnl: 50, cash: 25, ledgerCash: { USD: 25 }, reportedComponents: [{ currency: "USD", cost: 500, pnl: 25 }] };
+Deno.test("alltime uses instrument performance without adding cash income", async () => {
+  const snapshot = { ...account, deposits: 500, netContributions: 500, totalValue: 550, pnl: 50, cash: 25, ledgerCash: { USD: 25 },
+    cashHistory: [{ date: "2025-01-03", currency: "USD", amount: 25, type: "Dividends" }],
+    reportedComponents: [{ currency: "USD", cost: 500, pnl: 25 }] };
   const args = { positions: [position], orders: [orders[2]], accountPerformances: [snapshot], formatTicker: (ticker: string) => ticker };
   const report = await buildIntegratedAllTimeReport(args);
   deepStrictEqual(report!.performances.map(performance => performance.ticker), ["SECOND"]);
   equal(report!.performances[0].change, 25);
-  equal(report!.total.change, 50);
-  equal(report!.totalReturnPercentage, 10);
+  equal(report!.total.change, 25);
+  equal(report!.totalReturnPercentage, 5);
   const lines = (await buildIntegratedAllTimePerformanceList(args)).split("\n").filter(Boolean);
-  equal(lines.length, 3);
+  equal(lines.length, 2);
   match(lines[0], /^SECOND /);
-  match(lines[1], /^Account cash, FX & income: \+\$25\.00/);
-  match(lines[2], /^Total: \+10\.00% \+\$50\.00/);
+  match(lines[1], /^Total: \+5\.00% \+\$25\.00/);
   equal(report!.performances.reduce((sum, row) => sum + row.change!, 0) + report!.accountAdjustment, report!.total.change);
+});
+
+Deno.test("alltime excludes account income, valuation residuals and unclassified cash", async () => {
+  const snapshot = { ...account, currency: "CZK", totalValue: 12000, deposits: 10000,
+    withdrawals: 0, cash: 1500, ledgerCash: { CZK: 1500 },
+    cashHistory: [
+      { date: "2025-01-01", currency: "CZK", amount: 10000, type: "Deposits/Withdrawals" },
+      { date: "2025-01-03", currency: "USD", amount: 20, type: "Dividends" },
+      { date: "2025-01-03", currency: "USD", amount: -3, type: "Withholding Tax" },
+      { date: "2025-01-03", currency: "EUR", amount: 2, type: "Broker Interest Received" },
+      { date: "2025-01-03", currency: "USD", amount: -1, type: "Commission Adjustments" },
+      { date: "2025-01-03", currency: "USD", amount: 50, type: "Unclassified cash (provisional)" },
+    ], reportedComponents: [{ currency: "USD", cost: 500, pnl: 25 }] };
+  const requested: string[] = [];
+  const request: typeof fetch = url => {
+    requested.push(String(url));
+    const quote = String(url).endsWith("czk") ? "CZK" : "EUR";
+    return Promise.resolve(Response.json({ base: "USD", quote, rate: quote === "CZK" ? 20 : .8 }));
+  };
+  const args = { positions: [position], orders: [orders[2]], accountPerformances: [snapshot], request, formatTicker: (ticker: string) => ticker };
+  const report = (await buildIntegratedAllTimeReport(args))!;
+  deepStrictEqual(report.accountAdjustments, [{ label: "Currency gain/loss", amount: 0 }]);
+  equal(report.total.change, 25);
+  equal(report.totalReturnPercentage, 5);
+  equal(requested.some(url => url.endsWith("eur")), false);
+  const text = await buildIntegratedAllTimePerformanceList(args);
+  equal(/Dividends|Withholding|Interest|Reconciliation/.test(text), false);
+  equal(text.includes("Account cash"), false);
 });
 
 Deno.test("cash-only funded accounts render a total without inventing an instrument", async () => {
@@ -59,14 +88,17 @@ Deno.test("cash-only funded accounts render a total without inventing an instrum
   const args = { positions: [], orders: [], accountPerformances: [snapshot] };
   const report = await buildIntegratedAllTimeReport(args);
   deepStrictEqual(report!.performances, []);
-  equal(report!.total.change, 10);
-  equal(report!.totalReturnPercentage, 10);
-  match(await buildIntegratedAllTimePerformanceList(args), /^Total: \+10\.00% \+\$10\.00/);
+  equal(report!.total.change, 0);
+  equal(report!.totalReturnPercentage, 0);
+  match(await buildIntegratedAllTimePerformanceList(args), /Total: 0\.00% \$0\.00/);
 });
 
-Deno.test("lifetime text and number summaries label lagging funding without blocking the report", async () => {
-  const args = { positions: [position], orders, accountPerformances: [{ ...account, fundingProvisional: true }] };
-  match(await buildIntegratedAllTimePerformanceList(args), /Returns are provisional/);
+Deno.test("lagging funding keeps reports concise and retains the compact number marker", async () => {
+  const args = { positions: [position], orders, accountPerformances: [{ ...account, fundingProvisional: true,
+    pendingCashAdjustment: { date: "2025-01-03", amount: 75, balances: { USD: 75 } } }] };
+  const text = await buildIntegratedAllTimePerformanceList(args);
+  equal(/provisional|Unclassified cash|latest completed statement/.test(text), false);
+  match(text, /Total: \+425\.00% \+\$425\.00[^\n]*$/);
   match(await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true }), /~/);
 });
 
@@ -86,10 +118,9 @@ Deno.test("all chart kinds keep live endpoints when funding statements and recen
         order.date > live.historyThrough ? { ...order, commission: undefined } : order),
         transactionBuckets: new Map(), bucketName: null, now: new Date("2025-01-04"), accountPerformances: [live], kind },
         1, "Test", cache as never);
-      equal(dataset.points.at(-1)!.gain, kind === "worth" ? 600 : kind === "alltime" ? 500 : 25);
+      equal(dataset.points.at(-1)!.gain, kind === "worth" ? 600 : kind === "alltime" ? 425 : 25);
       ok(dataset.benchmark);
-      if (kind !== "perf") ok(dataset.notes?.some(note => note.includes("Returns are provisional")));
-      ok(dataset.notes?.some(note => note.includes("Recent execution fees are pending")));
+      deepStrictEqual(dataset.notes, []);
     }
   } finally { db.close(); }
 });
@@ -116,13 +147,13 @@ Deno.test("unclassified cash changes neither report profit nor the chart endpoin
         const dataset = await loadAllTimeDataset(db, { ...args, kind }, 1, "Test", cache as never);
         equal(dataset.points.at(-1)!.gain, kind === "worth" ? 525 + cash : kind === "alltime" ? 425 : 25);
         equal(dataset.benchmarkPurchases!.reduce((sum, flow) => sum + flow.amountUsd, 0), 100 + cash);
-        if (cash) ok(dataset.notes?.some(note => note.includes("excluded from profit")));
+        deepStrictEqual(dataset.notes, []);
       }
     } finally { db.close(); }
   }
 });
 
-Deno.test("funded chart endpoint uses the account Total despite small FIFO snapshot differences", () => {
+Deno.test("chart endpoint ignores differences in the account reconciliation snapshot", () => {
   const snapshot = { ...account, reportedComponents: account.reportedComponents!.map((component, index) =>
     ({ ...component, pnl: component.pnl + (index === 0 ? .003 : 0) })) };
   const series = buildAllTimeSeries({ positions: [position], orders, transactionBuckets: new Map(),

@@ -98,7 +98,7 @@ function history(
   return { symbol: "AAPL", currency, bars, splits: [] };
 }
 
-Deno.test("chart endpoint uses funding-based account return, including broker wallet sales across splits", async () => {
+Deno.test("chart endpoint uses stock performance, including broker wallet sales across splits", async () => {
   const buy = trade(1, 100, "2025-01-02");
   const sell = {
     ...trade(-1, 60, "2025-01-03"),
@@ -153,8 +153,8 @@ Deno.test("chart endpoint uses funding-based account return, including broker wa
     new Map([[instrumentKey(buy), h]]),
     new Map([["USD", 1], ["EUR", 1.1]]),
   );
-  equal(points.at(-1)?.gain, -11);
-  equal(points.at(-1)?.percentage, -10);
+  equal(points.at(-1)?.gain, (23 + 14) * 1.1);
+  equal(points.at(-1)?.percentage, 37);
 });
 
 Deno.test("all-time series replays purchases and FIFO sales, carries weekends, and matches /alltime gains", async () => {
@@ -884,7 +884,7 @@ Deno.test("a bucket containing only free stock charts without recorded orders an
   equal(args.transactionBuckets.size, 0);
 });
 
-Deno.test("free stock cost assumptions preserve funding-based account reconciliation", () => {
+Deno.test("free stock performance uses zero cost without an account-value override", () => {
   const gift = holding(1, 50, 130);
   const account: IntegrationAccountPerformance = {
     integrationId: 1,
@@ -914,8 +914,8 @@ Deno.test("free stock cost assumptions preserve funding-based account reconcilia
     new Map([[instrumentKey(gift), history()]]),
     new Map([["USD", 1]]),
   );
-  equal(series.at(-1)!.gain, 40);
-  equal(series.at(-1)!.percentage, 40);
+  equal(series.at(-1)!.gain, 130);
+  equal(series.at(-1)!.percentage, 130);
   equal(account.reportedComponents!.length, 1);
 });
 
@@ -1040,7 +1040,7 @@ Deno.test("switching index replays saved purchases before the visible window and
     { date: "2025-01-02", amountUsd: 1000 }, { date: "2025-01-03", amountUsd: 1000 },
   ];
   const first: AllTimeDataset = {
-      fundingReturnVersion: 3,
+      fundingReturnVersion: 5,
     userId: 1, label: "First", bucketName: null, displayCurrency: "EUR", displayRate: .8,
     points: [{ date: "2025-01-03", percentage: 5, gain: 100 }, { date: "2025-01-06", percentage: 15.5, gain: 310 }],
     benchmarkPurchases: purchases,

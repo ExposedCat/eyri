@@ -99,8 +99,8 @@ Deno.test("excluded buckets subtract allocated capital while complete included a
     equal(view.positions[0].amount, 1);
     ok(!view.positions[0].brokerValuations);
     const partialReport = await buildIntegratedAllTimeReport(view);
-    equal(partialReport?.total.change, 5);
-    equal(partialReport?.totalReturnPercentage, 2.5);
+    equal(partialReport?.total.change, 100);
+    equal(partialReport?.totalReturnPercentage, 50);
     setBucketIncluded({
       database: db,
       userId: 1,
@@ -115,9 +115,9 @@ Deno.test("excluded buckets subtract allocated capital while complete included a
     equal(view.positions[0].amount, 2);
     deepStrictEqual(view.positions[0].brokerValuations, live.brokerValuations);
     const report = await buildIntegratedAllTimeReport(view);
-    equal(report?.total.change, 105);
+    equal(report?.total.change, 220);
     equal(report?.total.cost, 180);
-    equal(report?.totalReturnPercentage, 105 / 300 * 100);
+    equal(report?.totalReturnPercentage, 220 / 300 * 100);
     await fetchPortfolioView(db, 1, "Included", {
       history: true,
       accountPerformance: true,

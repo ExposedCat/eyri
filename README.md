@@ -234,7 +234,7 @@ account cash charts. Existing imported fills backfill commission fields through
 the same background poller;
 Missing fees in completed statement history are errors. Recent Gateway
 executions can arrive before Flex publishes their fees; their chart points
-remain provisional, with an explicit note, and the endpoint uses live balances.
+remain provisional internally, and the endpoint uses live balances.
 Flex only publishes completed days. Reports replay subsequent trades and FX
 conversions against statement cash, then compare the result with live native
 balances. Unclassified cash differences are neutralized as provisional funding
@@ -242,8 +242,16 @@ in the report, so pending deposits cannot appear as profit. These estimates are
 never persisted as verified deposits or withdrawals; the next statement replaces
 them with classified activity. Charts and benchmarks use the same provisional
 funding without counting purchases funded by sale proceeds again.
-Lifetime text reports show a separate account cash, FX and income adjustment
-so their instrument rows reconcile to Total. Historical cash validation uses the completed
+Lifetime performance is realized plus unrealized instrument P/L plus separately
+calculated currency gain/loss. The reference is the original top-up currency
+basket. Currency P/L values both principal legs of actual FX executions at current
+reporting rates. Holding a deposited currency earns no FX gain merely because the
+broker uses a different base currency. Execution commissions are excluded from FX
+principal; provisional, unclassified funding produces no FX gain.
+Account value, idle cash, account income and valuation residuals do not enter this
+performance total. Cash and account value belong to `/worth`.
+Routine statement-lag and provisional-funding paragraphs are omitted from text
+reports and chart notes. Historical cash validation uses the completed
 statement's balances while it lags the live account. Missing sections,
 truncated history, unsupported asset transfers and failed broker requests are errors.
 
@@ -292,22 +300,19 @@ Historical holdings use execution wallet costs where available and daily market
 prices. The complete CSV cash ledger supplies dated trade cash, conversions,
 income and tax movements without deducting execution charges a second time.
 
-For whole Trading 212 accounts, `/alltime` and `/allnumber` use current broker
-account value minus external net contributions. The percentage denominator is
+For whole Trading 212 accounts, `/alltime` and `/allnumber` sum open-position and
+sold-trade P/L plus independently calculated currency P/L. The percentage denominator is
 gross external deposits; reinvested gains do not count as new deposits. Complete CSV exports
 distinguish true deposits/withdrawals from internal transfers, conversions and
 tax adjustments that the cash API labels as deposits. Cash and share quantities
 must reconcile with fresh broker data, and imported execution IDs must match the
 export. Execution net/gross totals already contain fees and taxes; these are
-never deducted twice. Instrument rows show holding and sold-trade P/L. The Total
-uses account value and funding directly, including cash, FX, dividends and fees.
-Funded P/L is calculated in the broker account's base currency before display
-conversion. For example, a CZK-funded account displayed in USD includes currency
-gains that USD instrument price P/L does not, so the instrument rows need not sum
-to the account Total.
-MCP reports also expose the account value, funding and separate position/summary values.
+never deducted twice. Instrument rows and the separate currency gain/loss line
+sum to Total. Account balances and unrelated cash income do not replace or adjust
+this performance calculation. MCP reports expose the currency calculation and
+funding metadata separately.
 The lifetime chart endpoint uses the same monetary total and gross-deposit return
-as `/alltime`. Earlier account points replay the dated cash and execution ledger.
+as `/alltime`. Earlier points replay trades and dated currency movements.
 
 Exports are cached while event history is unchanged and cash/share checks pass.
 On first use or after new activity, T212 may need a minute to prepare an export;
@@ -512,12 +517,19 @@ account cash. Bucket views use the fresh-cash purchase assumption described abov
 Use `/alltime` (or `/alltime BUCKET`) to combine `/perf` and `/sold` into one
 line per ticker and a single Total. Gains include current holdings and realized
 FIFO gains from available order history. Ticker rows show monetary P/L without a
-lifetime percentage. The whole-account Total uses
-`(cash + portfolio + withdrawals - deposits) / deposits * 100`, including cash in
-account equity and using gross deposits as the denominator. Reinvestments are not
-new deposits. Withdrawals preserve previously earned profit. Zero deposits or
+lifetime percentage. Total is `realized P/L + unrealized P/L + currency P/L`;
+its percentage is `Total / gross native top-ups at current rates * 100`.
+The modeled sale converts proceeds back into the recorded top-up currencies in
+proportion to their original native amounts. Current exchange rates put that
+basket into a common unit for allocation. With no withdrawals, each source
+currency receives the same percentage return. `Top-up return` shows the resulting
+native-currency gains when they differ from the display currency; structured
+reports also expose each currency's share, original cost and modeled proceeds.
+Withdrawals preserve gross contributed cost and previously earned returns.
+Account value and cash balances are not inputs to the performance numerator.
+Reinvestments are not new deposits. Withdrawals do not erase realized stock gains. Zero deposits or
 incomplete funding leave the percentage unavailable while preserving monetary P/L.
-Whole Trading 212 and Freedom24 accounts supply this reconciliation. Whole IBKR
+Whole Trading 212 and Freedom24 accounts supply funding history. Whole IBKR
 accounts require the Activity Flex funding sections described above. Buckets use
 the fresh-cash purchase assumption; filtered and unreconciled views may still lack
 a capital-return percentage. Combined
@@ -589,15 +601,16 @@ continues to work. The live endpoint comes from the same calculation as the text
 report and `/number KIND`.
 
 `perf` shows open-position P/L and return on the remaining book cost. Sales remove
-the sold lots' open P/L. `alltime` retains realized results and reconstructs cash
-from native deposits, withdrawals, executions, currency conversions, dividends,
-taxes and fees, using daily FX. Reinvestment never adds deposits. `worth` plots
+the sold lots' open P/L. `alltime` adds realized and unrealized instrument results
+to currency P/L calculated from native funding and actual conversions, using
+daily exchange rates. Reinvestment never adds deposits. `worth` reconstructs cash
+from the complete ledger and plots
 holdings plus cash as a monetary value, including changes from contributions.
 Cash-funded buckets use the agreed fresh-cash purchase model and keep sale proceeds.
 Filtered reports use only selected instruments and do not allocate account cash.
-Cash balances and held quantities must reconcile before a ledger chart is published.
-Missing cash, fee or FX history fails explicitly instead of substituting a trade-only
-curve. Weekends carry the last close; splits preserve quantities and cost basis.
+Held quantities must reconcile for performance charts; worth charts also validate
+cash balances against the ledger. Missing required fee or FX history fails
+explicitly. Weekends carry the last close; splits preserve quantities and cost basis.
 IBKR contract exchange and ISIN metadata distinguish unrelated listings sharing a
 ticker, including London CURE versus the US leveraged ETF.
 
@@ -621,10 +634,10 @@ the next statement covers that day replaces the estimate with actual deposits
 and withdrawals; previously sent charts remain saved snapshots. This mode does
 not require live cash to match the completed statement. Account-wide `alltime`
 and `worth` reconciliation remains unchanged.
-Non-USD deposits buy ETF shares using their funding-date FX
-rate. Daily ETF values include currency movement in the broker account's base
-currency, then convert to the display currency, matching the account Total's
-funding basis. Both daily FX rates and contribution values are frozen with the
+Non-USD deposits buy ETF shares using their native currency and funding-date FX
+rate. Daily index returns compare its value against the original native top-up
+basket, matching the actual portfolio's return basis. Both daily FX rates and
+the native contribution/withdrawal basis are frozen with the
 chart for index switching; unavailable historical FX omits the benchmark rather
 than substituting today's rate. Bucket benchmarks instead receive fresh cash on each selected
 purchase date, scaled by the user's share; bucket sale proceeds remain cash.
@@ -633,7 +646,8 @@ capital on their purchase dates; they are distinct from external withdrawals.
 Benchmark return is `(remaining value + withdrawals - deposits) / deposits * 100`.
 Benchmarks require complete dated external funding and are omitted when it is
 unavailable or the hypothetical fund cannot cover a withdrawal. Existing chart
-sessions made with purchase-cost returns or the previous funding FX calculation
+sessions made with purchase-cost returns, the account-value performance numerator,
+or the previous funding FX calculation
 must be recreated with `/chart`.
 The two curves and monetary gains appear together in the participant legend.
 All three kinds show the same buy-and-hold index portfolio: `perf` displays its

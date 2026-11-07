@@ -131,12 +131,14 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
       continue;
     }
     seen.set(key, serialized);
-    const before = { ...cash };
-    const capture = () => {
+    let before = { ...cash };
+    const capture = (kind?: "funding" | "fx" | "fee" | "transfer") => {
       for (const currency of new Set([...Object.keys(cash), ...Object.keys(before)])) {
         const amount = (cash[currency] ?? 0) - (before[currency] ?? 0);
-        if (amount) cashHistory.push({ date: date.toISOString().slice(0, 10), currency, amount, type: row.Action, reference: key });
+        if (amount) cashHistory.push({ date: date.toISOString().slice(0, 10), currency, amount, type: row.Action, reference: key,
+          ...(kind ? { kind } : {}) });
       }
+      before = { ...cash };
     };
     if (!openedAt || date < openedAt) openedAt = date;
     if (row.Action === "Currency conversion") {
@@ -150,6 +152,7 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
         row["Currency (Currency conversion to amount)"],
         number(row["Currency conversion to amount"], "conversion credit"),
       );
+      capture("fx");
       if (row["Currency conversion fee"]) {
         add(
           cash,
@@ -157,7 +160,7 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
           number(row["Currency conversion fee"], "conversion fee"),
         );
       }
-      capture();
+      capture("fee");
       continue;
     }
     const field = row["Net Total"] ? "Net Total" : "Gross Total";
@@ -183,7 +186,8 @@ export function buildTrading212Ledger(rows: Row[], transfers: Set<string>) {
         }
       }
     } else throw new Error(`Unsupported Trading 212 CSV action: ${row.Action}`);
-    capture();
+    capture(["Deposit", "Withdrawal"].includes(row.Action)
+      ? transfers.has(row.ID) ? "transfer" : "funding" : undefined);
   }
   return { cash, deposits, withdrawals, quantities, openedAt, fundingHistory, cashHistory };
 }

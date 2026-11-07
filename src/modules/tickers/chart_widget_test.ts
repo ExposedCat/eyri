@@ -12,7 +12,7 @@ function fixture(length = 3) {
     gain: i * 100.12,
   }));
   const dataset: AllTimeDataset = {
-    fundingReturnVersion: 3,
+    fundingReturnVersion: 5,
     kind: "alltime",
     userId: 1,
     label: "Portfolio",

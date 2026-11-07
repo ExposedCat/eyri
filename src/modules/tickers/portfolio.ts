@@ -1,4 +1,5 @@
-import { accountReturn, accountWorth } from "./account_return.ts";
+import { accountFunding, accountWorth } from "./account_return.ts";
+import { accountFxInputs, accountFxPnl, accountTopups, proportionalCurrencyReturns } from "./account_fx.ts";
 import { requireReportNumber } from "../../utils/report_value.ts";
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
@@ -1127,12 +1128,15 @@ export async function buildIntegratedAllTimeReport({
     transactionBuckets,
     bucketName,
   );
+  const fxInputs = accountFxInputs(accountPerformances, orders.filter(order => !isDisplayableOrder(order)));
+  const topups = accountTopups(accountPerformances);
   const rates = await fetchConversionRates(
     [
       ...positions.flatMap(portfolioPositionCurrencies),
       ...nativeSold.map((p) => p.currency),
       ...accountPerformances.map(a => a.currency),
-      ...accountPerformances.flatMap(a => a.reportedComponents?.map(c => c.currency) ?? []),
+      ...fxInputs.flatMap(input => [...input.funding, ...input.conversions].map(event => event.currency)),
+      ...topups.map(topup => topup.currency),
     ],
     currency,
     request,
@@ -1233,16 +1237,6 @@ export async function buildIntegratedAllTimeReport({
   if (bucketName !== null && accountPerformances.some(account => account.fundingSource !== "bucket_cash")) {
     throw new Error("Account funding cannot be assigned to an individual bucket");
   }
-  let fundedTradePnl = 0;
-  for (const account of accountPerformances) {
-    if (!account.reportedComponents) {
-      throw new Error("Account reconciliation requires the matching position/trade snapshot");
-    }
-    for (const component of account.reportedComponents) {
-      const factor = component.currency === currency ? 1 : conversionFactor(component.currency, rates);
-      fundedTradePnl += requireReportNumber(component.pnl, "funded trade P/L") * factor;
-    }
-  }
   const performances = [...display.values()].sort(
     (a, b) =>
       (b.change ?? Number.NEGATIVE_INFINITY) -
@@ -1259,26 +1253,24 @@ export async function buildIntegratedAllTimeReport({
   } as Performance);
   requireReportNumber(total.change, "total all-time P/L");
   const instrumentPnl = total.change!;
-  // Trade costs count the same money again whenever sale proceeds are reinvested.
-  // Every selected integration must supply external funding and current cash.
+  // Funding supplies the percentage denominator only. Cash and account NAV
+  // must never replace realized + unrealized instrument performance.
   const selectedIntegrationIds = new Set(positions.map((p) => p.integrationId));
   for (const order of orders) {
-    if (order.quantity > 0 &&
+    if (order.quantity > 0 && isDisplayableOrder(order) &&
       (transactionBuckets?.get(getOrderTransactionKey(order)) ?? null) === bucketName) {
       selectedIntegrationIds.add(order.integrationId);
     }
   }
-  const funding = accountReturn(accountPerformances, selectedIntegrationIds, rates, currency);
-  if (accountPerformances.length) {
-    total.change = funding.complete ? funding.pnl
-      : funding.pnl + requireReportNumber(total.change, "trade P/L") - fundedTradePnl;
-    for (const account of accountPerformances) {
-      if (!total.openedAt || account.openedAt < total.openedAt) total.openedAt = account.openedAt;
-    }
-    total.endedAt = now;
-  }
-  const accountAdjustment = total.change! - instrumentPnl;
-  return { performances, total, accountAdjustment, totalReturnPercentage: funding.percentage, returnUnavailableReason: funding.reason, accounts: accountPerformances };
+  const funding = accountFunding(accountPerformances, selectedIntegrationIds, rates, currency);
+  const fx = accountFxPnl(fxInputs, rates);
+  const accountAdjustment = fx.reduce((sum, account) => sum + account.pnl, 0);
+  total.change = instrumentPnl + accountAdjustment;
+  const accountAdjustments = [{ label: "Currency gain/loss", amount: accountAdjustment }];
+  const totalReturnPercentage = funding.reason ? null : total.change / funding.deposits * 100;
+  const currencyReturns = funding.reason ? [] : proportionalCurrencyReturns(topups, total.change, rates);
+  return { performances, total, accountAdjustment, accountAdjustments, fx,
+    currencyReturns, totalReturnPercentage, returnUnavailableReason: funding.reason, accounts: accountPerformances };
 }
 
 export async function buildIntegratedAllTimePerformanceList({
@@ -1342,11 +1334,11 @@ export async function buildIntegratedAllTimePerformanceList({
       ),
   );
   return [...lines,
-    ...(performances.length && Math.abs(report.accountAdjustment) >= .005 ? [`Account cash, FX & income: ${formatCurrencyChange(report.accountAdjustment, currency)}`] : []),
+    ...report.accountAdjustments.filter(item => Math.abs(item.amount) >= .005)
+      .map(item => `${item.label}: ${formatCurrencyChange(item.amount, currency)}`),
     render("Total:", total, report.totalReturnPercentage),
-    ...(report.accounts.some(account => account.pendingCashAdjustment && Math.abs(account.pendingCashAdjustment.amount) > .02)
-      ? ["Unclassified cash movements are treated as provisional funding, excluded from profit until the next statement."] : []),
-    ...(provisional ? ["Returns are provisional: live balances use funding from the latest completed statement."] : []),
+    ...(report.accounts.some(account => account.fundingSource !== "bucket_cash") && report.currencyReturns.some(item => item.currency !== currency)
+      ? [`Top-up return: ${report.currencyReturns.map(item => formatCurrencyChange(item.pnl, item.currency)).join(" / ")}`] : []),
     ...(report.returnUnavailableReason ? [report.returnUnavailableReason] : [])].join("\n\n");
 }
 

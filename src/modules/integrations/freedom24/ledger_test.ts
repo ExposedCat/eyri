@@ -138,7 +138,7 @@ Deno.test("Freedom24 dated commissions, margin interest and rebates reconcile hi
   const rates = new Map([["USD", 1]]);
   const lifetime = buildHistoricalReportSeries(args, histories, rates, new Map(), "alltime");
   const worth = buildHistoricalReportSeries(args, histories, rates, new Map(), "worth");
-  equal(lifetime.at(-1)?.gain, account.pnl);
+  equal(lifetime.at(-1)?.gain, 0);
   equal(worth.at(-1)?.gain, 97.8);
   equal(orders[0].commission, undefined);
 });
@@ -248,6 +248,7 @@ Deno.test("Freedom24 adapter requests the whole lifetime independently of histor
   const db = new Database(":memory:");
   try {
     globalThis.fetch = async (_input, init) => {
+      if (String(_input).includes("api.frankfurter.dev")) return Response.json({ base: "USD", quote: "EUR", rate: 1 / 1.2 });
       const params = new URLSearchParams(String(init?.body));
       equal(params.get("cmd"), "getBrokerReport");
       equal(params.get("params[date_start]"), "1970-01-01");
@@ -267,7 +268,7 @@ Deno.test("Freedom24 adapter requests the whole lifetime independently of histor
       orders: [],
       accountPerformances: [account],
     });
-    match(output, /Total: \+5\.56% \+\$40\.00/);
+    match(output, /Total: 0\.00% \$0\.00/);
     globalThis.fetch = async () => {
       throw new Error("Broker offline");
     };

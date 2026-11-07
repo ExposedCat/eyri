@@ -238,9 +238,9 @@ Deno.test("account return reconciles deposits, broker value, cash and every posi
     request: fx,
     accountPerformances: [account],
   });
-  equal(report?.total.change, 24);
+  equal(report?.total.change, 15);
   equal(report?.total.cost, 50);
-  equal(report?.totalReturnPercentage, 24 / account.deposits * 100);
+  equal(report?.totalReturnPercentage, 15 / account.deposits * 100);
   equal(report?.performances.length, 1);
   equal(report?.performances[0].ticker, p.ticker);
   equal(report?.performances[0].change, 15);
@@ -252,7 +252,7 @@ Deno.test("account return reconciles deposits, broker value, cash and every posi
     accountPerformances: [account],
     numberOnly: true,
   });
-  ok(text.endsWith("+24.00 EUR"));
+  ok(text.endsWith("+15.00 EUR"));
   throws(
     () =>
       reconcileTrading212Account(

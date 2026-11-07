@@ -6,7 +6,8 @@ import { conversionFactor } from "../integrations/usd.ts";
 import { getOrderTransactionKey, isDisplayableOrder } from "./portfolio.ts";
 import { isCfdAllocation } from "./cfd_history.ts";
 import type { ReportKind } from "./performance_command.ts";
-import { accountReturn } from "./account_return.ts";
+import { accountFunding } from "./account_return.ts";
+import { accountFxInputs, accountFxPnlAtDate, accountTopups, datedFxAccounts } from "./account_fx.ts";
 
 export type HistoricalReportArgs = {
   positions: IntegrationPortfolioPosition[];
@@ -50,7 +51,7 @@ export function buildHistoricalReportSeries(
   if (kind === "alltime" && accounts.some(account => !account.fundingHistory)) {
     throw new Error("Complete dated external funding is required to reconstruct lifetime returns.");
   }
-  if (kind !== "perf" && brokerAccounts.some(account => !account.cashHistory)) {
+  if (kind === "worth" && brokerAccounts.some(account => !account.cashHistory)) {
     throw new Error("Complete broker cash history is required to reconstruct this chart. Refresh the integration ledger.");
   }
   if (kind !== "perf") for (const account of brokerAccounts) {
@@ -58,7 +59,8 @@ export function buildHistoricalReportSeries(
     // not have fees yet. Only require fees in the completed ledger we validate;
     // recent points are provisional and the endpoint uses the live snapshot.
     if (!account.cashHistoryIncludesTrades && args.orders.some(order => order.integrationId === account.integrationId &&
-      order.integrationKind === "ibkr" && !order.commission && dateOf(order.date) <= dateOf(account.historyThrough))) {
+      order.integrationKind === "ibkr" && !order.commission && (kind === "worth" || isDisplayableOrder(order)) &&
+      dateOf(order.date) <= dateOf(account.historyThrough))) {
       throw new Error("IBKR historical cash requires Commission in the Flex trade query. Include commission amounts and refresh the trade history.");
     }
   }
@@ -67,7 +69,13 @@ export function buildHistoricalReportSeries(
   const purchases = orders.filter(isDisplayableOrder).filter(order => order.quantity > 0 && selected(order));
   const selectedInstruments = new Set(purchases.map(order => JSON.stringify([order.integrationId, key(order)])));
   const brokerIds = new Set(brokerAccounts.map(account => account.integrationId));
-  const fundingReason = accountReturn(accounts, new Set([...purchases, ...args.positions].map(item => item.integrationId)), currentRates).reason;
+  const fundingReason = accountFunding(accounts, new Set([...purchases, ...args.positions].map(item => item.integrationId)), currentRates).reason;
+  const fxOrders = orders.filter(order => !isDisplayableOrder(order));
+  const fxCurrencies = new Set([...accounts.map(account => account.currency),
+    ...accountTopups(accounts).map(topup => topup.currency),
+    ...accountFxInputs(accounts, fxOrders).flatMap(input =>
+      [...input.funding, ...input.conversions].map(event => event.currency)),
+    ...fxOrders.flatMap(order => order.ticker.split(/[./]/))]);
   const dates = [...purchases.map(order => dateOf(order.date)),
     ...(kind === "perf" ? [] : accounts.flatMap(account => [
       ...(account.fundingHistory?.map(flow => flow.date) ?? []), ...(account.cashHistory?.map(flow => flow.date) ?? []),
@@ -79,7 +87,7 @@ export function buildHistoricalReportSeries(
     sum + (amount === 0 ? 0 : amount * factor(currency, date)), 0);
   const fixedValue = (cash: Cash) => [...cash].reduce((sum, [currency, amount]) => sum + amount * conversionFactor(currency, currentRates), 0);
   const realCash = new Map(brokerAccounts.map(account => [account.integrationId, new Map<string, number>()]));
-  const events = brokerAccounts.flatMap(account => [
+  const events = (kind === "worth" ? brokerAccounts : []).flatMap(account => [
     ...(account.cashHistory ?? []).map(event => ({ ...event, integrationId: account.integrationId })),
     ...(account.cashHistoryIncludesTrades ? [] : orders.filter(order => order.integrationId === account.integrationId)
       .flatMap(order => executionCash(order).map(event => ({ ...event, date: dateOf(order.date), integrationId: account.integrationId })))),
@@ -165,19 +173,24 @@ export function buildHistoricalReportSeries(
     let gain: number, percentage: number | null;
     if (kind === "perf") {
       gain = openValue - openCost; percentage = openCost ? gain / openCost * 100 : 0;
+    } else if (kind === "alltime") {
+      const dayRates = new Map([...fxCurrencies].map(currency => [currency, factor(currency, date)]));
+      const fxPnl = accountFxPnlAtDate(accounts, fxOrders, dayRates, date).reduce((sum, account) => sum + account.pnl, 0);
+      gain = openValue - openCost + value(realized, date) + fxPnl;
+      const deposits = accountFunding(datedFxAccounts(accounts, date),
+        new Set([...purchases, ...args.positions].map(item => item.integrationId)), dayRates).deposits;
+      percentage = fundingReason ? null : deposits > 0 ? gain / deposits * 100 : gain === 0 ? 0 : null;
     } else if (!accounts.length) {
-      gain = kind === "worth" ? openValue : openValue - openCost + value(realized, date);
+      gain = openValue;
       percentage = null;
     } else {
-      let worth = 0, deposits = 0, withdrawals = 0;
+      let worth = 0;
       const covered = new Set<number>();
       for (const account of accounts) {
         covered.add(account.integrationId);
         const flows = (account.fundingHistory ?? []).filter(flow => flow.date <= date);
         const contributed = flows.filter(flow => flow.allocation || flow.amount > 0).reduce((sum, flow) => sum + flow.amount, 0);
-        const withdrawn = -flows.filter(flow => !flow.allocation && flow.amount < 0).reduce((sum, flow) => sum + flow.amount, 0);
         const fx = factor(account.currency, date);
-        deposits += contributed * fx; withdrawals += withdrawn * fx;
         worth += positions.get(account.integrationId) ?? 0;
         if (account.fundingSource === "bucket_cash") {
           worth += contributed * fx + fixedValue(selectedCash.get(account.integrationId) ?? new Map());
@@ -186,13 +199,12 @@ export function buildHistoricalReportSeries(
         }
       }
       for (const [integrationId, marked] of positions) if (!covered.has(integrationId)) worth += marked;
-      gain = kind === "worth" ? worth : worth + withdrawals - deposits;
-      percentage = kind === "worth" || fundingReason || [...positions.keys()].some(id => !covered.has(id)) ? null
-        : deposits > 0 ? gain / deposits * 100 : gain === 0 ? 0 : null;
+      gain = worth;
+      percentage = null;
     }
     points.push({ date, gain, percentage });
   }
-  if (kind !== "perf") for (const account of brokerAccounts) {
+  if (kind === "worth") for (const account of brokerAccounts) {
     const pendingFees = orders.some(order => order.integrationId === account.integrationId &&
       order.integrationKind === "ibkr" && !order.commission && dateOf(order.date) > dateOf(account.historyThrough));
     // A lagging statement cannot validate today's live cash. Still verify the
