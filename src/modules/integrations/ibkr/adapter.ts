@@ -47,6 +47,7 @@ type IbkrExecutionRow = {
   price: number | null;
   currency: string | null;
   asset_category: string | null;
+  contract_multiplier: number | null;
 };
 
 function withTimeout<T>(
@@ -205,6 +206,7 @@ function ensureExecutionSchema(database: Database) {
       price REAL,
       currency TEXT,
       asset_category TEXT,
+      contract_multiplier REAL,
       synced_at TEXT NOT NULL,
       PRIMARY KEY (integration_id, exec_id)
     );
@@ -212,6 +214,10 @@ function ensureExecutionSchema(database: Database) {
     CREATE INDEX IF NOT EXISTS ibkr_executions_integration_date_idx
       ON ibkr_executions(integration_id, date);
   `);
+  const columns = database.prepare("PRAGMA table_info(ibkr_executions)").all() as { name: string }[];
+  if (!columns.some(column => column.name === "contract_multiplier")) {
+    database.exec("ALTER TABLE ibkr_executions ADD COLUMN contract_multiplier REAL");
+  }
 }
 
 function toExecutionOrder(
@@ -224,6 +230,7 @@ function toExecutionOrder(
   if (!execId || quantity === null) {
     return null;
   }
+  const multiplier = Number(contract.multiplier);
 
   return {
     execId,
@@ -237,6 +244,7 @@ function toExecutionOrder(
       price: normalizeExecutionNumber(execution.price),
       currency: contract.currency ?? "USD",
       assetCategory: contract.secType ?? null,
+      ...(Number.isFinite(multiplier) && multiplier > 0 ? { contractMultiplier: multiplier } : {}),
     },
   };
 }
@@ -259,8 +267,9 @@ function writeExecutionOrders(
       price,
       currency,
       asset_category,
+      contract_multiplier,
       synced_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(integration_id, exec_id) DO UPDATE SET
       account = excluded.account,
       ticker = excluded.ticker,
@@ -269,6 +278,7 @@ function writeExecutionOrders(
       price = excluded.price,
       currency = excluded.currency,
       asset_category = excluded.asset_category,
+      contract_multiplier = COALESCE(excluded.contract_multiplier, ibkr_executions.contract_multiplier),
       synced_at = excluded.synced_at
   `);
 
@@ -283,6 +293,7 @@ function writeExecutionOrders(
       order.price,
       order.currency,
       order.assetCategory,
+      order.contractMultiplier ?? null,
       syncedAt,
     );
   }
@@ -801,7 +812,8 @@ export function readExecutionOrders(
         quantity,
         price,
         currency,
-        asset_category
+        asset_category,
+        contract_multiplier
       FROM ibkr_executions
       WHERE integration_id = ?
       ORDER BY date
@@ -818,6 +830,7 @@ export function readExecutionOrders(
     price: row.price,
     currency: row.currency ?? "USD",
     assetCategory: row.asset_category,
+    ...(row.contract_multiplier !== null ? { contractMultiplier: row.contract_multiplier } : {}),
   }));
 }
 

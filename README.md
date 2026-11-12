@@ -237,7 +237,9 @@ executions can arrive before Flex publishes their fees; their chart points
 remain provisional internally, and the endpoint uses live balances.
 Flex only publishes completed days. Reports replay subsequent trades and FX
 conversions against statement cash, then compare the result with live native
-balances. Unclassified cash differences are neutralized as provisional funding
+balances. IBKR option execution cash uses the broker's contract multiplier;
+older standard option fills use 100 (1 for NANOS). Commissions remain unscaled.
+Unclassified cash differences are neutralized as provisional funding
 in the report, so pending deposits cannot appear as profit. These estimates are
 never persisted as verified deposits or withdrawals; the next statement replaces
 them with classified activity. Charts and benchmarks use the same provisional

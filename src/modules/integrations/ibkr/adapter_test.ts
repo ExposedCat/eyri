@@ -2,7 +2,8 @@ import { deepStrictEqual, equal, throws } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import type { Integration } from "../../database/integration.ts";
 import type { IntegrationPortfolioPosition } from "../types.ts";
-import { enrichContractIdentity, ibkrAdapter, readDailyPnl } from "./adapter.ts";
+import { enrichContractIdentity, ibkrAdapter, readDailyPnl, syncIbkrExecutions } from "./adapter.ts";
+import { ensureSchema } from "../../database/setup.ts";
 import { EventEmitter } from "node:events";
 import { EventName, type IBApi } from "@stoqey/ib";
 import { ibkrSessions } from "./session.ts";
@@ -205,6 +206,47 @@ function execution(db: Database, id: string, date: string, quantity: number) {
     quantity,
   );
 }
+
+Deno.test("IBKR migrates stored executions and preserves broker contract multipliers on refresh", async () => {
+  const db = new Database(":memory:");
+  const original = ibkrSessions.run;
+  class Api extends EventEmitter {
+    multiplier: number | undefined = 100;
+    reqManagedAccts() { this.emit(EventName.managedAccounts, "U1"); }
+    reqExecutions(id: number) {
+      this.emit(EventName.execDetails, id,
+        { localSymbol: "NVS   271217C00230000", secType: "OPT", currency: "USD", multiplier: this.multiplier },
+        { execId: "option-sale", acctNumber: "U1", time: "20261106 12:00:00", shares: 1, side: "SLD", price: 2.17 });
+      this.emit(EventName.execDetailsEnd, id);
+    }
+  }
+  const api = new Api();
+  ibkrSessions.run = async (_config, action) => await action(api as unknown as IBApi);
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users(user_id) VALUES (1)");
+    db.prepare("INSERT INTO integrations(id,user_id,kind,credentials_json) VALUES (1,1,'ibkr',?)")
+      .run(JSON.stringify(integration.credentials));
+    // Exercise an existing database whose execution table predates multipliers.
+    db.exec(`CREATE TABLE ibkr_executions (
+      integration_id INTEGER NOT NULL, exec_id TEXT NOT NULL, account TEXT,
+      ticker TEXT NOT NULL, date TEXT NOT NULL, quantity REAL NOT NULL, price REAL,
+      currency TEXT, asset_category TEXT, synced_at TEXT NOT NULL,
+      PRIMARY KEY (integration_id, exec_id))`);
+    execution(db, "legacy", "2026-10-07", 1);
+    for (const multiplier of [100, 10, undefined]) {
+      api.multiplier = multiplier;
+      await syncIbkrExecutions(db);
+      const orders = await ibkrAdapter.fetchOrderHistory(db, integration);
+      equal(orders.length, 2);
+      equal(orders[0].contractMultiplier, undefined);
+      equal(orders[1].contractMultiplier, multiplier ?? 10);
+      equal(orders[1].price, 2.17);
+      equal(orders[1].quantity, -1);
+    }
+    deepStrictEqual(api.eventNames(), []);
+  } finally { ibkrSessions.run = original; db.close(); }
+});
 
 Deno.test("IBKR preserves separate identical Flex warrant purchases and the chart matches the full holding", async () => {
   const db = await setup();

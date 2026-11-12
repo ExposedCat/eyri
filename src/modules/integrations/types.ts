@@ -41,6 +41,9 @@ export type IntegrationPortfolioPosition = {
 };
 
 export type IntegrationOrder = {
+  // Execution premiums are quoted per underlying unit; cash uses the broker's
+  // contract multiplier. This does not change the stored price or commission.
+  contractMultiplier?: number;
   // A share award/return moves securities without spending or receiving cash.
   receipt?: "gift";
   // Signed broker commission, normally negative; never add it to a live book
