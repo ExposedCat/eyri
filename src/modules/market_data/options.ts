@@ -65,9 +65,9 @@ export function historicalQuoteMultiplier(
     return instrument.historicalPriceMultiplier;
   }
   const option = yahooOptionContract(instrument.ticker);
-  // Freedom24 normalized position/trade prices are dollars per contract;
+  // Normalized position/trade prices are dollars per contract;
   // Yahoo option premiums are quoted per underlying unit. NANOS uses $1 units.
-  return option && instrument.integrationKind === "f24"
+  return option && ["f24", "ibkr"].includes(instrument.integrationKind)
     ? option.underlying === "NANOS" ? 1 : 100
     : 1;
 }

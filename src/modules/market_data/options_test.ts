@@ -45,7 +45,7 @@ Deno.test("historical option premium multipliers respect broker units and contra
       ticker: "AMD270115C00280000",
       integrationKind: "ibkr",
     }),
-    1,
+    100,
   );
   equal(
     historicalQuoteMultiplier({

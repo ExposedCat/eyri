@@ -1,8 +1,8 @@
 import type { Database } from "../database/setup.ts";
 import type { Integration } from "../database/integration.ts";
 
-// Every monetary field uses the instrument's currency. Preserve native prices
-// and costs through calculations; USD conversion belongs to reporting.
+// Every monetary field uses the instrument's currency. Option prices are per
+// contract, including the multiplier; USD conversion belongs to reporting.
 export type IntegrationPortfolioPosition = {
   integrationId: number;
   integrationKind: string;
@@ -41,8 +41,8 @@ export type IntegrationPortfolioPosition = {
 };
 
 export type IntegrationOrder = {
-  // Execution premiums are quoted per underlying unit; cash uses the broker's
-  // contract multiplier. This does not change the stored price or commission.
+  // Broker contract metadata. Adapters expose price per contract, with this
+  // multiplier already applied; commissions remain monetary amounts.
   contractMultiplier?: number;
   // A share award/return moves securities without spending or receiving cash.
   receipt?: "gift";

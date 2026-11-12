@@ -1,22 +1,6 @@
 import type { IntegrationAccountPerformance, IntegrationOrder } from "../types.ts";
 import { fetchConversionRates } from "../../../utils/exchange_rates.ts";
 import { conversionFactor } from "../usd.ts";
-import { yahooOptionContract } from "../../market_data/options.ts";
-
-function optionCashMultiplier(order: IntegrationOrder) {
-  const option = yahooOptionContract(order.ticker);
-  if (!["OPT", "FOP"].includes(order.assetCategory?.toUpperCase() ?? "") && !option) return 1;
-  if (order.contractMultiplier !== undefined) {
-    if (!Number.isFinite(order.contractMultiplier) || order.contractMultiplier <= 0) {
-      throw new Error(`Invalid contract multiplier for ${order.ticker}`);
-    }
-    return order.contractMultiplier;
-  }
-  // Older execution rows lack broker metadata. Standard OCC equity/index
-  // options quote per underlying unit; NANOS uses a $1 multiplier.
-  if (option) return option.underlying === "NANOS" ? 1 : 100;
-  throw new Error(`Missing contract multiplier for ${order.ticker}`);
-}
 
 // The residual is unclassified cash, not verified income or a verified deposit.
 // Neutralize it as temporary funding in the report only. The next Flex statement
@@ -41,7 +25,7 @@ export async function reconcileIbkrPendingCash(
         /^[A-Z]{3}[./][A-Z]{3}$/.test(order.ticker)) {
         add(base, order.quantity);
         add(quote, -order.quantity * order.price);
-      } else add(order.currency, -order.quantity * order.price * optionCashMultiplier(order));
+      } else add(order.currency, -order.quantity * order.price);
     }
     if (order.commission) add(order.commission.currency, order.commission.amount);
   }
@@ -50,7 +34,10 @@ export async function reconcileIbkrPendingCash(
     const amount = (account.ledgerCash[currency] ?? 0) - (expected[currency] ?? 0);
     if (Math.abs(amount) > .02) balances[currency] = amount;
   }
-  if (!recent.length && !Object.keys(balances).length) return account;
+  const fundingProvisional = Object.keys(balances).length > 0;
+  if (!recent.length && !fundingProvisional) {
+    return account.fundingProvisional ? { ...account, fundingProvisional: false } : account;
+  }
   const rates = await fetchConversionRates(Object.keys(balances), account.currency, request);
   const amount = Object.entries(balances).reduce((sum, [currency, value]) => sum + value * conversionFactor(currency, rates), 0);
   const date = now.toISOString().slice(0, 10);
@@ -58,7 +45,7 @@ export async function reconcileIbkrPendingCash(
   const withdrawals = account.withdrawals + Math.max(0, -amount);
   const netContributions = deposits - withdrawals;
   return {
-    ...account, fundingProvisional: true,
+    ...account, fundingProvisional,
     pendingCashAdjustment: { date, amount, balances },
     deposits, withdrawals, netContributions,
     pnl: account.totalValue - netContributions,

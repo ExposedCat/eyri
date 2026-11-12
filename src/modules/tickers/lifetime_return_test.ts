@@ -93,13 +93,13 @@ Deno.test("cash-only funded accounts render a total without inventing an instrum
   match(await buildIntegratedAllTimePerformanceList(args), /Total: 0\.00% \$0\.00/);
 });
 
-Deno.test("lagging funding keeps reports concise and retains the compact number marker", async () => {
+Deno.test("funding uncertainty does not label instrument and currency P/L as approximate", async () => {
   const args = { positions: [position], orders, accountPerformances: [{ ...account, fundingProvisional: true,
     pendingCashAdjustment: { date: "2025-01-03", amount: 75, balances: { USD: 75 } } }] };
   const text = await buildIntegratedAllTimePerformanceList(args);
   equal(/provisional|Unclassified cash|latest completed statement/.test(text), false);
   match(text, /Total: \+425\.00% \+\$425\.00[^\n]*$/);
-  match(await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true }), /~/);
+  equal((await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true })).includes("~"), false);
 });
 
 Deno.test("all chart kinds keep live endpoints when funding statements and recent execution fees lag", async () => {

@@ -21,6 +21,13 @@ export type RichMessage = {
 // inline <tg-button> controls.
 export type InputRichMessage = RichMessage | { html: string };
 
+// Reports already contain escaped Telegram inline HTML. Explicit paragraphs and
+// line breaks preserve their layout in rich HTML without the plain-text limit.
+export function richTextMessage(text: string): InputRichMessage {
+  return { html: text.split(/\n{2,}/).map(paragraph =>
+    `<p>${paragraph.replaceAll("\n", "<br>")}</p>`).join("\n") };
+}
+
 export function richApi(api: Api) {
   return api.raw as unknown as {
     sendRichMessage(payload: {

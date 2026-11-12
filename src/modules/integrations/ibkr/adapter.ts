@@ -18,6 +18,7 @@ import { ibkrSessions } from "./session.ts";
 import { readIbkrStockGrants } from "./grants.ts";
 import { readFlexOrders } from "./flex.ts";
 import { reconcileIbkrPendingCash } from "./cash.ts";
+import { ibkrOptionMultiplier, normalizeIbkrOrder } from "./units.ts";
 import {
   fetchIbkrAccountPerformance,
   type IbkrAccountSnapshot,
@@ -398,7 +399,10 @@ function toPortfolioPosition(
   realizedPnl: number | undefined,
   accountName: string | undefined,
 ): IbkrPortfolioPosition {
-  const currentPrice = normalizeNumber(marketPrice);
+  const multiplier = ibkrOptionMultiplier({ ticker: getTicker(contract), assetCategory: contract.secType ?? null,
+    ...(Number(contract.multiplier) > 0 ? { contractMultiplier: Number(contract.multiplier) } : {}) });
+  const premium = normalizeNumber(marketPrice);
+  const currentPrice = premium === null ? null : premium * (multiplier ?? 1);
   const totalNow = normalizeNumber(marketValue);
   const averageUnitPrice = normalizeNumber(averageCost);
   const resolvedCurrentPrice = currentPrice ??
@@ -429,6 +433,7 @@ function toPortfolioPosition(
     dailyPnlBaseline: null,
     openedAt: null,
     conId: contract.conId,
+    ...(multiplier === undefined ? {} : { historicalPriceMultiplier: multiplier }),
   };
 }
 
@@ -820,7 +825,7 @@ export function readExecutionOrders(
     `)
     .all(integration.id) as IbkrExecutionRow[];
 
-  return rows.map((row) => ({
+  return rows.map((row) => normalizeIbkrOrder({
     integrationId: row.integration_id,
     integrationKind: integration.kind,
     account: row.account ?? "",

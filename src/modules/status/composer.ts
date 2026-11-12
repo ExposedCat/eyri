@@ -3,6 +3,7 @@ import type { CustomContext } from "../bot/types.ts";
 import { escapeHtml } from "../tickers/decorations.ts";
 import { getAdminId } from "./access.ts";
 import { collectConnectorStatus, type StatusReport } from "./service.ts";
+import { richTextMessage, showRichMessage } from "../bot/rich.ts";
 
 const names = { ibkr: "IBKR", t212: "Trading 212", f24: "Freedom24" };
 const icons = { healthy: "🟢", degraded: "🟡", offline: "🔴", blocked: "🔴", recovering: "🟡" };
@@ -11,24 +12,16 @@ const time = (value: number) => Number.isFinite(value) ? `${new Date(value).toIS
 export function statusMessages(report: StatusReport) {
   const healthy = report.connectors.filter(connector => connector.state === "healthy").length;
   const header = `<b>Connector status</b> · ${time(report.checkedAt)}\n${report.connectors.length} configured · ${healthy} healthy · ${report.connectors.length - healthy} need attention`;
-  const messages: string[] = [];
-  let current = header;
+  const sections = [header];
   for (const connector of report.connectors) {
     const title = `${icons[connector.state]} <b>${names[connector.kind]} #${connector.integrationId}</b> · owner ${connector.ownerId} · ${connector.state.toUpperCase()}`;
     const lines = [title, ...(connector.endpoint ? [`Endpoint: ${escapeHtml(connector.endpoint)}`] : []), ...connector.checks.map(check =>
       `${check.state === "ok" ? "✓" : check.state === "error" ? "✗" : "•"} ${escapeHtml(check.name)}: ${check.state.toUpperCase()}${check.message ? ` — ${escapeHtml(check.message)}` : ""}${check.lastSuccess !== undefined ? `\n  Last success: ${time(check.lastSuccess)}` : ""}${check.nextAttempt !== undefined ? `\n  Next poll no earlier than: ${time(check.nextAttempt)}` : ""}`,
     )];
-    for (const [index, line] of lines.entries()) {
-      const separator = index === 0 ? "\n\n" : "\n";
-      if (current.length + separator.length + line.length > 3_800) {
-        messages.push(current);
-        current = index === 0 ? `${header}\n\n${line}` : `${header}\n\n${title} (continued)\n${line}`;
-      } else current += separator + line;
-    }
+    sections.push(lines.join("\n"));
   }
-  if (!report.connectors.length) current += "\n\nNo broker connectors configured.";
-  messages.push(current);
-  return messages;
+  if (!report.connectors.length) sections.push("No broker connectors configured.");
+  return [sections.join("\n\n")];
 }
 
 type Runtime = { adminId: () => number | undefined; collect: typeof collectConnectorStatus };
@@ -47,7 +40,7 @@ export function createStatusComposer(overrides: Partial<Runtime> = {}) {
     }
     try {
       const report = await request;
-      for (const message of statusMessages(report)) await ctx.reply(message, { parse_mode: "HTML" });
+      await showRichMessage(ctx, richTextMessage(statusMessages(report)[0]));
     } catch {
       await ctx.reply("Unable to collect connector status. Check the application logs.");
     }

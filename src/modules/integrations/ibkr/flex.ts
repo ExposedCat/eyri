@@ -3,6 +3,7 @@ import type { Database } from "../../database/setup.ts";
 import { logFetch } from "../../../utils/fetch_logging.ts";
 import type { IntegrationOrder } from "../types.ts";
 import { parseIbkrCredentials } from "./credentials.ts";
+import { normalizeIbkrOrder } from "./units.ts";
 
 const FLEX_BASE_URL =
   "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService";
@@ -10,6 +11,7 @@ const FLEX_BATCH_DAYS = 365;
 const DEFAULT_FLEX_MAX_YEARS = 5;
 
 export type FlexTrade = {
+  contractMultiplier?: number;
   commission?: number | null;
   commissionCurrency?: string | null;
   ticker: string;
@@ -30,6 +32,7 @@ type XmlElement = {
 };
 
 type FlexTradeRow = {
+  contract_multiplier: number | null;
   commission: number | null;
   commission_currency: string | null;
   integration_id: number;
@@ -109,6 +112,9 @@ export function ensureFlexSchema(database: Database) {
   }
   if (!columns.some(column => column.name === "commission_currency")) {
     database.exec("ALTER TABLE ibkr_flex_trades ADD COLUMN commission_currency TEXT");
+  }
+  if (!columns.some(column => column.name === "contract_multiplier")) {
+    database.exec("ALTER TABLE ibkr_flex_trades ADD COLUMN contract_multiplier REAL");
   }
 }
 
@@ -430,6 +436,8 @@ export function parseTrades(xml: string) {
       date,
       quantity,
       price: parsePrice(element),
+      ...(getAttr(element, ["multiplier"])?.trim()
+        ? { contractMultiplier: Number(getAttr(element, ["multiplier"])) } : {}),
       commission: getAttr(element, ["commission", "ibCommission"])?.trim() && Number.isFinite(Number(getAttr(element, ["commission", "ibCommission"])))
         ? Number(getAttr(element, ["commission", "ibCommission"])) : null,
       commissionCurrency: getAttr(element, ["commissionCurrency", "ibCommissionCurrency", "currency"]),
@@ -499,8 +507,9 @@ export function writeBatchTrades(
         asset_category,
         commission,
         commission_currency,
+        contract_multiplier,
         synced_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     trades.forEach((trade, index) => {
@@ -516,6 +525,7 @@ export function writeBatchTrades(
         trade.assetCategory,
         trade.commission ?? null,
         trade.commissionCurrency ?? trade.currency,
+        trade.contractMultiplier ?? null,
         syncedAt,
       );
     });
@@ -559,7 +569,8 @@ export function readFlexOrders(
         currency,
         asset_category,
         commission,
-        commission_currency
+        commission_currency,
+        contract_multiplier
       FROM ibkr_flex_trades
       WHERE integration_id = ?
         AND query_id = ?
@@ -567,7 +578,7 @@ export function readFlexOrders(
     `)
     .all(integration.id, credentials.flexQueryId) as FlexTradeRow[];
 
-  return rows.map((row) => ({
+  return rows.map((row) => normalizeIbkrOrder({
     integrationId: row.integration_id,
     integrationKind: integration.kind,
     account: "",
@@ -577,6 +588,7 @@ export function readFlexOrders(
     price: row.price,
     currency: row.currency ?? "USD",
     assetCategory: row.asset_category,
+    ...(row.contract_multiplier === null ? {} : { contractMultiplier: row.contract_multiplier }),
     ...(row.commission === null ? {} : { commission: { amount: row.commission, currency: row.commission_currency ?? row.currency ?? "USD" } }),
   }));
 }

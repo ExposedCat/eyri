@@ -439,8 +439,8 @@ Deno.test("alltime attributes sold FIFO lots to purchase buckets while consuming
     order("AAPL", 4, 100, "2025-01-01"),
     order("AAPL", 6, 200, "2025-02-01"),
     order("AAPL", -5, 300, "2025-03-01"),
-    // An unrelated account's sale cannot consume the remaining lots.
-    order("AAPL", -5, 900, "2025-03-02", "other"),
+    // A different integration's sale cannot consume the remaining lots.
+    { ...order("AAPL", -5, 900, "2025-03-02", "other"), integrationId: 2 },
   ];
   const livePositions = [
     position({

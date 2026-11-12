@@ -158,9 +158,59 @@ function harness(db: Database) {
         },
       });
     },
-    lastText: () => String(calls.at(-1)?.payload.text),
+    lastText: () => {
+      const payload = calls.at(-1)?.payload;
+      return String(payload?.text ?? (payload?.rich_message as { html?: string })?.html)
+        .replaceAll("</p>\n<p>", "\n\n").replaceAll("<p>", "").replaceAll("</p>", "").replaceAll("<br>", "\n");
+    },
   };
 }
+
+Deno.test("long history and bucket controls stay in one rich message and edit the full history", async () => {
+  const db = new Database(":memory:");
+  const previousPath = Deno.env.get("EYRI_DATABASE_PATH");
+  const previousPortfolio = ibkrAdapter.fetchPortfolio;
+  const previousOrders = ibkrAdapter.fetchOrderHistory;
+  Deno.env.set("EYRI_DATABASE_PATH", ":memory:");
+  try {
+    ensureSchema(db);
+    const h = harness(db), owner = 123456789;
+    await h.command("/bucket new Core");
+    const saved = createIntegration({ database: db, userId: owner, kind: "ibkr", credentials: {} });
+    ok(saved.data);
+    const orders: IntegrationOrder[] = Array.from({ length: 150 }, (_, index) => ({
+      integrationId: saved.data!.id, integrationKind: "ibkr", account: "U1", ticker: `LONG${String(index).padStart(3, "0")}`,
+      assetCategory: "STK", currency: "USD", quantity: 1, price: 100, date: new Date("2025-01-01"),
+    }));
+    ibkrAdapter.fetchPortfolio = () => Promise.resolve([]);
+    ibkrAdapter.fetchOrderHistory = () => Promise.resolve(orders);
+    h.calls.length = 0;
+    await h.command("/history");
+    equal(h.calls.length, 1);
+    equal(h.calls[0].method, "sendRichMessage");
+    const report = (h.calls[0].payload.rich_message as { html: string }).html;
+    ok(report.length > 4096);
+    match(report, /LONG000/);
+    match(report, /LONG149/);
+    await h.command("/bucket move Core");
+    equal(h.calls.filter(call => call.method === "sendRichMessage").length, 2);
+    const menu = (h.calls.at(-1)!.payload.rich_message as { html: string }).html;
+    match(menu, /:Core:150/);
+    await h.click(`bucket:${owner}:move:Core:150`);
+    const edit = h.calls.findLast(call => call.method === "editMessageText")!;
+    const updated = (edit.payload.rich_message as { html: string }).html;
+    match(updated, /LONG000/);
+    match(updated, /LONG149/);
+    match(updated, /remove:Core:150/);
+    equal(h.calls.filter(call => call.method === "sendRichMessage").length, 2);
+  } finally {
+    ibkrAdapter.fetchPortfolio = previousPortfolio;
+    ibkrAdapter.fetchOrderHistory = previousOrders;
+    db.close();
+    if (previousPath === undefined) Deno.env.delete("EYRI_DATABASE_PATH");
+    else Deno.env.set("EYRI_DATABASE_PATH", previousPath);
+  }
+});
 
 Deno.test("stock reports, dumps and allocation charts ignore unavailable warrant feeds, including shared buckets", async () => {
   const db = new Database(":memory:");

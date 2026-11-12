@@ -79,6 +79,39 @@ Deno.test("IBKR P/L completes on data or a terminal request error without waitin
   deepStrictEqual(api.eventNames(), []);
 });
 
+Deno.test("IBKR open option values use per-contract quotes and preserve broker book cost", async () => {
+  const db = new Database(":memory:");
+  const original = ibkrSessions.run;
+  class Api extends EventEmitter {
+    reqManagedAccts() { this.emit(EventName.managedAccounts, "U1"); }
+    reqAccountUpdates(subscribe: boolean) {
+      if (!subscribe) return;
+      this.emit(EventName.updatePortfolio, {
+        conId: 123, localSymbol: "NVS   271217C00230000", secType: "OPT", currency: "USD", multiplier: 100,
+      }, 1, 2.17, 217, 102, 115, 0, "U1");
+      this.emit(EventName.accountDownloadEnd, "U1");
+    }
+    reqContractDetails(id: number) {
+      this.emit(EventName.contractDetails, id, { contract: { primaryExch: "CBOE" } });
+      this.emit(EventName.contractDetailsEnd, id);
+    }
+    reqPnLSingle(id: number) { this.emit(EventName.pnlSingle, id, 1, 5, 115, 0, 217); }
+    cancelPnLSingle() {}
+  }
+  const api = new Api();
+  ibkrSessions.run = async (_config, action) => await action(api as unknown as IBApi);
+  try {
+    const [position] = await ibkrAdapter.fetchPortfolio(db, integration);
+    equal(position.currentPrice, 217);
+    equal(position.totalNow, 217);
+    equal(position.averageUnitPrice, 102);
+    equal(position.totalInput, 102);
+    equal(position.unrealizedPnl, 115);
+    equal(position.historicalPriceMultiplier, 100);
+    deepStrictEqual(api.eventNames(), []);
+  } finally { ibkrSessions.run = original; db.close(); }
+});
+
 Deno.test("IBKR P/L waits for usable data after unset updates and preserves partial values", async () => {
   class Api extends EventEmitter {
     cancelled: number[] = [];
@@ -241,7 +274,8 @@ Deno.test("IBKR migrates stored executions and preserves broker contract multipl
       equal(orders.length, 2);
       equal(orders[0].contractMultiplier, undefined);
       equal(orders[1].contractMultiplier, multiplier ?? 10);
-      equal(orders[1].price, 2.17);
+      equal(orders[1].price, 2.17 * (multiplier ?? 10));
+      equal(orders[1].historicalPriceMultiplier, multiplier ?? 10);
       equal(orders[1].quantity, -1);
     }
     deepStrictEqual(api.eventNames(), []);

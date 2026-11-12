@@ -1,6 +1,7 @@
 import { deepStrictEqual, equal, ok, rejects } from "node:assert/strict";
 import type { IntegrationAccountPerformance, IntegrationOrder } from "../types.ts";
 import { reconcileIbkrPendingCash } from "./cash.ts";
+import { normalizeIbkrOrder } from "./units.ts";
 
 const now = new Date("2026-11-06T12:00:00Z");
 const account: IntegrationAccountPerformance = {
@@ -18,7 +19,7 @@ Deno.test("IBKR option sales replay contract proceeds instead of inventing a dep
   const sale: IntegrationOrder = { ...buy, ticker: "NVS   271217C00230000", assetCategory: "OPT",
     quantity: -1, price: 2.17, commission: { currency: "USD", amount: -2.15454 } };
   const result = await reconcileIbkrPendingCash({ ...account,
-    statementCash: { USD: .00004029 }, ledgerCash: { USD: 214.84550029 } }, [sale], now);
+    statementCash: { USD: .00004029 }, ledgerCash: { USD: 214.84550029 } }, [normalizeIbkrOrder(sale)], now);
   equal(result.pendingCashAdjustment?.amount, 0);
   deepStrictEqual(result.pendingCashAdjustment?.balances, {});
   equal(result.deposits, account.deposits);
@@ -29,7 +30,7 @@ Deno.test("IBKR option sales replay contract proceeds instead of inventing a dep
 Deno.test("IBKR option purchases apply the multiplier without scaling commissions", async () => {
   const result = await reconcileIbkrPendingCash({ ...account,
     statementCash: { USD: 1000 }, ledgerCash: { USD: 565 } },
-    [{ ...buy, ticker: "NVS   271217C00230000", assetCategory: "OPT", quantity: 2, price: 2.17 }], now);
+    [normalizeIbkrOrder({ ...buy, ticker: "NVS   271217C00230000", assetCategory: "OPT", quantity: 2, price: 2.17 })], now);
   equal(result.pendingCashAdjustment?.amount, 0);
   equal(result.deposits, account.deposits);
   equal(result.withdrawals, account.withdrawals);
@@ -45,7 +46,7 @@ Deno.test("IBKR cash replay respects broker multipliers, NANOS units and warrant
   ] as const) {
     const result = await reconcileIbkrPendingCash({ ...account,
       statementCash: { USD: 0 }, ledgerCash: { USD: proceeds - 1 } },
-      [{ ...buy, ticker, assetCategory, contractMultiplier, quantity: -1, price: 2 }], now);
+      [normalizeIbkrOrder({ ...buy, ticker, assetCategory, contractMultiplier, quantity: -1, price: 2 })], now);
     equal(result.pendingCashAdjustment?.amount, 0, ticker);
     equal(result.deposits, account.deposits, ticker);
     equal(result.withdrawals, account.withdrawals, ticker);
@@ -54,12 +55,12 @@ Deno.test("IBKR cash replay respects broker multipliers, NANOS units and warrant
 
 Deno.test("IBKR cash replay rejects unknown or invalid option contract multipliers", async () => {
   for (const contractMultiplier of [0, -1, NaN, Infinity]) {
-    await rejects(reconcileIbkrPendingCash(account,
-      [{ ...buy, ticker: "NVS   271217C00230000", assetCategory: "OPT", contractMultiplier }], now),
+    await rejects(async () => reconcileIbkrPendingCash(account,
+      [normalizeIbkrOrder({ ...buy, ticker: "NVS   271217C00230000", assetCategory: "OPT", contractMultiplier })], now),
       /Invalid contract multiplier/);
   }
-  await rejects(reconcileIbkrPendingCash(account,
-    [{ ...buy, ticker: "UNKNOWN OPTION", assetCategory: "OPT" }], now), /Missing contract multiplier/);
+  await rejects(async () => reconcileIbkrPendingCash(account,
+    [normalizeIbkrOrder({ ...buy, ticker: "UNKNOWN OPTION", assetCategory: "OPT" })], now), /Missing contract multiplier/);
 });
 
 Deno.test("same-day cash credits are neutralized after replaying executions, never included in profit", async () => {
@@ -75,13 +76,15 @@ Deno.test("same-day cash credits are neutralized after replaying executions, nev
 });
 
 Deno.test("purchases using existing cash and FX conversions are not counted as new funding", async () => {
-  const existing = await reconcileIbkrPendingCash({ ...account, deposits: 300, netContributions: 300, statementCash: { USD: 200 } }, [buy], now);
+  const existing = await reconcileIbkrPendingCash({ ...account, fundingProvisional: true, deposits: 300, netContributions: 300, statementCash: { USD: 200 } }, [buy], now);
   equal(existing.pendingCashAdjustment?.amount, 0);
   equal(existing.deposits, 300);
   equal(existing.pnl, -1);
+  equal(existing.fundingProvisional, false);
   const fx = await reconcileIbkrPendingCash({ ...account, statementCash: { EUR: 100 }, ledgerCash: { EUR: 0, USD: 109 } },
     [{ ...buy, ticker: "EUR.USD", quantity: -100, price: 1.1, assetCategory: "CASH" }], now);
   equal(fx.pendingCashAdjustment?.amount, 0);
+  equal(fx.fundingProvisional, false);
 });
 
 Deno.test("unclassified native cash is converted into account currency and replaced by completed statements", async () => {

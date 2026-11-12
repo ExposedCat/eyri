@@ -595,12 +595,8 @@ type IntegratedSoldPerformance = {
 };
 
 function getOrderPositionKey(order: IntegrationOrder) {
-  return [
-    order.integrationId,
-    order.account.trim().toUpperCase(),
-    order.ticker.trim().toUpperCase(),
-    order.currency.trim().toUpperCase(),
-  ].join(":");
+  // One broker account per integration; Flex and Gateway labels can differ.
+  return getBucketLotKey(order);
 }
 
 export function buildIntegratedSoldPerformances(
@@ -1295,11 +1291,10 @@ export async function buildIntegratedAllTimePerformanceList({
   if (!report) return "";
   const { performances, total } = report;
   type Performance = typeof total;
-  const provisional = report.accounts.some(account => account.fundingProvisional);
   if (numberOnly) {
     return buildNumberSummary(
       performances.map((p) => p.ticker),
-      `${provisional ? "~" : ""}${formatCurrencyChange(requireReportNumber(total.change, "total P/L"), currency)}`,
+      formatCurrencyChange(requireReportNumber(total.change, "total P/L"), currency),
       tickerDecorations,
       tickerEmojiMappings,
     );

@@ -94,7 +94,6 @@ export const instrumentKey = (item: { ticker: string; currency: string }) =>
 const lotKey = (order: IntegrationOrder) =>
   JSON.stringify([
     order.integrationId,
-    order.account.trim().toUpperCase(),
     instrumentKey(order),
   ]);
 const dateOf = (date: Date) => date.toISOString().slice(0, 10);
@@ -313,7 +312,7 @@ export function buildAllTimeSeries(
         accountLots.push({
           key,
           quantity: order.quantity,
-          price: order.price,
+          price: order.price - (order.commission?.currency === order.currency ? order.commission.amount / order.quantity : 0),
           selected:
             (args.transactionBuckets.get(getOrderTransactionKey(order)) ??
               null) === args.bucketName,
@@ -322,7 +321,7 @@ export function buildAllTimeSeries(
           quoteMultiplier: historicalQuoteMultiplier(
             args.positions.find((p) =>
               p.integrationId === order.integrationId &&
-              p.account === order.account && instrumentKey(p) === key
+              instrumentKey(p) === key
             ) ?? order,
           ),
         });
@@ -332,14 +331,16 @@ export function buildAllTimeSeries(
           const lot = accountLots[0];
           const quantity = Math.min(remaining, lot.quantity);
           if (lot.selected) {
+            const gain = quantity * (order.price - lot.price) +
+              (order.commission?.currency === order.currency ? order.commission.amount * quantity / -order.quantity : 0);
             addTotals(
               realized,
               lot.currency,
               quantity * lot.price,
-              quantity * (order.price - lot.price),
+              gain,
             );
             if (order.walletImpact) addTotals(nativeWalletRealized, lot.currency,
-              quantity * lot.price, quantity * (order.price - lot.price));
+              quantity * lot.price, gain);
           }
           remaining -= quantity;
           lot.quantity -= quantity;

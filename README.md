@@ -239,6 +239,9 @@ Flex only publishes completed days. Reports replay subsequent trades and FX
 conversions against statement cash, then compare the result with live native
 balances. IBKR option execution cash uses the broker's contract multiplier;
 older standard option fills use 100 (1 for NANOS). Commissions remain unscaled.
+IBKR trade and position prices are normalized to per-contract amounts before
+reports calculate P/L or replay history. FIFO matches by integration, ticker and
+currency; missing account labels in Flex cannot split a Gateway sale from its purchase.
 Unclassified cash differences are neutralized as provisional funding
 in the report, so pending deposits cannot appear as profit. These estimates are
 never persisted as verified deposits or withdrawals; the next statement replaces
@@ -362,8 +365,9 @@ Frankfurter conversion service is supported, including GBX pence. `/currency`
 shows your current preference; `/currency USD` resets it to the default.
 All monetary reports, charts, RSU values and diagnostic dumps use your selected
 currency, including shared buckets viewed by you. GBX is treated as pence
-(100 GBX = 1 GBP) before conversion. Long portfolio and bucket messages continue across
-Telegram messages without changing transaction button numbers.
+(100 GBX = 1 GBP) before conversion. Portfolio reports, compact numbers, history,
+RSU views, bucket controls and diagnostic dumps use a single rich message,
+preserving links, custom emoji and transaction button numbers.
 The published API terms require Trading 212's written consent for applications
 intended for other end-users; this integration is for personal account tracking.
 
@@ -515,6 +519,8 @@ Filtered `/alltime` views show selected open and sold P/L without allocating
 account cash. Bucket views use the fresh-cash purchase assumption described above.
 
 ## All-time performance
+
+Funding uncertainty does not add an approximation marker to monetary P/L.
 
 Use `/alltime` (or `/alltime BUCKET`) to combine `/perf` and `/sold` into one
 line per ticker and a single Total. Gains include current holdings and realized
@@ -870,7 +876,7 @@ numbers, and underscores, and must start with a letter.
 Use `/bucket move NAME` to render order history as a rich message with an inline
 button on each order: a red **Move** puts the order in the bucket, and once moved
 it becomes a green **Remove**. Each click edits the message in place instead of
-sending a new one. Long histories are split into messages of 100 orders. Only the
+sending a new one. Long histories remain in the same rich message. Only the
 user who ran the command can press the buttons. Moving a transaction puts it in
 that bucket and removes it from any other bucket.
 
@@ -908,7 +914,7 @@ failures, and token cooldowns. Trading 212 shows cached order/cash history and
 pending ledger exports. Available last-success times and retry times use UTC.
 Status reads do not download Flex statements, start exports or restart services.
 Credentials are redacted, failed connectors do not hide healthy ones, and large
-reports are split into Telegram messages.
+reports stay together in one rich message.
 
 ## Restarting IB Gateway
 

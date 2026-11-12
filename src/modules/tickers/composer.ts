@@ -4,8 +4,7 @@ import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts"
 import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
 import { parsePerformanceArgs, parseReportArgs, type ReportFilter } from "./performance_command.ts";
 import type { CustomContext } from "../bot/types.ts";
-import { splitMessageLines } from "../bot/message.ts";
-import { showRichMessage } from "../bot/rich.ts";
+import { richTextMessage, showRichMessage } from "../bot/rich.ts";
 import {
   applyBucketAllocations,
   findOpenPortfolioLots,
@@ -77,9 +76,7 @@ const htmlReplyOptions = {
 };
 
 async function replyPortfolioText(ctx: CustomContext, text: string) {
-  for (const chunk of splitMessageLines(text)) {
-    await ctx.reply(chunk, htmlReplyOptions);
-  }
+  await showRichMessage(ctx, richTextMessage(text));
 }
 
 const BUCKET_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]{0,19}$/;
@@ -276,16 +273,7 @@ function createTickerFormatter({
     );
 }
 
-// Pages hold a fixed number of orders, so a button's display index always maps
-// to the same page and a click can re-render just the message it came from.
-// 100 lines plus headings stays well under rich message block and text limits.
-const BUCKET_MOVE_PAGE_SIZE = 100;
-
-function bucketMovePage(displayIndex: number) {
-  return Math.floor((displayIndex - 1) / BUCKET_MOVE_PAGE_SIZE);
-}
-
-async function buildBucketMovePages(
+async function buildBucketMoveHtml(
   ctx: CustomContext,
   userId: number,
   bucketName: string,
@@ -304,26 +292,17 @@ async function buildBucketMovePages(
       return `<tg-button type="callback_data" style="${moved ? "success" : "danger"}" data="${data}">${moved ? "Remove" : "Move"}</tg-button>`;
     },
   });
-  if (!history) return [];
+  if (!history) return "";
 
-  const pages: string[][] = [];
-  const pageHeaders: string[] = [];
+  const blocks = [`<h2>Bucket ${escapeHtml(bucketName)}</h2>`];
   for (const { header, lines } of history.sections) {
+    blocks.push(`<h3>${header}</h3>`);
     for (const line of lines) {
-      const page = bucketMovePage(line.index);
-      pages[page] ??= page === 0
-        ? [`<h2>Bucket ${escapeHtml(bucketName)}</h2>`]
-        : [];
-      // Repeat the year heading when a year continues onto a new page.
-      if (pageHeaders[page] !== header) {
-        pages[page].push(`<h3>${header}</h3>`);
-        pageHeaders[page] = header;
-      }
-      pages[page].push(`<p>${line.text}</p>`);
+      blocks.push(`<p>${line.text}</p>`);
     }
   }
-  pages.at(-1)?.push(`<p><b>${history.total}</b></p>`);
-  return pages.map((blocks) => blocks.join("\n"));
+  blocks.push(`<p><b>${history.total}</b></p>`);
+  return blocks.join("\n");
 }
 
 // Owner orders with partial bucket parts split out, as reports see them.
@@ -404,15 +383,13 @@ async function replyBucketMoveHistory(ctx: CustomContext, bucketName: string) {
   }
 
   const orders = await fetchAllocatedOrders(ctx, userId);
-  const pages = await buildBucketMovePages(ctx, userId, bucketName, orders);
-  if (pages.length === 0) {
+  const html = await buildBucketMoveHtml(ctx, userId, bucketName, orders);
+  if (!html) {
     await ctx.text("no_positions");
     return;
   }
 
-  for (const html of pages) {
-    await showRichMessage(ctx, { html });
-  }
+  await showRichMessage(ctx, { html });
 }
 
 function formatPackSyncResult(
@@ -448,17 +425,7 @@ function toDumpablePosition(position: unknown) {
 
 async function replyJsonDump(ctx: CustomContext, value: unknown) {
   const json = JSON.stringify(value, null, 2);
-  const maxChunkLength = 3_500;
-  for (
-    let index = 0;
-    index < json.length || index === 0;
-    index += maxChunkLength
-  ) {
-    await ctx.reply(
-      `<code>${escapeHtml(json.slice(index, index + maxChunkLength))}</code>`,
-      htmlReplyOptions,
-    );
-  }
+  await showRichMessage(ctx, { html: `<pre><code>${escapeHtml(json)}</code></pre>` });
 }
 
 async function replyIntegrationError(ctx: CustomContext, error: unknown) {
@@ -485,7 +452,7 @@ tickersComposer.command("buckets", async (ctx) => {
   }
 
   const buckets = getUserBuckets(ctx.db, ctx.dbEntities.user.userId);
-  await ctx.reply(formatBucketList(ctx.db, buckets), htmlReplyOptions);
+  await replyPortfolioText(ctx, formatBucketList(ctx.db, buckets));
 });
 
 tickersComposer.command("bucket", async (ctx) => {
@@ -658,13 +625,12 @@ tickersComposer.callbackQuery(BUCKET_TOGGLE_PATTERN, async (ctx) => {
       rawOrders,
       readBucketAllocations(ctx.db, userId),
     );
-    const pages = await buildBucketMovePages(
+    const html = await buildBucketMoveHtml(
       ctx,
       userId,
       bucket.name,
       updatedOrders,
     );
-    const html = pages[bucketMovePage(displayIndex)];
     if (html) await showRichMessage(ctx, { html }, true);
   } catch (error) {
     if (!answered) await ctx.answerCallbackQuery();
@@ -924,19 +890,7 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 				),
 			);
 		}
-		let message = "";
-		for (const group of groups) {
-			let separator = "\n\n";
-			for (const line of group.split("\n")) {
-				if (message && message.length + line.length + separator.length > 3500) {
-					await ctx.reply(message, htmlReplyOptions);
-					message = "";
-				}
-				message += `${message ? separator : ""}${line}`;
-				separator = "\n";
-			}
-		}
-		if (message) await ctx.reply(message, htmlReplyOptions);
+		await replyPortfolioText(ctx, groups.join("\n\n"));
 	} catch (error) {
 		await ctx.reply(
 			escapeHtml(error instanceof Error ? error.message : String(error)),
@@ -1106,12 +1060,7 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
       return;
     }
 
-    if (numberOnly) {
-      // Telegram limits parsed text; a single icon line can contain much more HTML.
-      await ctx.reply(performanceList, htmlReplyOptions);
-    } else {
-      await replyPortfolioText(ctx, performanceList);
-    }
+    await replyPortfolioText(ctx, performanceList);
   } catch (error) {
     await replyIntegrationError(ctx, error);
   }

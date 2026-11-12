@@ -161,13 +161,13 @@ Deno.test("/status authorizes the sender against ADMIN_ID, fails closed, and res
       if (adminId) {
         await h.command(1);
         equal(checked, 1);
-        match(String(h.calls.at(-1)!.payload.text), /No broker connectors/);
+        match(JSON.stringify(h.calls.at(-1)!.payload.rich_message), /No broker connectors/);
       }
     } finally { h.db.close(); }
   }
 });
 
-Deno.test("/status splits long reports into valid messages and preserves every connector", async () => {
+Deno.test("/status sends a single long rich report and preserves every connector", async () => {
   const connectors: ConnectorStatus[] = Array.from({ length: 40 }, (_, index) => ({
     integrationId: index + 1, ownerId: index + 1000, kind: "ibkr", state: "blocked", endpoint: `gateway-${index}:4003`,
     checks: [{ name: "Gateway", state: "error", message: "<&>".repeat(100) }, { name: "Flex", state: "error", message: "Unavailable ".repeat(35) }],
@@ -176,13 +176,11 @@ Deno.test("/status splits long reports into valid messages and preserves every c
   const h = harness(1, () => Promise.resolve(report));
   try {
     await h.command();
-    ok(h.calls.length > 1);
-    for (const call of h.calls) {
-      equal(call.payload.parse_mode, "HTML");
-      ok(String(call.payload.text).length < 4096);
-      ok(!String(call.payload.text).includes("<&>"));
-    }
-    const text = h.calls.map(call => call.payload.text).join("\n");
+    equal(h.calls.length, 1);
+    equal(h.calls[0].method, "sendRichMessage");
+    const text = (h.calls[0].payload.rich_message as { html: string }).html;
+    ok(text.length > 4096);
+    ok(!text.includes("<&>"));
     for (const connector of connectors) ok(text.includes(`<b>IBKR #${connector.integrationId}</b>`));
   } finally { h.db.close(); }
 });

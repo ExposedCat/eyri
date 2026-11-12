@@ -21,7 +21,7 @@ type Cash = Map<string, number>;
 const add = (cash: Cash, currency: string, amount: number) => cash.set(currency, (cash.get(currency) ?? 0) + amount);
 const dateOf = (date: Date) => date.toISOString().slice(0, 10);
 const key = (item: { ticker: string; currency: string }) => JSON.stringify([item.ticker.trim().toUpperCase(), item.currency.trim().toUpperCase()]);
-const lotKey = (order: IntegrationOrder) => JSON.stringify([order.integrationId, order.account.trim().toUpperCase(), key(order)]);
+const lotKey = (order: IntegrationOrder) => JSON.stringify([order.integrationId, key(order)]);
 
 export function executionCash(order: IntegrationOrder): { currency: string; amount: number }[] {
   if (order.price === null || !Number.isFinite(order.price)) throw new Error(`Missing execution cash price for ${order.ticker}`);
