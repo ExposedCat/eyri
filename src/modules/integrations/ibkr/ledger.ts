@@ -5,6 +5,8 @@ import {
   type FlexStatementRange,
   getFlexStatementRange,
   getXmlElements,
+  flexDetailLevel,
+  selectFlexDetailRows,
   parseDate,
 } from "./flex.ts";
 import { parseIbkrCredentials } from "./credentials.ts";
@@ -197,22 +199,26 @@ export function parseIbkrFundingBatch(
   const fundingHistory: { date: string; amount: number }[] = [];
   const cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]> = [];
   const cashTransactions = getXmlElements(body, ["CashTransaction"]);
+  const detailTransactions = selectFlexDetailRows(cashTransactions, "DETAIL", "Cash Transactions");
+  const detailAttrs = new Set(detailTransactions.map(row => row.attrs));
   for (const { attrs } of cashTransactions) {
-    const cashAccount = attrs.levelOfDetail === "SUMMARY" && attrs.accountId === "-"
+    const level = flexDetailLevel(attrs);
+    if (level !== "SUMMARY" && !detailAttrs.has(attrs)) continue;
+    const cashAccount = level === "SUMMARY" && attrs.accountId === "-"
       ? header.accountId : attrs.accountId ?? header.accountId;
     if (cashAccount !== header.accountId) {
       throw new Error(
         "IBKR funding contains another account's cash transaction",
       );
     }
-    if (attrs.levelOfDetail === "SUMMARY") {
+    if (level === "SUMMARY") {
       // Flex can emit daily summaries alongside their transactions. Accept a
       // summary only when its unique detail rows independently reproduce it.
       // Never count both, or accept a summary-only cash ledger.
       const at = requiredDate(attrs.reportDate ?? attrs.dateTime, "cash transaction report date");
       const details = new Map<string, number>();
-      for (const { attrs: detail } of cashTransactions) {
-        if (detail.levelOfDetail !== "DETAIL" || detail.type !== attrs.type ||
+      for (const { attrs: detail } of detailTransactions) {
+        if (detail.type !== attrs.type ||
           detail.currency !== attrs.currency ||
           (detail.accountId ?? header.accountId) !== cashAccount) continue;
         const id = detail.transactionID ?? detail.transactionId;
@@ -225,11 +231,6 @@ export function parseIbkrFundingBatch(
         throw new Error("IBKR Cash Transactions summary is missing matching detail rows; include DETAIL rows in the Flex Query.");
       }
       continue;
-    }
-    if (attrs.levelOfDetail && attrs.levelOfDetail !== "DETAIL") {
-      throw new Error(
-        "IBKR Cash Transactions must use detail rows, not summaries",
-      );
     }
     if (!otherTypes.has(attrs.type) && !externalTypes.has(attrs.type)) {
       throw new Error(

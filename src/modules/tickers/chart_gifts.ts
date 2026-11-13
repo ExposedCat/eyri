@@ -147,7 +147,7 @@ export function withChartGifts(
         ...point,
         gain,
         value: point.value + gift,
-        percentage: point.depositsUsd ? gain / point.depositsUsd * 100 : 0,
+        percentage: (point.contributedCapitalUsd ?? point.depositsUsd) ? gain / (point.contributedCapitalUsd ?? point.depositsUsd) * 100 : 0,
       };
     }),
   };

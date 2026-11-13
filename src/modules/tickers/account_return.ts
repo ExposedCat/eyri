@@ -2,7 +2,8 @@ import type { IntegrationAccountPerformance } from "../integrations/types.ts";
 import { conversionFactor } from "../integrations/usd.ts";
 import { requireReportNumber } from "../../utils/report_value.ts";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
-import { accountTopups } from "./account_fx.ts";
+import { accountTopups, nativeFundingFlows } from "./account_fx.ts";
+import { contributedCapital } from "./contributed_capital.ts";
 import { UserFacingError } from "../../utils/user_error.ts";
 
 export async function accountWorth(holdings: number, selectedIds: Set<number>, accounts: IntegrationAccountPerformance[], currency: string, request: typeof fetch = fetch) {
@@ -36,12 +37,21 @@ export function accountFunding(
       (topup.currency === currency ? 1 : conversionFactor(topup.currency, rates)), 0);
   }
   const complete = accounts.length > 0 && [...selectedIntegrationIds].every(id => ids.has(id));
-  // Multiple accounts, withdrawals and broker cash-type labels do not establish
-  // a transfer between the user's accounts. Use the reported funding movements.
+  const dated = accounts.every(account => {
+    if (!account.fundingHistory) return account.deposits === 0 && account.withdrawals === 0;
+    const gross = account.fundingHistory.filter(flow => flow.allocation || flow.amount > 0).reduce((sum, flow) => sum + flow.amount, 0);
+    const withdrawn = -account.fundingHistory.filter(flow => !flow.allocation && flow.amount < 0).reduce((sum, flow) => sum + flow.amount, 0);
+    return Math.abs(gross - account.deposits) <= .02 && Math.abs(withdrawn - account.withdrawals) <= .02;
+  });
+  const hasWithdrawals = accounts.some(account => account.withdrawals > 0);
+  const capital = !dated ? hasWithdrawals ? null : deposits : contributedCapital(accounts.flatMap(account =>
+    nativeFundingFlows(account).map(flow => ({ date: flow.date, allocation: flow.allocation,
+      amount: flow.nativeAmount * (flow.nativeCurrency === currency ? 1 : conversionFactor(flow.nativeCurrency, rates)) })))).capital;
   const reason = !complete
     ? "Lifetime return unavailable: complete account funding is required; filters and buckets have no allocated deposits or cash."
-    : deposits <= 0 ? "Lifetime return unavailable: total deposits must be positive." : null;
-  return { deposits, complete, reason };
+    : capital === null ? "Lifetime return unavailable: deposit and withdrawal dates are missing or incomplete."
+    : capital <= 0 ? "Lifetime return unavailable: total deposits must be positive." : null;
+  return { deposits, contributedCapital: capital, complete, reason };
 }
 
 // Net-account return is kept separate from stock performance and FX P/L.
@@ -55,5 +65,5 @@ export function accountReturn(
   const pnl = accounts.reduce((sum, account) => sum +
     (requireReportNumber(account.totalValue, "account value") + account.withdrawals - account.deposits) *
     (account.currency === currency ? 1 : conversionFactor(account.currency, rates)), 0);
-  return { ...funding, pnl, percentage: funding.reason ? null : pnl / funding.deposits * 100 };
+  return { ...funding, pnl, percentage: funding.reason ? null : pnl / funding.contributedCapital! * 100 };
 }

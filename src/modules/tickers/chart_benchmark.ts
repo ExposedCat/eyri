@@ -1,6 +1,7 @@
 import type { PriceHistory } from "../market_data/history.ts";
 import { dayAfter } from "../market_data/history.ts";
 import { UserFacingError } from "../../utils/user_error.ts";
+import { contributedCapital } from "./contributed_capital.ts";
 
 export const CHART_BENCHMARK_SYMBOL = "CSPX.L";
 export const CHART_BENCHMARKS = {
@@ -29,7 +30,7 @@ export type ChartBenchmark = {
   label: string;
   symbol: string;
   asOf: string;
-  points: { date: string; percentage: number; gain: number; value?: number; openCostUsd?: number; depositsUsd?: number }[];
+  points: { date: string; percentage: number; gain: number; value?: number; openCostUsd?: number; depositsUsd?: number; contributedCapitalUsd?: number }[];
 };
 
 export function buildChartBenchmark(
@@ -140,7 +141,12 @@ export function buildChartBenchmark(
       dailyWithdrawals += (withdrawn.get(currency) ?? 0) / factor;
     }
     const gain = value + dailyWithdrawals - dailyCost;
-    points.push({ date, percentage: dailyCost === 0 ? 0 : gain / dailyCost * 100, gain, value, depositsUsd: dailyCost,
+    const capital = contributedCapital(buys.filter(flow => flow.date <= date).map(flow => {
+      const currency = flow.valuationCurrency ?? "USD";
+      const factor = currency === "USD" ? 1 : valuations[currency].findLast(row => row.date <= date)!.factor;
+      return { date: flow.date, allocation: flow.allocation, amount: (flow.contributionUsd ?? flow.amountUsd) / factor };
+    })).capital;
+    points.push({ date, percentage: capital > 0 ? gain / capital * 100 : 0, gain, value, depositsUsd: dailyCost, contributedCapitalUsd: capital,
       openCostUsd: [...bookCosts.values()].reduce((sum, cost) => sum + cost, 0) });
   }
   return {

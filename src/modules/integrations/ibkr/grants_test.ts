@@ -25,6 +25,20 @@ const row = (quantity: number, day = "20261006", serial = "award") =>
 const statement = (rows: string) =>
   `<FlexQueryResponse type="AF"><FlexStatement accountId="U1"><StockGrantActivities>${rows}</StockGrantActivities></FlexStatement></FlexQueryResponse>`;
 
+Deno.test("grant detail rows are counted once when summaries are present; summary-only refresh preserves cached grants", () => {
+  const db = new Database(":memory:");
+  try {
+    const detail = row(.1).replace('<StockGrantActivity ', '<StockGrantActivity levelOfDetail="DETAIL" ');
+    const summary = row(.1).replace('<StockGrantActivity ', '<StockGrantActivity levelOfDetail="SUMMARY" ');
+    cacheIbkrStockGrants(db, integration, "trades", range, statement(detail + summary));
+    const grants = readIbkrStockGrants(db, integration);
+    equal(grants.length, 1);
+    equal(grants[0].quantity, .1);
+    throws(() => cacheIbkrStockGrants(db, integration, "trades", range, statement(summary)), /no DETAIL rows.*Enable Detail/);
+    deepStrictEqual(readIbkrStockGrants(db, integration), grants);
+  } finally { db.close(); }
+});
+
 Deno.test("IBKR grant receipts keep dates, signed shares and zero cash cost across queries and refreshes", async () => {
   const db = new Database(":memory:");
   try {

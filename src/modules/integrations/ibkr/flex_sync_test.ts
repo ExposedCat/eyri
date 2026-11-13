@@ -94,7 +94,7 @@ Deno.test("shared trade reports recover missing funding during validation backof
       return Promise.resolve(calls === 1 ? xml.replace('currency="USD" amount="100" type="Deposit"', 'levelOfDetail="SUMMARY" currency="USD" amount="100" type="Deposit"') : xml);
     };
     await syncNextFlexBatch(db, { now, maxYears: 1, requestStatement });
-    await rejects(fetchIbkrAccountPerformance(db, integration, snapshot, now), /funding history import failed:.*matching detail/);
+    await rejects(fetchIbkrAccountPerformance(db, integration, snapshot, now), /funding history import failed:.*no DETAIL rows.*Enable Detail/);
     const failure = db.prepare("SELECT next_attempt_at FROM ibkr_flex_poll_jobs WHERE kind='funding'").get() as { next_attempt_at: number };
     ok(failure.next_attempt_at > +at(5));
     await syncNextFlexBatch(db, { now: at(5), maxYears: 1, requestStatement });

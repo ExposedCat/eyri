@@ -91,7 +91,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
         date: "2025-01-02", percentage: 10, gain: 100,
       }];
       return Promise.resolve({
-        fundingReturnVersion: 5 as const,
+        fundingReturnVersion: 6 as const,
         ...selection,
         ...(notes ? { notes } : {}),
         userId: ctx.from!.id,
@@ -154,7 +154,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
     benchmarkGates,
     invalidSymbols,
     validatedSymbols,
-    command: (text = "/chart alltime", userId = 1, chatId = -1001, threadId?: number) =>
+    command: (text = "/chart", userId = 1, chatId = -1001, threadId?: number) =>
       bot.handleUpdate({
         update_id: ++updateId,
         message: {
@@ -213,31 +213,63 @@ function callback(
   return data;
 }
 
-Deno.test("chart modes and asset filters persist and Compare uses the original report selection", async () => {
+Deno.test("chart commands always use lifetime performance and preserve filters for Compare", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
     db.exec("INSERT INTO users(user_id) VALUES(1),(2)");
     await createBucket({ database: db, userId: 1, name: "Core" });
     const h = harness(db);
-    for (const kind of ["perf", "alltime", "worth"] as const) {
-      for (const [alias, filter] of [["s", "stocks"], ["stocks", "stocks"], ["o", "options"], ["options", "options"]]) {
-        await h.command(`/chart ${kind} ${alias} Core`);
-        deepStrictEqual(h.selections.at(-1), { userId: 1, kind, filter, bucketName: "Core" });
-        equal(h.renderedDatasets.at(-1)![0].kind, kind);
-        equal(h.renderedDatasets.at(-1)![0].filter, filter);
-      }
+    for (const [alias, filter] of [["s", "stocks"], ["stocks", "stocks"], ["o", "options"], ["options", "options"]]) {
+      await h.command(`/chart ${alias} Core`);
+      deepStrictEqual(h.selections.at(-1), { userId: 1, kind: "alltime", filter, bucketName: "Core" });
     }
     const photo = h.calls.filter(call => call.method === "sendPhoto").at(-1)!;
     const keyboard = photo.payload.reply_markup as { inline_keyboard: { callback_data: string }[][] };
     await h.compare(keyboard.inline_keyboard[0][0].callback_data);
-    deepStrictEqual(h.selections.at(-1), { userId: 2, kind: "worth", filter: "options", bucketName: null });
+    deepStrictEqual(h.selections.at(-1), { userId: 2, kind: "alltime", filter: "options", bucketName: null });
     const before = h.fetched.length;
-    await h.command("/chart dpnl");
-    equal(h.fetched.length, before);
-    match(String(h.calls.at(-1)!.payload.text), /Use \/chart/);
+    for (const kind of ["perf", "dpnl", "worth", "alltime"]) {
+      await h.command(`/chart ${kind}`);
+      equal(h.fetched.length, before);
+      match(String(h.calls.at(-1)!.payload.text), /Use \/chart \[widget\]/);
+    }
   } finally { db.close(); }
 });
+
+Deno.test("chart windows crop photo and widget histories while Compare and index changes retain the same window", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    const points = Array.from({ length: 15 }, (_, i) => ({
+      date: new Date(Date.UTC(2024, 11, 20 + i)).toISOString().slice(0, 10), gain: i * 10, percentage: i,
+    }));
+    h.pointsByUser.set(1, points);
+    h.pointsByUser.set(2, points);
+    h.datasetOverrides.set(1, { purchaseDates: ["2024-12-20", "2024-12-31", "2025-01-02"] });
+    await h.command("/chart 4d");
+    const photo = h.renderedDatasets.at(-1)![0];
+    equal(photo.kind, "alltime");
+    equal(photo.points.length, 5);
+    equal(photo.points[0].date, "2024-12-30");
+    equal(photo.points[0].percentage, 10);
+    equal(photo.benchmarkPurchases![0].date, "2024-12-20");
+    deepStrictEqual(photo.purchaseDates, ["2024-12-31", "2025-01-02"]);
+    await h.compare(callback(h.calls));
+    deepStrictEqual(h.renderedDatasets.at(-1)!.map(data => data.points), [photo.points, photo.points]);
+    await h.compare(indexCallback(h.calls), 3);
+    for (const data of h.renderedDatasets.at(-1)!) {
+      equal(data.benchmark!.points[0].date, "2024-12-30");
+      equal(data.benchmarkPurchases![0].date, "2024-12-20");
+    }
+    await h.command("/chart widget 1w");
+    const html = String(h.calls.find(call => call.method === "sendWidget")!.payload.html);
+    match(html, /2024-12-27/);
+    ok(!html.includes("2024-12-20"));
+  } finally { db.close(); }
+});
+
 function chartKeyboard(data: string, compareLabel: string | null = "Compare", index = "sp500") {
   const id = data.split(":")[1];
   const keyboard = new InlineKeyboard();
@@ -323,7 +355,7 @@ function indexCallback(calls: { method: string; payload: Record<string, unknown>
   return rows.flat().find(button => button.callback_data.startsWith("chart_index:"))!.callback_data;
 }
 
-Deno.test("/chart alltime sends one photo with Compare and compares only clickers' own accounts", async () => {
+Deno.test("/chart sends one photo with Compare and compares only clickers' own accounts", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
@@ -360,7 +392,7 @@ Deno.test("DM charts show only the index toggle and never accept Compare clicks"
   ensureSchema(db);
   try {
     const h = harness(db);
-    await h.command("/chart alltime", 1, 1);
+    await h.command("/chart", 1, 1);
     const photo = h.calls.find((c) => c.method === "sendPhoto")!;
     const toggle = indexCallback(h.calls);
     deepStrictEqual(photo.payload.reply_markup, chartKeyboard(toggle, null));
@@ -383,21 +415,21 @@ Deno.test("DM charts show only the index toggle and never accept Compare clicks"
   }
 });
 
-Deno.test("bare /chart preloads real SPYL and IUMO snapshots without altering photo chart sessions", async () => {
+Deno.test("/chart widget preloads CSPX and IUMO snapshots without altering photo chart sessions", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   ensureChartSchema(db);
   try {
     db.exec("INSERT INTO users(user_id) VALUES(1)");
     const h = harness(db, new Map([[1, "EUR"]]));
-    await h.command("/chart@eyri_bot   ", 1, 1);
+    await h.command("/chart@eyri_bot widget   ", 1, 1);
     deepStrictEqual(h.selections, [{ userId: 1, bucketName: null, kind: "alltime", filter: null }]);
     deepStrictEqual(h.fetched, [1]);
-    deepStrictEqual(h.benchmarkRequests.map(request => request.symbol), ["IUMO.L", "SPYL.L"]);
+    deepStrictEqual(h.benchmarkRequests.map(request => request.symbol), ["IUMO.L"]);
     const widget = h.calls.find(call => call.method === "sendWidget")!;
     ok(widget);
     equal(widget.payload.chat_id, 1);
-    match(String(widget.payload.html), /SPYL\.L/);
+    match(String(widget.payload.html), /CSPX\.L/);
     match(String(widget.payload.html), /IUMO\.L/);
     match(String(widget.payload.html), /"currency":"EUR"/);
     equal(widget.payload.allow_queries, undefined);
@@ -405,22 +437,23 @@ Deno.test("bare /chart preloads real SPYL and IUMO snapshots without altering ph
     equal(h.calls.filter(call => call.method === "sendPhoto").length, 0);
     equal(db.prepare("SELECT COUNT(*) AS n FROM alltime_chart_sessions").get()!.n, 0);
 
-    await h.command("/chart alltime");
+    await h.command("/chart");
     equal(h.calls.filter(call => call.method === "sendPhoto").length, 1);
-    equal(h.benchmarkRequests.length, 2);
+    equal(h.benchmarkRequests.length, 1);
     equal(h.renderedDatasets.at(-1)![0].benchmark!.symbol, "CSPX.L");
   } finally { db.close(); }
 });
 
-Deno.test("bare /chart reports missing SPYL history instead of sending a substitute curve", async () => {
+Deno.test("/chart widget reports missing CSPX history instead of sending a substitute curve", async () => {
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
     const h = harness(db);
-    h.benchmarkFailures.add("SPYL.L");
-    await h.command("/chart");
+    h.benchmarkFailures.add("CSPX.L");
+    h.datasetOverrides.set(1, { benchmark: undefined, benchmarkInputsReady: true });
+    await h.command("/chart widget");
     equal(h.calls.filter(call => call.method === "sendWidget" || call.method === "sendPhoto").length, 0);
-    match(String(h.calls.at(-1)!.payload.text), /SPYL.*unavailable/);
+    match(String(h.calls.at(-1)!.payload.text), /S&P 500.*unavailable/);
   } finally { db.close(); }
 });
 
@@ -430,7 +463,7 @@ Deno.test("widget delivery stays in the requesting chat and preserves its topic"
   try {
     for (const [chatId, threadId] of [[-1001, 77], [2, undefined]] as const) {
       const h = harness(db);
-      await h.command("/chart", 2, chatId, threadId);
+      await h.command("/chart widget", 2, chatId, threadId);
       const sends = h.calls.filter(call => call.method === "sendWidget");
       equal(sends.length, 1);
       equal(sends[0].payload.is_shared, true);
@@ -450,13 +483,13 @@ Deno.test("widget denial never redirects privately and a later command retries n
     for (const chatId of [-1001, 2]) {
       const h = harness(db);
       h.apiResponses.set("sendWidget", () => ({ ok: false, error_code: 400, description: "Bad Request: INPUT_MEDIA_WIDGET_NOT_ALLOWED" }));
-      await h.command("/chart", 2, chatId);
+      await h.command("/chart widget", 2, chatId);
       let sends = h.calls.filter(call => call.method === "sendWidget");
       equal(sends.length, 1);
       equal(sends[0].payload.chat_id, chatId);
       match(String(h.calls.at(-1)!.payload.text), /Telegram blocks widgets here/);
       h.apiResponses.delete("sendWidget");
-      await h.command("/chart", 2, chatId);
+      await h.command("/chart widget", 2, chatId);
       sends = h.calls.filter(call => call.method === "sendWidget");
       equal(sends.length, 2);
       equal(sends[1].payload.chat_id, chatId);
@@ -527,7 +560,7 @@ Deno.test("Compare rejects a portfolio outside the chart date range and releases
     const data = callback(h.calls);
     h.pointsByUser.set(2, [{ date: "2026-01-01", percentage: 0, gain: 0 }]);
     await h.compare(data);
-    match(String(h.calls.at(-1)!.payload.text), /Portfolio dates do not overlap/);
+    match(String(h.calls.at(-1)!.payload.text), /User 2: no history.*Choose a longer window/);
     deepStrictEqual(h.rendered, [[1]]);
     h.pointsByUser.delete(2);
     await h.compare(data);
@@ -842,7 +875,7 @@ Deno.test("index changes preserve single-chart preferred currency and DM keyboar
   ensureSchema(db);
   try {
     const first = harness(db, new Map([[1, "EUR"]]));
-    await first.command("/chart alltime", 1, 1);
+    await first.command("/chart", 1, 1);
     const before = first.renderedDatasets[0][0];
     const resumed = harness(db);
     await resumed.compare(indexCallback(first.calls), 1, 1);

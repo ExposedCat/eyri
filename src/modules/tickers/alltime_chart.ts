@@ -58,7 +58,7 @@ import {
 export type AllTimePoint = ChartPoint;
 type CompleteAllTimePoint = ChartPoint & { gain: number };
 export type AllTimeDataset = {
-  fundingReturnVersion?: 5;
+  fundingReturnVersion?: 6;
   kind?: Exclude<ReportKind, "dpnl">;
   filter?: ReportFilter;
   notes?: string[];
@@ -66,6 +66,8 @@ export type AllTimeDataset = {
   label: string;
   bucketName: string | null;
   points: AllTimePoint[];
+  purchaseDates?: string[];
+  dateRange?: { start: string; end: string };
   // A price-feed failure may leave inputs ready while the index is absent.
   benchmark?: ChartBenchmark;
   benchmarkIndex?: ChartBenchmarkIndex;
@@ -473,7 +475,7 @@ export function buildAllTimeSeries(
   const selectedIntegrationIds = new Set([...args.positions, ...selected].map(item => item.integrationId));
   const funding = accountFunding(args.accountPerformances ?? [], selectedIntegrationIds, rates);
   const endpoint = pointInUsd(last, totals);
-  points[points.length - 1] = { ...endpoint, gain: endpoint.gain, percentage: funding.reason ? null : endpoint.gain / funding.deposits * 100 };
+  points[points.length - 1] = { ...endpoint, gain: endpoint.gain, percentage: funding.reason ? null : endpoint.gain / funding.contributedCapital! * 100 };
   return points;
 }
 
@@ -710,7 +712,7 @@ export async function loadAllTimeDataset(
   const ignoreFx = fx.ignoreFx;
   notes.push(...(args.accountPerformances ?? []).flatMap(account => account.fxUnavailableReason ? [account.fxUnavailableReason] : []));
   const fingerprint = await hash({
-    version: 15,
+    version: 16,
     args: {
       ...args,
       transactionBuckets: [...args.transactionBuckets],
@@ -750,7 +752,7 @@ export async function loadAllTimeDataset(
   try { funding = accountFunding(accounts, new Set([...args.positions, ...selected].map(item => item.integrationId)), rates); }
   catch (error) {
     if (!(error instanceof Error) || !/Currency conversion unavailable/.test(error.message)) throw error;
-    funding = { deposits: 0, complete: false, reason: "Funding conversion is missing." };
+    funding = { deposits: 0, contributedCapital: null, complete: false, reason: "Funding conversion is missing." };
   }
   const purchases: BenchmarkPurchase[] = [];
   const datedFunding = !args.benchmarkSource?.unavailableReason && !funding.reason && accounts.every(account => {
@@ -820,8 +822,13 @@ export async function loadAllTimeDataset(
       benchmarkGifts = buildChartGifts(giftReceipts, histories, historicalRates,
         args.benchmarkSource?.positions ?? args.positions, rates, points[0].date, points.at(-1)!.date);
       for (let date = points[0].date; date <= points.at(-1)!.date; date = dayAfter(date)) {
-        const topups = accountTopups(datedFxAccounts(accounts, date));
+        const dated = datedFxAccounts(accounts, date);
+        const topups = accountTopups(dated);
+        const basisCurrencies = [...new Set(dated.flatMap(account => [account.currency, ...nativeFundingFlows(account).map(flow => flow.nativeCurrency)]))];
+        const dayRates = new Map(basisCurrencies.map(currency => [currency, historicalUsdFactor(historicalRates, currency, date)]));
+        const capital = accountFunding(dated, new Set(dated.map(account => account.integrationId)), dayRates).contributedCapital;
         benchmarkFundingBasis.push({ date,
+          contributedCapital: capital ?? 0,
           deposits: topups.reduce((sum, topup) => sum + topup.deposits * historicalUsdFactor(historicalRates, topup.currency, date), 0),
           withdrawals: topups.reduce((sum, topup) => sum + topup.withdrawals * historicalUsdFactor(historicalRates, topup.currency, date), 0) });
       }
@@ -837,7 +844,8 @@ export async function loadAllTimeDataset(
   } else notes.push(`Index hidden: ${args.benchmarkSource?.unavailableReason ?? (funding.reason
     ? userErrorMessage(new Error(funding.reason))
     : "Deposit dates are missing. Wait for funding sync, then retry.")}`);
-  return { fundingReturnVersion: 5, kind: args.kind, filter: args.filter, userId, label, bucketName: args.bucketName, points, notes: [...new Set(notes)], benchmarkIndex: "sp500", ...(benchmark ? { benchmark } : {}), ...(benchmarkInputsReady ? { benchmarkInputsReady, benchmarkPurchases: purchases, benchmarkValuations, benchmarkFundingBasis, ...(benchmarkGifts.length ? { benchmarkGifts } : {}) } : {}) };
+  const purchaseDates = [...new Set(selected.filter(order => !isGiftReceipt(order)).map(order => dateOf(order.date)))].sort();
+  return { fundingReturnVersion: 6, kind: args.kind, filter: args.filter, userId, label, bucketName: args.bucketName, points, purchaseDates, notes: [...new Set(notes)], benchmarkIndex: "sp500", ...(benchmark ? { benchmark } : {}), ...(benchmarkInputsReady ? { benchmarkInputsReady, benchmarkPurchases: purchases, benchmarkValuations, benchmarkFundingBasis, ...(benchmarkGifts.length ? { benchmarkGifts } : {}) } : {}) };
 }
 
 export const hasChartBenchmarkInputs = (dataset: AllTimeDataset) =>
@@ -852,8 +860,9 @@ export async function switchChartBenchmarks(
   index: ChartBenchmarkIndex,
   cache: Parameters<typeof loadChartBenchmark>[3] = historyCache(db),
 ): Promise<AllTimeDataset[]> {
-  if (datasets.some(dataset => dataset.fundingReturnVersion !== 5)) {
-    throw new Error("This chart predates index switching. Create a new chart with /chart.");
+  if (datasets.some(dataset => dataset.fundingReturnVersion !== 6)) {
+    throw new UserFacingError("Saved chart uses the old contribution rule. Run /chart again.",
+      { detail: "This chart uses an older return calculation. Create a new chart with /chart." });
   }
   const missing = datasets.find(dataset => !hasChartBenchmarkInputs(dataset));
   if (!datasets.some(hasChartBenchmarkInputs)) throw new UserFacingError(missing?.notes?.find(note => note.startsWith("Index hidden:")) ??
@@ -891,10 +900,11 @@ export async function renderAllTimeChart(
   datasets: AllTimeDataset[],
 ): Promise<Uint8Array> {
   ensureChartSchema(db);
-  if (!datasets.length || datasets.some((dataset) => dataset.fundingReturnVersion !== 5)) {
-    throw new Error("This chart uses an older return calculation. Create a new chart with /chart.");
+  if (!datasets.length || datasets.some((dataset) => dataset.fundingReturnVersion !== 6)) {
+    throw new UserFacingError("Saved chart uses the old contribution rule. Run /chart again.",
+      { detail: "This chart uses an older return calculation. Create a new chart with /chart." });
   }
-  const key = await hash({ version: 19, datasets });
+  const key = await hash({ version: 22, datasets });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;

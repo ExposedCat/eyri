@@ -1272,10 +1272,12 @@ export async function buildIntegratedAllTimeReport({
   const accountAdjustment = fx.reduce((sum, account) => sum + account.pnl, 0);
   total.change = instrumentPnl + accountAdjustment;
   const accountAdjustments = [{ label: "Currency gain/loss", amount: accountAdjustment }];
-  const totalReturnPercentage = funding.reason ? null : total.change / funding.deposits * 100;
-  const currencyReturns = funding.reason ? [] : proportionalCurrencyReturns(topups, total.change, rates);
+  const totalReturnPercentage = funding.reason ? null : total.change / funding.contributedCapital! * 100;
+  const currencyReturns = funding.reason ? [] : proportionalCurrencyReturns(topups, total.change, rates).map(item => ({
+    ...item, contributedCapital: funding.contributedCapital! * item.share / conversionFactor(item.currency, rates), percentage: totalReturnPercentage,
+  }));
   return { performances, total, accountAdjustment, accountAdjustments, fx,
-    currencyReturns, totalReturnPercentage, returnUnavailableReason: funding.reason, accounts: accountPerformances, fxNote };
+    currencyReturns, totalReturnPercentage, contributedCapital: funding.contributedCapital, returnUnavailableReason: funding.reason, accounts: accountPerformances, fxNote };
 }
 
 export async function buildIntegratedAllTimePerformanceList({

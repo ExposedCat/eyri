@@ -187,12 +187,21 @@ file to its actual Gateway server and restart the PM3 project; see the controlle
 [bootstrap guide](https://github.com/code-hustler-ft3d/ibg-controller/blob/main/docs/BOOTSTRAP.md).
 
 The new user must configure an XML Activity Flex Query with Trades at Executions
-level only, including Symbol, Trade Date, Buy/Sell, Quantity, Trade Price,
-Currency, and Asset Category. For account returns, also include Account Information
+level, including Level of Detail, Symbol, Trade Date, Buy/Sell, Quantity, Trade Price,
+Currency, and Asset Category. Other trade levels may also be enabled: when levels
+are supplied, Eyri imports only `levelOfDetail="EXECUTION"`. Order, Symbol Summary,
+Asset Class, Closed Lots and Wash Sales never become additional trades or fees.
+A report containing only non-execution levels fails before replacing cached trades.
+Older single-level exports without Level of Detail remain supported.
+For account returns, also include Account Information
 (Account ID, Currency, Date Opened, Date Funded), Cash Transactions (Account ID, Currency,
 FX Rate to Base, Report Date, Date/Time, Amount, Type, Transaction ID), Cash Report (Base Currency
 Summary, Starting Cash, Ending Cash, Deposits, Withdrawals), and Change in NAV
-(Starting Value, Deposits/Withdrawals). Include all cash types without filters.
+(Starting Value, Deposits/Withdrawals). Cash Transactions must include Detail;
+Summary rows are checked against their details but never added to funding twice.
+Grant Activity likewise uses Detail when levels are supplied. These row-level
+filters do not remove the required Cash Report Base Currency Summary, which is
+used for reconciliation. Include all cash types without filters.
 Select only the account served by this Gateway,
 leave symbol filters empty, and choose date format `yyyyMMdd`. Enable Flex Web
 Service and obtain its token and the query ID. Then, from their own private
@@ -307,7 +316,7 @@ income and tax movements without deducting execution charges a second time.
 
 For whole Trading 212 accounts, `/alltime` and `/allnumber` sum open-position and
 sold-trade P/L plus independently calculated currency P/L. The percentage denominator is
-gross external deposits; reinvested gains do not count as new deposits. Complete CSV exports
+new contributions after offsetting earlier withdrawals; reinvested gains do not count as new deposits. Complete CSV exports
 distinguish true deposits/withdrawals from internal transfers, conversions and
 tax adjustments that the cash API labels as deposits. Cash and share quantities
 must reconcile with fresh broker data, and imported execution IDs must match the
@@ -316,7 +325,7 @@ never deducted twice. Instrument rows and the separate currency gain/loss line
 sum to Total. Account balances and unrelated cash income do not replace or adjust
 this performance calculation. MCP reports expose the currency calculation and
 funding metadata separately.
-The lifetime chart endpoint uses the same monetary total and gross-deposit return
+The lifetime chart endpoint uses the same monetary total and contribution return
 as `/alltime`. Earlier points replay trades and dated currency movements.
 
 Exports are cached while event history is unchanged and cash/share checks pass.
@@ -526,23 +535,32 @@ Use `/alltime` (or `/alltime BUCKET`) to combine `/perf` and `/sold` into one
 line per ticker and a single Total. Gains include current holdings and realized
 FIFO gains from available order history. Ticker rows show monetary P/L without a
 lifetime percentage. Total is `realized P/L + unrealized P/L + currency P/L`;
-its percentage is `Total / gross native top-ups at current rates * 100`.
+its percentage is `Total / contributed capital * 100`. A shared running balance
+starts at zero for the accounts included in this view. Each withdrawal subtracts
+from it. Deposits first repay any negative balance; only the positive excess is
+new contributed capital, after which the balance resets to zero. Consecutive
+withdrawals accumulate. For example, deposit 1,000, withdraw 500, then deposit
+300 and 250: contributed capital is 1,050, not 1,550. All amounts use the same
+reporting-currency conversion basis as the return calculation. Broker histories
+provide dates rather than reliable cross-account times, so same-day withdrawals
+are applied before deposits. Bucket allocations remove capital from their source
+view without creating withdrawal credit. Raw deposits and withdrawals remain
+unchanged for cash reconciliation, P/L and index cash movements.
 The modeled sale converts proceeds back into the recorded top-up currencies in
 proportion to their original native amounts. Current exchange rates put that
 basket into a common unit for allocation. With no withdrawals, each source
 currency receives the same percentage return. `Top-up return` shows the resulting
 native-currency gains when they differ from the display currency; structured
 reports also expose each currency's share, original cost and modeled proceeds.
-Withdrawals preserve gross contributed cost and previously earned returns.
+Withdrawals alone preserve contributed capital and previously earned returns; later redeposits repay their accumulated balance first.
 Account value and cash balances are not inputs to the performance numerator.
 Reinvestments are not new deposits. Withdrawals do not erase realized stock gains. Zero deposits or
 incomplete funding leave the percentage unavailable while preserving monetary P/L.
 Whole Trading 212 and Freedom24 accounts supply funding history. Whole IBKR
 accounts require the Activity Flex funding sections described above. Buckets use
 the fresh-cash purchase assumption; filtered and unreconciled views may still lack
-a capital-return percentage. Combined
-accounts containing unclassified internal transfers also omit the percentage so
-those transfers cannot inflate deposits. `/allnumber` continues to show monetary P/L.
+a capital-return percentage. The contribution rule applies across connected accounts
+in the selected view and makes no claim that an offset is an identified transfer. `/allnumber` continues to show monetary P/L.
 Sold lots follow the bucket of their purchase transaction; unbucketed
 views exclude bucketed lots unless explicitly included. Periods run from the earliest purchase to today for
 current holdings, or the final sale for fully sold holdings. Unknown purchase dates
@@ -578,84 +596,63 @@ The container includes DejaVu Sans fonts; local runs use installed system fonts.
 
 ## Report charts
 
-Bare `/chart` sends an experimental HTML widget with an **SPYL / IUMO** selector.
-It requires Bot API 10.4 widget support and a compatible Telegram client.
-Widgets use shared mode (`is_shared: true`), giving each chart a reusable Telegram
-widget ID. Shared mode follows the same chat delivery restrictions. The bot
-does not yet reuse these IDs or publish shared-state updates; charts stay snapshots.
-Widget sends use Telegram's `/beta` API endpoint with the existing production
-bot token; polling and all other methods use the stable endpoint.
-Widgets are sent directly to the chat/topic where `/chart` was requested.
-If Telegram refuses delivery, the command reports the restriction; it never
-creates a private copy or forwards the widget. Every new request tries direct
-delivery again so it can work once Telegram enables support for that chat.
-`/chart` with arguments, such as `/chart alltime`, `/chart perf stocks` or
-`/chart Core`, keeps sending the original photo chart with its existing controls.
-The widget preloads the portfolio curve and both **SPYL.L** and **IUMO.L**
-benchmarks using the same funding and return calculations as photo charts.
-The selector switches locally, without broker requests or bot callbacks.
-The widget is a fixed snapshot; plotted points are reduced to fit Telegram's
-32 KB HTML / 4 KB zlib limits, retaining endpoints and time-bucket extrema.
-The legend shows the final return or value in the selected reporting currency.
-It requires valid history for both ETFs over the complete funding schedule;
-SPYL.L's shorter history may make it unavailable for older portfolios. Missing
-history is reported explicitly; it is never replaced with CSPX.L or shifted to
-a later investment date. No ticker picker, date-range or asset-mode controls
-are included inside the widget yet.
+`/chart` sends the lifetime performance photo. `/chart widget` sends the same
+lifetime report as an interactive HTML widget. Other chart report modes are no
+longer accepted: `/chart perf`, `/chart dpnl`, `/chart worth`, and `/chart alltime`
+show the current command syntax. Text commands such as `/perf` and `/dpnl` are unchanged.
+Both forms accept stock/option filters and an optional bucket, for example
+`/chart stocks Core` or `/chart widget options Core`.
 
-Use `/chart [perf|alltime|worth] [s|stocks|o|options] [BUCKET]` for a daily
-chart of the corresponding report. The default is `alltime`; `/chart BUCKET`
-continues to work. The live endpoint comes from the same calculation as the text
-report and `/number KIND`.
+Add a trailing window such as `1y`, `2m`, `3w` or `4d` to display recent history.
+Units can be combined: `/chart 1y 2m 3w 4d` shows the last one year, two months,
+three weeks and four days. Compact `1y2m3w4d` is accepted too. Years and months
+use calendar subtraction, clamped at month end; weeks and days follow afterward.
+Zero, negative, fractional and repeated units are rejected. The window ends on
+the snapshot's last date. `/chart widget 1y` uses the same rule.
+A window crops the curves without rebasing lifetime returns. Index calculations
+retain every earlier contribution and gift. Compare and index switches preserve
+the original chart's visible dates. Short windows use day/week tick labels.
 
-`perf` shows open-position P/L and return on the remaining book cost. Sales remove
-the sold lots' open P/L. `alltime` adds realized and unrealized instrument results
-to currency P/L calculated from native funding and actual conversions, using
-daily exchange rates. Reinvestment never adds deposits. `worth` reconstructs cash
-from the complete ledger and plots
-holdings plus cash as a monetary value, including changes from contributions.
-Cash-funded buckets use the agreed fresh-cash purchase model and keep sale proceeds.
+The widget switches locally between the same **CSPX.L S&P 500** comparison as
+the photo and **IUMO.L Momentum**, without broker requests or bot callbacks.
+Its curves are reduced to fit Telegram's 32 KB HTML / 4 KB zlib limits, retaining
+endpoints, extrema, missing-data boundaries and purchase dates. Widgets are sent
+directly into the requesting chat/topic with `is_shared: true`; they stay fixed
+snapshots. If Telegram disallows widgets, use `/chart` for a photo. Requests never
+redirect the widget into a private conversation.
+
+Lifetime performance combines realized and unrealized instrument results with
+currency P/L calculated from native funding and actual conversions. Reinvestment
+never adds deposits. The endpoint agrees with `/alltime` and `/number alltime`.
 Filtered reports use only selected instruments and do not allocate account cash.
-When holdings disagree with cached trades, charts refresh executions/history once
-and rebuild. A remaining difference reports the ticker and both quantities;
-no balancing trades are invented. Worth charts also validate cash balances
-against the ledger. Missing required execution fees still fail explicitly.
-IBKR charts also check Gateway executions before calculation, including intraday
-buys and sales that leave the holding quantity unchanged. Concurrent syncs share
-one request; a successful sync is reused for 15 seconds. Completed Flex history
-and recent Gateway executions remain combined.
-Weekends carry the last close; splits preserve quantities and cost basis.
-Missing price histories leave gaps on affected dates, and calculation resumes
-when prices return or the affected holding is sold. A missing percentage leaves
-a gap on the percentage axis instead of switching the entire chart to money.
-Comparisons use percentages when every participant has at least one usable
-percentage in the visible period. If someone has none, everyone is compared
-using USD P/L, with an explanation in the caption. A participant with no usable
-values is rejected explicitly instead of joining as an invisible curve.
-Single charts without percentages use money; worth always uses money.
-IBKR contract exchange and ISIN metadata distinguish unrelated listings sharing a
-ticker, including London CURE versus the US leveraged ETF.
+IBKR charts check recent Gateway executions, including buys and sales that leave
+share counts unchanged. Concurrent syncs share one request, and successful syncs
+are reused for 15 seconds. Completed Flex history and recent executions are combined.
+When reconstructed holdings disagree, charts refresh history once and rebuild;
+a remaining difference reports the ticker and both quantities.
+Missing prices leave gaps on affected dates; weekends carry the last close.
+Splits preserve quantities and cost basis. Missing percentages leave gaps, without
+switching the whole chart to money. Comparisons use percentages when every person
+has at least one usable percentage; otherwise everyone is compared in USD P/L,
+with an explanation. A participant without any usable values is rejected explicitly.
 
 The chart is sent as a Telegram photo using the portfolio's dark background.
 Single-portfolio charts keep a solid mint actual-performance line above and below
 zero, including when the benchmark is unavailable, and use an opaque
 gold dashed **if S&P 500** line. Comparisons keep each participant's own color
 for their solid and opaque dashed lines. Benchmark lines draw behind actual
-lines; hollow circles draw on top. They mark turning points and the endpoint, with a
-minimum spacing to avoid crowding.
+lines. The index has one hollow circle at its endpoint. Hollow circles on each
+actual curve mark instrument purchase dates; multiple purchases on one day share
+one circle. Missing-price days do not get fabricated marker positions. The same
+markers appear in the widget. Percentage axes use tighter bounds, round labeled
+steps and fainter half-step grid lines; steps adapt to the visible range.
 For complete accounts, the dashed line invests each external deposit into fractional shares of
 **CSPX.L**, the accumulating USD iShares S&P 500 ETF, at that date's closing price
 (or the preceding close). Withdrawals sell hypothetical units and remain part of
 lifetime proceeds. Actual purchases and reinvestments add no benchmark capital
-for completed statement dates. For `/chart perf`, IBKR purchases made today after
-the funding statement cutoff provisionally add their full purchase costs to the
-index, even when funded by sales or existing cash. Available commissions are
-included; sales and FX conversions do not offset or add provisional funding.
-This assumption affects only the benchmark. Running `/chart perf` again after
-the next statement covers that day replaces the estimate with actual deposits
-and withdrawals; previously sent charts remain saved snapshots. This mode does
-not require live cash to match the completed statement. Account-wide `alltime`
-and `worth` reconciliation remains unchanged.
+for completed statement dates. Recent Gateway executions keep today's instrument P/L available before Flex
+publishes the completed statement; missing commissions on those recent fills
+are tolerated. Index capital follows external funding, not purchase turnover.
 Non-USD deposits buy ETF shares using their native currency and funding-date FX
 rate. Daily index returns compare its value against the original native top-up
 basket, matching the actual portfolio's return basis. Both daily FX rates and
@@ -669,33 +666,36 @@ Bucket benchmarks instead receive fresh cash on each selected
 purchase date, scaled by the user's share; bucket sale proceeds remain cash.
 Allocations to excluded owned buckets reduce the remaining account's benchmark
 capital on their purchase dates; they are distinct from external withdrawals.
-Benchmark return is `(remaining value + withdrawals - deposits) / deposits * 100`.
+Benchmark P/L remains `remaining value + raw withdrawals - raw deposits`.
+Its return divides that P/L by the same unrecycled contributed capital as the
+actual portfolio. Withdrawals still sell ETF units and every redeposit still
+buys units, even when it contributes no new capital to the percentage denominator.
 Benchmarks require complete dated external funding and are omitted when it is
 unavailable or the hypothetical fund cannot cover a withdrawal. Funding is not
 rejected merely because multiple accounts are connected, an
 account has withdrawals, or Freedom24 labels a movement `intercompany` or
 `internal_holding`; those do not establish a transfer between connected accounts.
-If funding alone fails, `/chart perf` and `/chart alltime` still draw available
-investment P/L and show the specific index failure in the photo caption.
+If funding alone fails, `/chart` still draws available
+investment P/L and shows the specific index failure in the photo caption.
 Without dated funding, earlier lifetime percentages and currency P/L are omitted;
-the live percentage can still use known broker deposit totals. Worth needs the
+the live percentage can use known broker deposit totals when there are no withdrawals;
+otherwise dated funding is required to identify redeposits. Worth needs the
 cash ledger to reconstruct account value. Photo captions also show award-date
 assumptions. Errors name the observed failure and the next action; quantity and
 cash mismatches include both measured totals. Unexpected failures show a code
 for the administrator, with credential-redacted details in the bot logs.
 Existing chart sessions made with purchase-cost returns, the account-value performance numerator,
-or the previous funding FX calculation
+the previous funding FX calculation, or gross-deposit percentages
 must be recreated with `/chart`.
 The two curves and monetary gains appear together in the participant legend.
-All three kinds show the same buy-and-hold index portfolio: `perf` displays its
-open-position P/L, `alltime` its funding-based lifetime P/L, and `worth` its value.
-Ordinary stock sales and reinvestments never sell or buy index units. For example,
+The index is a buy-and-hold portfolio with lifetime P/L relative to newly
+contributed capital after withdrawal offsets. Ordinary stock sales and reinvestments never sell or buy index units. For example,
 buying a stock for $10, selling it for $100 and reinvesting $100 contributes only
 $10 to the index if the original top-up was $10. Every top-up is invested immediately,
 including money left idle in the actual account. Asset filters change the actual
 holdings curve; the index retains the same full portfolio funding schedule.
 The explicit fresh-cash purchase assumption for shared buckets is retained.
-Compare retains the original chart's kind and asset filter.
+Compare retains the original chart's asset filter and visible window.
 The **S&P 500** button beside Compare switches the index to **Momentum**, using
 the USD **IUMO.L** ETF with the same external funding schedule. Clicking
 **Momentum** switches back to S&P 500. The button names the current selection,
@@ -848,21 +848,12 @@ come from the broker for the chart's `/alltime` endpoint.
 
 A live probe on 2026-10-07 recovered the expired `+BOTZ.15MAR2024.C33` contract
 from Databento after Yahoo failed. If neither source supplies the required option
-history, the entire chart still fails; purchase/sale prices or the underlying
-stock are not used as invented daily marks.
+history, affected dates are gaps. Purchase/sale prices and the underlying stock
+are not used as invented daily marks. The caption identifies the unavailable
+price feed, and successful instrument histories remain usable and cached.
 
-If any symbol cannot resolve or fetch prices, `/chart` reports the affected
-instruments once, with copyable mapping commands, and sends no image:
-
-```text
-Failed to fetch historical data:
-- /yahoo VUAA VUAA.L
-- /yahoo SPYL SPYL.L
-```
-
-Successful fetches remain cached for a retry.
 A failed Compare leaves the existing chart and participants unchanged.
-Unsupported or missing historical prices, unmatched sales and quantities that
+Unmatched sales and quantities that
 disagree with the live broker also cause an error rather than a partial graph.
 Complete purchase history is required except for stock holdings with no recorded
 purchase, which use the free-stock assumption above. Historical short positions

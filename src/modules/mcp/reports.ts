@@ -33,7 +33,7 @@ export const reportDescriptions = {
     "Total realized plus unrealized profit/loss and tickers, like /allnumber.",
   perf: "Open-position profit/loss, percentage returns and holding periods, like /perf.",
   alltime:
-    "Lifetime profit/loss and total return on gross deposits. Ticker returns and unallocated bucket returns are unavailable, like /alltime.",
+    "Lifetime profit/loss and return on contributed capital, excluding redeposits that repay earlier withdrawals. Ticker returns and unallocated bucket returns are unavailable, like /alltime.",
   worth:
     "Current holdings plus cash and portfolio value, like /worth. Filtered views exclude unallocated account cash.",
   worthnumber: "Total current portfolio value and tickers, like /worthnumber.",
@@ -318,6 +318,7 @@ export async function runReport(
       total: report ? {
         ...item(report.total),
         returnPct: report.totalReturnPercentage,
+        contributedCapital: report.contributedCapital,
       } : null,
       ...(report?.returnUnavailableReason ? { returnUnavailableReason: report.returnUnavailableReason } : {}),
       ...(accounts.length ? { accounts } : {}),

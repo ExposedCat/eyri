@@ -293,7 +293,7 @@ Deno.test("alltime merges partial sales and current gains without treating turno
   // The broker's realizedPnl field must not count sales a second time.
 });
 
-Deno.test("alltime account return divides lifetime P/L by gross deposits and requires every account", async () => {
+Deno.test("alltime account return keeps initial capital after a later withdrawal and requires every account", async () => {
   const orders = [
     order("AAPL", 1, 100, "2025-01-01"),
     order("AAPL", -1, 110, "2025-02-01"),
@@ -303,6 +303,7 @@ Deno.test("alltime account return divides lifetime P/L by gross deposits and req
   const account: IntegrationAccountPerformance = {
     integrationId: 1, currency: "USD", totalValue: 90,
     netContributions: 100, pnl: -10, deposits: 150, withdrawals: 50,
+    fundingHistory: [{ date: "2025-01-01", amount: 150 }, { date: "2025-05-01", amount: -50 }],
     cash: 90, ledgerCash: { USD: 90 },
     openedAt: new Date("2025-01-01"), historyThrough: new Date(),
     positionValue: 0, investmentValue: 0,

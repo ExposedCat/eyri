@@ -1,6 +1,40 @@
-import { deepStrictEqual, equal, rejects } from "node:assert/strict";
-import { cacheFlexCommissions, FlexReportPending, getFlexCommissionRange, getFlexStatement, getFlexStatementRange, readFlexOrders } from "./flex.ts";
+import { deepStrictEqual, equal, rejects, throws } from "node:assert/strict";
+import { cacheFlexCommissions, FlexReportPending, getFlexCommissionRange, getFlexStatement, getFlexStatementRange, parseTrades, readFlexOrders } from "./flex.ts";
 import { Database } from "@db/sqlite";
+
+const tradeRow = (level: string, quantity = 2, fee = -1, tag = "Trade") =>
+  `<${tag} levelOfDetail="${level}" symbol="A" tradeDate="20250101" quantity="${quantity}" buySell="BUY" tradePrice="10" currency="USD" assetCategory="STK" ibCommission="${fee}" ibCommissionCurrency="USD" />`;
+
+Deno.test("mixed Flex Trades count executions only, including legitimate identical fills", () => {
+  const mixed = `<Trades>${tradeRow("EXECUTION")}${tradeRow("EXECUTION")}${
+    ["ORDER", "SYMBOL_SUMMARY", "ASSET_CLASS", "CLOSED_LOT", "WASH_SALE"].map(level => tradeRow(level, 4, -2)).join("")
+  }${tradeRow("", 100, -50)}</Trades>`;
+  const trades = parseTrades(mixed);
+  equal(trades.length, 2);
+  equal(trades.reduce((sum, trade) => sum + trade.quantity, 0), 4);
+  equal(trades.reduce((sum, trade) => sum + trade.commission!, 0), -2);
+  deepStrictEqual(parseTrades(`<Trades>${tradeRow("ORDER", 100)}${tradeRow(" execution ", 3, -.5, "TradeConfirm")}</Trades>`).map(trade => trade.quantity), [3]);
+  equal(parseTrades('<Trades><Trade symbol="A" tradeDate="20250101" quantity="2" tradePrice="10" /></Trades>').length, 1);
+  deepStrictEqual(parseTrades("<Trades />"), []);
+});
+
+Deno.test("summary-only Flex reports fail before replacing cached trade or commission history", () => {
+  const db = new Database(":memory:");
+  const integration = { id: 1, userId: 1, kind: "ibkr" as const,
+    credentials: { instanceUrl: "tcp://localhost:4001", flexToken: "token", flexQueryId: "trades" }, createdAt: new Date(), updatedAt: new Date() };
+  try {
+    readFlexOrders(db, integration);
+    db.prepare("INSERT INTO ibkr_flex_trades(integration_id,query_id,trade_key,ticker,date,quantity,price,currency,asset_category,synced_at) VALUES(1,'trades','legacy','A','2025-01-01',2,10,'USD','STK','2025-01-02')").run();
+    const before = readFlexOrders(db, integration);
+    const range = getFlexCommissionRange(db, integration)!;
+    throws(() => cacheFlexCommissions(db, integration, range, `<Trades>${tradeRow("ORDER")}</Trades>`), /no EXECUTION rows.*Enable Execution/);
+    deepStrictEqual(readFlexOrders(db, integration), before);
+    cacheFlexCommissions(db, integration, range, `<Trades>${tradeRow("EXECUTION")}${tradeRow("ORDER", 4, -2)}${tradeRow("CLOSED_LOT", 4, -2)}</Trades>`);
+    equal(readFlexOrders(db, integration).length, 1);
+    equal(readFlexOrders(db, integration)[0].quantity, 2);
+    equal(readFlexOrders(db, integration)[0].commission!.amount, -1);
+  } finally { db.close(); }
+});
 
 Deno.test("legacy Flex fills backfill execution fees without changing bucket identity or double counting fills", async () => {
   const db = new Database(":memory:");

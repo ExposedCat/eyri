@@ -3,7 +3,7 @@ import type { Integration } from "../../database/integration.ts";
 import type { Database } from "../../database/setup.ts";
 import type { IntegrationOrder } from "../types.ts";
 import { parseIbkrCredentials } from "./credentials.ts";
-import { type FlexStatementRange, getXmlElements, parseDate } from "./flex.ts";
+import { type FlexStatementRange, getXmlElements, parseDate, selectFlexDetailRows } from "./flex.ts";
 
 function ensureSchema(database: Database) {
   database.exec(`CREATE TABLE IF NOT EXISTS ibkr_stock_grants (
@@ -38,7 +38,7 @@ export function cacheIbkrStockGrants(
   const from = range.from.toISOString().slice(0, 10),
     to = range.to.toISOString().slice(0, 10);
   const occurrences = new Map<string, number>();
-  const grants = getXmlElements(statements[0][2], ["StockGrantActivity"]).map(
+  const grants = selectFlexDetailRows(getXmlElements(statements[0][2], ["StockGrantActivity"]), "DETAIL", "Grant Activity").map(
     ({ attrs }) => {
       const date = parseDate(attrs.reportDate ?? null);
       const reportedDay = attrs.reportDate?.match(/^(\d{8}|\d{4}-\d{2}-\d{2})/)

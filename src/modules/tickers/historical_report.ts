@@ -228,7 +228,7 @@ export function buildHistoricalReportSeries(
       gain = openValue - openCost + value(realized, date) + fxPnl;
       let deposits = 0;
       try { deposits = accountFunding(datedFxAccounts(fundingAccounts, date),
-        new Set([...purchases, ...args.positions].map(item => item.integrationId)), dayRates).deposits; }
+        new Set([...purchases, ...args.positions].map(item => item.integrationId)), dayRates).contributedCapital ?? 0; }
       catch (error) {
         if (!(error instanceof Error) || !/Currency conversion unavailable/.test(error.message)) throw error;
       }

@@ -4,6 +4,7 @@ import { logFetch } from "../../../utils/fetch_logging.ts";
 import type { IntegrationOrder } from "../types.ts";
 import { parseIbkrCredentials } from "./credentials.ts";
 import { normalizeIbkrOrder } from "./units.ts";
+import { UserFacingError } from "../../../utils/user_error.ts";
 
 const FLEX_BASE_URL =
   "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService";
@@ -174,6 +175,22 @@ export function getXmlElements(xml: string, tagNames: string[]) {
   }
 
   return elements;
+}
+
+export function flexDetailLevel(attrs: Record<string, string>) {
+  return (attrs.levelOfDetail ?? attrs.LevelOfDetail ?? "").trim().toUpperCase();
+}
+
+export function selectFlexDetailRows(elements: XmlElement[], level: "EXECUTION" | "DETAIL", section: string) {
+  // Older single-level exports omit this field. Once a report supplies levels,
+  // only explicitly matching rows are authoritative; summaries and unmarked
+  // rows must never be imported as additional transactions.
+  if (!elements.some(element => flexDetailLevel(element.attrs))) return elements;
+  const rows = elements.filter(element => flexDetailLevel(element.attrs) === level);
+  if (!rows.length) throw new UserFacingError(
+    `IBKR ${section}: no ${level} rows. Enable ${level === "EXECUTION" ? "Execution" : "Detail"} in the Flex query.`,
+    { code: "flex_detail_missing" });
+  return rows;
 }
 
 async function fetchFlexXml(
@@ -408,7 +425,7 @@ function parsePrice(element: XmlElement) {
 
 export function parseTrades(xml: string) {
   const trades: FlexTrade[] = [];
-  for (const element of getXmlElements(xml, ["Trade", "TradeConfirm"])) {
+  for (const element of selectFlexDetailRows(getXmlElements(xml, ["Trade", "TradeConfirm"]), "EXECUTION", "Trades")) {
     const ticker = getAttr(element, [
       "symbol",
       "Symbol",

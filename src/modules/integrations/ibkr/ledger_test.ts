@@ -212,9 +212,26 @@ Deno.test("IBKR funding accepts grants and matching cash summaries without addin
   equal(batch.cashHistory.length, 4);
   throws(() => parseIbkrFundingBatch(xml.replace('amount="100" reportDate=', 'amount="101" reportDate='), range), /matching detail/);
   throws(() => parseIbkrFundingBatch(xml.replace('accountId="-"', 'accountId="OTHER"'), range), /another account/);
-  throws(() => parseIbkrFundingBatch(xml.replace(/<CashTransaction levelOfDetail="DETAIL"[^>]*\/>/g, ''), range), /matching detail/);
+  throws(() => parseIbkrFundingBatch(xml.replace(/<CashTransaction levelOfDetail="DETAIL"[^>]*\/>/g, ''), range), /no DETAIL rows.*Enable Detail/);
   throws(() => parseIbkrFundingBatch(xml.replace('grantActivity="12.8078857"', 'grantActivity="invalid"'), range), /grant activity/);
   throws(() => parseIbkrFundingBatch(xml.replace('grantActivity="12.8078857"', 'assetTransfers="12.8078857"'), range), /transfers require verified/);
+});
+
+Deno.test("mixed cash detail levels never duplicate transactions and base-currency Cash Report summaries stay authoritative", () => {
+  const range = getFlexStatementRange(0, now);
+  const original = parseIbkrFundingBatch(statement(), range);
+  const xml = statement().replaceAll('<CashTransaction ', '<CashTransaction levelOfDetail="DETAIL" ')
+    .replace('<CashTransactions>', `<CashTransactions>
+      <CashTransaction levelOfDetail="SUMMARY" accountId="-" currency="EUR" type="Deposits/Withdrawals" amount="100" reportDate="20260103" />
+      <CashTransaction levelOfDetail="SYMBOL_SUMMARY" accountId="-" currency="EUR" amount="100" />
+      <CashTransaction accountId="U1" transactionID="unmarked-copy" currency="EUR" amount="100" type="Deposits/Withdrawals" reportDate="20260103" fxRateToBase="1.2" />`)
+    .replace('currency="BASE_SUMMARY"', 'levelOfDetail="SUMMARY" currency="BASE_SUMMARY"');
+  const batch = parseIbkrFundingBatch(xml, range);
+  deepStrictEqual(batch.fundingHistory, original.fundingHistory);
+  deepStrictEqual(batch.cashHistory, original.cashHistory);
+  equal(batch.deposits, 120);
+  equal(batch.withdrawals, 20);
+  equal(batch.endingCash, original.endingCash);
 });
 
 Deno.test("IBKR funding scans back to account opening, caches completed batches and excludes income from contributions", async () => {

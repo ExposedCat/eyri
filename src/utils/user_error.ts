@@ -411,6 +411,10 @@ const rules: [RegExp, string | ((match: RegExpMatchArray) => string)][] = [
     "No funded capital in this view. Use money values.",
   ],
   [
+    /deposit and withdrawal dates are missing or incomplete/i,
+    "Deposit/withdrawal dates are incomplete. Wait for funding sync, then retry.",
+  ],
+  [
     /Duplicate account (?:reconciliation|valuation)/i,
     "Bot counted an account twice. Ask admin to fix the report.",
   ],
@@ -528,20 +532,20 @@ const rules: [RegExp, string | ((match: RegExpMatchArray) => string)][] = [
   ],
   [
     /widget requires portfolio|Widget benchmark history is incomplete/i,
-    "Widget index dates are missing. Use /chart alltime.",
+    "Widget index dates are missing. Use /chart.",
   ],
   [
     /Invalid chart widget values/i,
     "Bot produced an unusable chart value. Ask admin to check the calculation.",
   ],
-  [/widget exceeds Telegram/i, "Widget is too large. Use /chart alltime."],
+  [/widget exceeds Telegram/i, "Widget is too large. Use /chart."],
   [
     /Telegram is not allowing widgets/i,
-    "Telegram blocks widgets here. Use /chart alltime.",
+    "Telegram blocks widgets here. Use /chart.",
   ],
   [
     /widgets require Bot API/i,
-    "Bot API lacks widget support. Use /chart alltime.",
+    "Bot API lacks widget support. Use /chart.",
   ],
   [
     /Podman socket not found/i,

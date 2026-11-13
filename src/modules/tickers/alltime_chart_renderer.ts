@@ -2,6 +2,7 @@ import type { Chart, ChartDataset, ScriptableContext } from "chart.js";
 import type { AllTimeDataset } from "./alltime_chart.ts";
 import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
 import { chartPointValue, chartUsesPercentages, requireVisibleChart } from "./chart_points.ts";
+import { percentageGrid, percentageGridLabel } from "./chart_grid.ts";
 import {
   chartColors as colors,
   chartFont,
@@ -18,36 +19,9 @@ const palette = [
 ];
 const day = 86_400_000;
 
-export function benchmarkMarkerIndices(
-  points: { x: number; y: number }[],
-  minimumDistance = 70,
-) {
-  if (!points.length) return [];
-  const turns: number[] = [0];
-  let direction = 0;
-  for (let index = 1; index < points.length; index++) {
-    const nextDirection = Math.sign(points[index].y - points[index - 1].y);
-    if (!nextDirection) continue;
-    if (direction && nextDirection !== direction) turns.push(index - 1);
-    direction = nextDirection;
-  }
-  const last = points.length - 1;
-  if (last === 0 || points[last].x - points[0].x < minimumDistance) return [last];
-  turns.push(last);
-  const selected = [0, last];
-  const candidates = turns.slice(1, -1).map((index, position) => ({
-    index,
-    prominence: Math.min(
-      Math.abs(points[index].y - points[turns[position]].y),
-      Math.abs(points[index].y - points[turns[position + 2]].y),
-    ),
-  })).sort((first, second) => second.prominence - first.prominence);
-  for (const { index } of candidates) {
-    if (selected.every(previous => Math.abs(points[index].x - points[previous].x) >= minimumDistance)) {
-      selected.push(index);
-    }
-  }
-  return selected.sort((first, second) => first - second);
+export function purchaseMarkerIndices(points: { date: string }[], dates: string[] = []) {
+  const purchases = new Set(dates);
+  return points.flatMap((point, index) => purchases.has(point.date) ? [index] : []);
 }
 
 function money(value: number, currency: string) {
@@ -92,6 +66,8 @@ export function renderAllTimeDatasets(
   const percentagesAvailable = chartUsesPercentages(datasets);
   const displayCurrency = single ? (datasets[0].displayCurrency ?? "USD") : "USD";
   const displayRate = single ? (datasets[0].displayRate ?? 1) : 1;
+  const percentGrid = percentagesAvailable ? percentageGrid(datasets.flatMap(dataset =>
+    [...dataset.points, ...(dataset.benchmark?.points ?? [])].map(point => chartPointValue(point, true)))) : undefined;
   const monthTicks: { value: number }[] = [];
   for (
     let date = Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), 1);
@@ -100,6 +76,14 @@ export function renderAllTimeDatasets(
     monthTicks.push({ value: date });
     const current = new Date(date);
     date = Date.UTC(current.getUTCFullYear(), current.getUTCMonth() + 1, 1);
+  }
+  const ranged = datasets.some(dataset => dataset.dateRange);
+  const days = (+last - +first) / day;
+  if (ranged) {
+    const ticks = days <= 45
+      ? Array.from({ length: Math.floor(days / (days <= 10 ? 1 : 7)) + 1 }, (_, i) => ({ value: +first + i * (days <= 10 ? 1 : 7) * day }))
+      : [{ value: +first }, ...monthTicks.filter(tick => tick.value > +first)];
+    monthTicks.splice(0, monthTicks.length, ...ticks);
   }
   const legendCount = datasets.length + datasets.filter((dataset) => dataset.benchmark).length;
   const legendColumns = legendCount === 1 ? 1 : 2;
@@ -164,8 +148,8 @@ export function renderAllTimeDatasets(
       scales: {
         x: {
           type: "linear",
-          min: monthTicks[0].value,
-          max: +last + 3 * day,
+          min: ranged ? +first : monthTicks[0].value,
+          max: +last + (ranged ? Math.max(day / 10, Math.min(day, days * day * .015)) : 3 * day),
           afterBuildTicks: (scale) => {
             scale.ticks = monthTicks;
           },
@@ -180,6 +164,7 @@ export function renderAllTimeDatasets(
             font: { family: chartFont, size: months > 60 ? 24 : 32 },
             callback: (value) => {
               const date = new Date(Number(value));
+              if (ranged && days <= 45) return date.toLocaleString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
               const month = date.toLocaleString("en-US", {
                 month: "short",
                 timeZone: "UTC",
@@ -193,26 +178,30 @@ export function renderAllTimeDatasets(
         },
         y: {
           type: "linear",
-          grace: "15%",
+          ...(percentGrid ? { min: percentGrid.min, max: percentGrid.max,
+            afterBuildTicks: (scale) => { scale.ticks = percentGrid.ticks; } } : { grace: "15%" }),
           border: { display: false },
           grid: {
             color: ({ tick }) =>
-              tick.value === 0 ? colors.baseline : colors.grid,
-            lineWidth: ({ tick }) => (tick.value === 0 ? 2 : 1.5),
+              tick.value === 0 ? colors.baseline : percentGrid && !tick.major ? `${colors.grid}80` : colors.grid,
+            lineWidth: ({ tick }) => tick.value === 0 ? 2 : percentGrid && !tick.major ? .75 : 1.5,
             drawTicks: false,
           },
           ticks: {
             color: colors.muted,
-            font: { family: chartFont, size: 32 },
+            font: { family: chartFont, size: percentGrid ? 26 : 32 },
+            ...(percentGrid ? { autoSkip: false } : {}),
             padding: 24,
-            callback: (value) => percentagesAvailable ? `${value}%` : money(Number(value), displayCurrency),
+            callback: (value, index, ticks) => percentagesAvailable
+              ? ticks[index].major ? percentageGridLabel(Number(value)) : ""
+              : money(Number(value), displayCurrency),
           },
         },
       },
     },
     plugins: [
       {
-        id: "benchmarkTurningPoints",
+        id: "purchaseAndEndpointMarkers",
         afterDatasetsDraw(chart) {
           const { ctx } = chart;
           ctx.save();
@@ -223,7 +212,20 @@ export function renderAllTimeDatasets(
             ctx.fillStyle = colors.background;
             ctx.lineWidth = 3.5;
             ctx.setLineDash([]);
-            for (const index of benchmarkMarkerIndices(points)) {
+            for (const index of [points.length - 1]) {
+              if (!points[index] || !Number.isFinite(points[index].x) || !Number.isFinite(points[index].y)) continue;
+              ctx.beginPath();
+              ctx.arc(points[index].x, points[index].y, 9, 0, 2 * Math.PI);
+              ctx.fill();
+              ctx.stroke();
+            }
+          });
+          datasets.forEach((dataset, participantIndex) => {
+            const points = chart.getDatasetMeta(participantIndex).data;
+            ctx.strokeStyle = palette[participantIndex % palette.length];
+            for (const index of purchaseMarkerIndices(dataset.points, dataset.purchaseDates)) {
+              if (chartPointValue(dataset.points[index], percentagesAvailable, displayRate) === null ||
+                !Number.isFinite(points[index]?.x) || !Number.isFinite(points[index]?.y)) continue;
               ctx.beginPath();
               ctx.arc(points[index].x, points[index].y, 9, 0, 2 * Math.PI);
               ctx.fill();

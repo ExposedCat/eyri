@@ -24,7 +24,8 @@ import {
   switchChartBenchmarks,
 } from "./alltime_chart.ts";
 import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
-import { parseReportArgs, type ReportFilter } from "./performance_command.ts";
+import type { ReportFilter } from "./performance_command.ts";
+import { chartUsage, chartWindowStart, clipChartDataset, parseChartArgs } from "./chart_command.ts";
 import { reconcileHistory } from "./history_reconciliation.ts";
 import { isOptionPosition, isStockPosition } from "./portfolio.ts";
 import { renderChartWidget } from "./chart_widget.ts";
@@ -202,10 +203,9 @@ export function createChartComposer(
   });
   composer.command("chart", async (ctx) => {
     if (!ctx.dbEntities.user || !ctx.from || !ctx.chat) return;
-    const widget = typeof ctx.match === "string" && !ctx.match.trim();
-    const selection = parseReportArgs(ctx.match, "alltime");
+    const selection = parseChartArgs(ctx.match);
     if (!selection) {
-      await ctx.reply("Use /chart [perf|alltime|worth] [s/o/stocks/options] [BUCKET].");
+      await ctx.reply(chartUsage);
       return;
     }
     const { bucketName } = selection;
@@ -214,11 +214,13 @@ export function createChartComposer(
       (!/^[A-Za-z][A-Za-z0-9_]{0,19}$/.test(bucketName) ||
         !getUserBucket(ctx.db, ctx.from.id, bucketName))
     ) {
-      await ctx.reply("Bucket not found. Use /chart [perf|alltime|worth] [s/o/stocks/options] [BUCKET].");
+      await ctx.reply(`Bucket not found. ${chartUsage}`);
       return;
     }
     try {
-      const dataset = await runtime.dataset(ctx, bucketName, { kind: selection.kind as "perf" | "alltime" | "worth", filter: selection.filter });
+      let dataset = await runtime.dataset(ctx, bucketName, { kind: "alltime", filter: selection.filter });
+      if (selection.window) dataset = clipChartDataset(dataset,
+        chartWindowStart(dataset.points.at(-1)!.date, selection.window), dataset.points.at(-1)!.date);
       const currency = ctx.dbEntities.user.currency ?? "USD";
       if (currency !== "USD") {
         try {
@@ -230,11 +232,11 @@ export function createChartComposer(
           (dataset.notes ??= []).push(`${currency} display conversion unavailable; showing USD.`);
         }
       }
-      if (widget) {
+      if (selection.widget) {
         const switchBenchmarks = runtime.switchBenchmarks ?? switchChartBenchmarks;
         const [momentum] = await switchBenchmarks(ctx.db, [dataset], "momentum");
-        const [spyl] = await switchBenchmarks(ctx.db, [dataset], "spyl");
-        const html = renderChartWidget(dataset, spyl.benchmark!, momentum.benchmark!);
+        const [sp500] = await switchBenchmarks(ctx.db, [dataset], "sp500");
+        const html = renderChartWidget(dataset, sp500.benchmark!, momentum.benchmark!);
         // grammY's raw API proxy supports new Bot API methods before its types
         // catch up. Use the existing API client and its configured transformers.
         const api = ctx.api.raw as unknown as {
@@ -245,10 +247,10 @@ export function createChartComposer(
           await api.sendWidget({ chat_id: ctx.chat.id, html, height: 0, is_shared: true, ...topic });
         } catch (error) {
           if (telegramError(error, 400, "INPUT_MEDIA_WIDGET_NOT_ALLOWED")) {
-            throw new Error("Telegram is not allowing widgets in this chat yet. Use /chart alltime for the photo chart.");
+            throw new Error("Telegram is not allowing widgets in this chat yet. Use /chart for the photo chart.");
           }
           if (telegramError(error, 404)) {
-            throw new Error("HTML chart widgets require Bot API 10.4 support on this bot's API endpoint. Use /chart alltime for the photo chart.");
+            throw new Error("HTML chart widgets require Bot API 10.4 support on this bot's API endpoint. Use /chart for the photo chart.");
           }
           throw error;
         }
@@ -304,7 +306,7 @@ export function createChartComposer(
       return;
     }
     const datasets = JSON.parse(session.datasets) as AllTimeDataset[];
-    if (datasets.some((dataset) => dataset.fundingReturnVersion !== 5)) {
+    if (datasets.some((dataset) => dataset.fundingReturnVersion !== 6)) {
       await ctx.answerCallbackQuery({
         text: "Saved chart uses an old calculation. Run /chart again.",
         show_alert: true,
@@ -358,17 +360,7 @@ export function createChartComposer(
         const end = original.at(-1)!.date;
         next = [...datasets, added].map((dataset) => {
           const { displayCurrency: _currency, displayRate: _rate, ...usdDataset } = dataset;
-          const points = dataset.points.filter((point) => point.date >= start && point.date <= end);
-          if (!points.length) throw new Error("Your portfolio has no performance history within this chart's date range.");
-          const clip = (benchmark: NonNullable<AllTimeDataset["benchmark"]>) => ({
-            ...benchmark,
-            points: benchmark.points.filter((point) => point.date >= start && point.date <= end),
-          });
-          const benchmark = dataset.benchmark && clip(dataset.benchmark);
-          const benchmarkSnapshots = dataset.benchmarkSnapshots && Object.fromEntries(
-            Object.entries(dataset.benchmarkSnapshots).map(([index, snapshot]) => [index, clip(snapshot)]),
-          );
-          return { ...usdDataset, points, benchmark, ...(benchmarkSnapshots && { benchmarkSnapshots }) };
+          return clipChartDataset(usdDataset, start, end, !!datasets[0].dateRange);
         });
         const joining = next.at(-1)!;
         if (hasChartBenchmarkInputs(joining) && (!joining.benchmark || chartBenchmarkIndex(joining.benchmark.symbol) !== current)) {

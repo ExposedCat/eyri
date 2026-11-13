@@ -985,7 +985,7 @@ Deno.test("switching index replays saved purchases before the visible window and
     { date: "2025-01-02", amountUsd: 1000 }, { date: "2025-01-03", amountUsd: 1000 },
   ];
   const first: AllTimeDataset = {
-      fundingReturnVersion: 5,
+      fundingReturnVersion: 6,
     userId: 1, label: "First", bucketName: null, displayCurrency: "EUR", displayRate: .8,
     points: [{ date: "2025-01-03", percentage: 5, gain: 100 }, { date: "2025-01-06", percentage: 15.5, gain: 310 }],
     benchmarkPurchases: purchases,
@@ -1064,7 +1064,7 @@ Deno.test("index switches tolerate one unavailable history without mixing index 
   try {
     const bars = [{ date: "2025-01-02", close: 100 }, { date: "2025-01-03", close: 100 }, { date: "2025-01-06", close: 110 }];
     const first: AllTimeDataset = {
-      fundingReturnVersion: 5, userId: 1, label: "Older account", bucketName: null,
+      fundingReturnVersion: 6, userId: 1, label: "Older account", bucketName: null,
       points: [{ date: "2025-01-02", gain: 0, percentage: 0 }, { date: "2025-01-06", gain: 10, percentage: 10 }],
       benchmarkPurchases: [{ date: "2025-01-02", amountUsd: 100 }],
     };

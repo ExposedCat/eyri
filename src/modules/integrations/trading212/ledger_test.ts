@@ -240,7 +240,8 @@ Deno.test("account return reconciles deposits, broker value, cash and every posi
   });
   equal(report?.total.change, 15);
   equal(report?.total.cost, 50);
-  equal(report?.totalReturnPercentage, 15 / account.deposits * 100);
+  equal(report?.contributedCapital, 96);
+  equal(report?.totalReturnPercentage, 15 / 96 * 100);
   equal(report?.performances.length, 1);
   equal(report?.performances[0].ticker, p.ticker);
   equal(report?.performances[0].change, 15);

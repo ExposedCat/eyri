@@ -7,11 +7,11 @@ import {
   hash,
   renderAllTimeChart,
 } from "./alltime_chart.ts";
-import { benchmarkMarkerIndices, renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
+import { purchaseMarkerIndices, renderAllTimeDatasets } from "./alltime_chart_renderer.ts";
 import { buildChartBenchmark } from "./chart_benchmark.ts";
 
 const dataset: AllTimeDataset = {
-  fundingReturnVersion: 5,
+  fundingReturnVersion: 6,
   userId: 1,
   label: "Zero crossings",
   bucketName: null,
@@ -190,17 +190,10 @@ Deno.test("mint portfolio stays in front of an exactly overlapping gold benchmar
   ok(gold > 50, `Benchmark rings remain visible above the portfolio: ${gold}`);
 });
 
-Deno.test("benchmark rings prioritize stronger turns across plateaus and enforce screen spacing", () => {
-  const points = [0, 20, 20, 10, 15, 0, 0, 30, 10, 10, 0]
-    .map((vertical, index) => ({ x: index * 40, y: vertical }));
-  const indices = benchmarkMarkerIndices(points);
-  deepStrictEqual(indices, [0, 2, 4, 7, 10]);
-  for (let index = 1; index < indices.length; index++) {
-    ok(points[indices[index]].x - points[indices[index - 1]].x >= 70);
-  }
-  deepStrictEqual(benchmarkMarkerIndices([]), []);
-  deepStrictEqual(benchmarkMarkerIndices([{ x: 0, y: 0 }]), [0]);
-  deepStrictEqual(benchmarkMarkerIndices([{ x: 0, y: 0 }, { x: 40, y: 10 }]), [1]);
+Deno.test("purchase rings use actual purchase dates, deduplicate fills and ignore dates outside the chart", () => {
+  const points = ["2026-01-01", "2026-01-02", "2026-01-03"].map(date => ({ date }));
+  deepStrictEqual(purchaseMarkerIndices(points, ["2026-01-02", "2026-01-02", "2025-12-31"]), [1]);
+  deepStrictEqual(purchaseMarkerIndices(points), []);
 });
 
 Deno.test("render cache includes each person's frozen benchmark, and legacy charts must be recreated", async () => {

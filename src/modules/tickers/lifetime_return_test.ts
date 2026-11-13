@@ -169,7 +169,7 @@ Deno.test("excluded bucket capital reduces real deposits without counting the re
       positions: sold ? [] : [{ ...position, ticker: "BUCKET", totalInput: 100, currentPrice: 120, totalNow: 120, unrealizedPnl: 20 }],
       transactionBuckets: new Map(), bucketName: null,
     });
-    const broker = { ...account, deposits: 200, netContributions: 200, totalValue: 645, pnl: 445, cash: sold ? 120 : 0, positionValue: sold ? 525 : 645, investmentValue: sold ? 525 : 645, fundingHistory: [{ date: "2025-01-01", amount: 200 }] };
+    const broker = { ...account, deposits: 200, netContributions: 200, totalValue: 645, pnl: 445, cash: sold ? 120 : 0, positionValue: sold ? 525 : 645, investmentValue: sold ? 525 : 645, fundingHistory: [{ date: "2025-01-01", amount: 200 }], cashHistory: [{ date: "2025-01-01", amount: 200, currency: "USD", type: "Deposit" }] };
     const [remaining] = await excludeBucketCapital([broker], bucket);
     equal(remaining.deposits, 100);
     equal(remaining.totalValue, 525);
@@ -208,7 +208,7 @@ Deno.test("cash-funded buckets treat each purchase as fresh capital while broker
     near(series.at(-2)!.percentage!, 425 / 600 * 100);
     near(series.at(-1)!.percentage!, report!.totalReturnPercentage!);
     equal(accountReturn([account], new Set([1]), rates).percentage, 425);
-    const mixed = accountReturn([{ ...account, totalValue: 425, withdrawals: 100 }, { ...accounts[0], integrationId: 2 }], new Set([1, 2]), rates);
+    const mixed = accountReturn([{ ...account, totalValue: 425, withdrawals: 100, fundingHistory: [...account.fundingHistory!, { date: "2025-01-04", amount: -100 }], cashHistory: [...account.cashHistory!, { date: "2025-01-04", amount: -100, currency: "USD", type: "Withdrawal" }] }, { ...accounts[0], integrationId: 2 }], new Set([1, 2]), rates);
     near(mixed.percentage!, (425 + 425 * share) / (100 + 600 * share) * 100);
   }
 });
@@ -231,14 +231,16 @@ Deno.test("lifetime return keeps the original deposit after reinvesting gains an
   }
 });
 
-Deno.test("gross-deposit return handles withdrawals and multiple accounts without inferring transfers", () => {
-  equal(accountReturn([{ ...account, totalValue: 125, withdrawals: 400 }], new Set([1]), rates).percentage, 425);
-  equal(accountReturn([{ ...account, deposits: 200, withdrawals: 100 }], new Set([1]), rates).percentage, 212.5);
-  equal(accountReturn([{ ...account, deposits: 0 }], new Set([1]), rates).percentage, null);
+Deno.test("withdrawals without redeposits keep earned returns and account coverage remains explicit", () => {
+  const funded = (deposits: number, withdrawals = 0) => ({ ...account, deposits, withdrawals,
+    fundingHistory: [{ date: "2025-01-01", amount: deposits }, ...(withdrawals ? [{ date: "2025-01-04", amount: -withdrawals }] : [])],
+    cashHistory: undefined });
+  equal(accountReturn([{ ...funded(100, 400), totalValue: 125 }], new Set([1]), rates).percentage, 425);
+  equal(accountReturn([funded(200, 100)], new Set([1]), rates).percentage, 212.5);
+  equal(accountReturn([funded(0)], new Set([1]), rates).percentage, null);
   equal(accountReturn([account], new Set([1, 2]), rates).percentage, null);
   equal(accountReturn([account, { ...account, integrationId: 2 }], new Set([1, 2]), rates).percentage, 425);
-  equal(accountReturn([account, { ...account, integrationId: 2, withdrawals: 50 }], new Set([1, 2]), rates).percentage, 450);
-  // Older persisted payloads can still contain the removed heuristic flag.
+  equal(accountReturn([account, { ...funded(100, 50), integrationId: 2 }], new Set([1, 2]), rates).percentage, 450);
   const legacy = { ...account, integrationId: 2, fundingIncludesTransfers: true };
   equal(accountReturn([account, legacy], new Set([1, 2]), rates).percentage, 425);
   throws(() => accountReturn([account, account], new Set([1]), rates), /Duplicate/);

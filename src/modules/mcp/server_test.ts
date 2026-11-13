@@ -307,7 +307,7 @@ Deno.test("MCP returns concise numerical reports matching Telegram totals and hy
   }
 });
 
-Deno.test("MCP alltime uses lifetime gross deposits and propagates missing quotes as errors", async () => {
+Deno.test("MCP alltime keeps unrecycled contributions and propagates missing quotes as errors", async () => {
   const h = await harness();
   try {
     const view = h.runtime.view;
@@ -316,6 +316,7 @@ Deno.test("MCP alltime uses lifetime gross deposits and propagates missing quote
       accountPerformances: [{
         integrationId: 1, currency: "USD", totalValue: 1450,
         deposits: 1200, withdrawals: 100, netContributions: 1100,
+        fundingHistory: [{ date: "2025-01-01", amount: 1200 }, { date: "2025-06-01", amount: -100 }],
         cash: 730, ledgerCash: { USD: 730 }, pnl: 350,
         openedAt: new Date("2025-01-01"), historyThrough: new Date(),
         positionValue: 720, investmentValue: 720,

@@ -10,7 +10,7 @@ export type BenchmarkSource = {
   positions?: IntegrationPortfolioPosition[];
 };
 
-export type FundingBasisPoint = { date: string; deposits: number; withdrawals: number };
+export type FundingBasisPoint = { date: string; deposits: number; withdrawals: number; contributedCapital?: number };
 
 export function benchmarkWithFundingBasis(benchmark: ChartBenchmark, basis?: FundingBasisPoint[]) {
   if (!basis) return benchmark;
@@ -19,8 +19,9 @@ export function benchmarkWithFundingBasis(benchmark: ChartBenchmark, basis?: Fun
     const funding = byDate.get(point.date);
     if (!funding || point.value === undefined) throw new Error("Index snapshot lacks its top-up currency basis. Create a new chart with /chart.");
     const gain = point.value + funding.withdrawals - funding.deposits;
+    const capital = funding.contributedCapital ?? funding.deposits;
     return { ...point, gain, depositsUsd: funding.deposits,
-      percentage: funding.deposits > 0 ? gain / funding.deposits * 100 : 0 };
+      contributedCapitalUsd: capital, percentage: capital > 0 ? gain / capital * 100 : 0 };
   }) };
 }
 
