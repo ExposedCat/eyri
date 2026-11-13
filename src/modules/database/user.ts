@@ -34,11 +34,14 @@ export async function findOrCreateUser(
   database: Database,
   userId: number,
 ): Promise<User | null> {
+  const existing = readUser(database, userId);
+  if (existing) return existing;
+
   database
     .prepare(`
       INSERT INTO users (user_id)
       VALUES (?)
-      ON CONFLICT(user_id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+      ON CONFLICT(user_id) DO NOTHING
     `)
     .run(userId);
 

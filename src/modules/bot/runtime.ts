@@ -27,7 +27,14 @@ export function setupBotRuntime(bot: Bot) {
   bot.use(async (ctx, next) => {
     const updateId = ctx.update.update_id;
     const startedAt = Date.now();
-    console.log(`Handling update ${updateId}`);
+    const type = Object.keys(ctx.update).find((key) => key !== "update_id");
+    // Log field names, never message text or callback data (credentials can occur).
+    const fields = ctx.message
+      ? Object.keys(ctx.message).filter((key) =>
+        !["message_id", "date", "chat", "from"].includes(key)
+      ).join(",")
+      : "";
+    console.log(`Handling update ${updateId} (${type}${fields ? `:${fields}` : ""})`);
     const timer = setTimeout(() => {
       console.warn(`Update ${updateId} is still running after 30 seconds`);
     }, 30_000);

@@ -61,6 +61,12 @@ Deno.test("API status errors distinguish limits, credentials and permissions", (
   );
 });
 
+Deno.test("database contention explains that the bot is busy", () => {
+  for (const message of ["database is locked", "database table is locked", "database is busy"]) {
+    equal(userErrorMessage(new Error(message), "42"), "The bot's database is busy. Retry shortly.");
+  }
+});
+
 Deno.test("FX errors identify HTTP failure, missing currency, unusable response and actual last rate", async () => {
   for (
     const [request, expected] of [

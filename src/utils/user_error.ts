@@ -80,6 +80,10 @@ export function httpError(
 // UserFacingError at the source, with the instrument/field and measured values.
 const rules: [RegExp, string | ((match: RegExpMatchArray) => string)][] = [
   [
+    /^database(?: table)? is (?:locked|busy)\b/i,
+    "The bot's database is busy. Retry shortly.",
+  ],
+  [
     /funding history is syncing/i,
     "IBKR funding is downloading. Retry after the next sync.",
   ],

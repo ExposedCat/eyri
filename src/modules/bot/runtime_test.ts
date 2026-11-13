@@ -77,6 +77,41 @@ function harness(updates: Update[]) {
   return bot;
 }
 
+Deno.test("update diagnostics record event kinds without message contents or callback data", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (...args) => logs.push(args.join(" "));
+  try {
+    const bot = harness([]);
+    const message = command(11, "/ibkr secret-credentials");
+    await bot.handleUpdate(message);
+    await bot.handleUpdate({
+      update_id: 12,
+      callback_query: {
+        id: "one", chat_instance: "one", data: "private-callback",
+        from: { id: 1, is_bot: false, first_name: "User" },
+      },
+    });
+    const service: Update = {
+      update_id: 13,
+      message: {
+        message_id: 13, date: 1,
+        chat: { id: -1, type: "group", title: "Group" },
+        from: { id: 1, is_bot: false, first_name: "User" },
+        new_chat_title: "private-title",
+      },
+    };
+    await bot.handleUpdate(service);
+    ok(logs.some((line) => line.includes("Handling update 11 (message:text,entities)")));
+    ok(logs.some((line) => line.includes("Handling update 12 (callback_query)")));
+    ok(logs.some((line) => line.includes("Handling update 13 (message:new_chat_title)")));
+    ok(!logs.join("\n").includes("secret-credentials"));
+    ok(!logs.join("\n").includes("private-"));
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("slow portfolio reports do not block same-chat commands in the runner", async () => {
   const release = deferred();
   const responsive = deferred();

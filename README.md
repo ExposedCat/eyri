@@ -8,6 +8,18 @@
 - grammY
 - SQLite
 
+## SQLite concurrency
+
+The bot, container healthcheck and standalone MCP use a five-second busy timeout
+on each database connection. Reads and writes wait for short transactions in
+other processes instead of immediately failing on a lock.
+Concurrent initialization within a process shares one connection. Looking up an
+existing Telegram user does not write or refresh `users.updated_at`; that timestamp
+changes when user settings change. Background execution sync and the Gateway
+watchdog log failures and retry on their next scheduled tick rather than stopping
+the app. Telegram update logs include event types and message field names without
+logging message text or callback data.
+
 ## IBKR availability and recovery
 
 Both gateways use the pinned ibg-controller image. The first retains its existing

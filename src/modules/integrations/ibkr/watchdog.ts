@@ -61,6 +61,8 @@ export function startGatewayWatchdog(database: Database) {
           console.error("IBKR watchdog failed:", error);
         }
       }));
+    } catch (error) {
+      console.error("IBKR watchdog failed:", error);
     } finally {
       running = false;
     }

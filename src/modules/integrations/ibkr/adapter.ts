@@ -807,6 +807,8 @@ export function startIbkrExecutionSyncLoop(database: Database) {
     isExecutionSyncRunning = true;
     try {
       await syncIbkrExecutions(database);
+    } catch (error) {
+      console.error("IBKR execution sync failed:", error);
     } finally {
       isExecutionSyncRunning = false;
     }
