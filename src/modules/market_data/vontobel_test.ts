@@ -642,58 +642,22 @@ Deno.test("expired Vontobel warrants retain their finalized history indefinitely
   }
 });
 
-Deno.test("a Vontobel outage rejects the full chart with a provider-specific error and leaves no cached series", async () => {
+Deno.test("a Vontobel outage leaves price gaps and recovers after a known sale", async () => {
   const db = new Database(":memory:");
   try {
     const cache = new YahooHistoryCache(db, market([], []), clock);
-    await rejects(
-      loadAllTimeDataset(
-        db,
-        {
-          positions: [],
-          orders: [{
-            integrationId: 1,
-            integrationKind: "ibkr",
-            account: "one",
-            ticker,
-            currency: "EUR",
-            assetCategory: "WAR",
-            quantity: 1,
-            price: 2,
-            date: new Date("2026-06-24"),
-          }],
-          transactionBuckets: new Map(),
-          bucketName: null,
-          now: clock(),
-        },
-        1,
-        "Test",
-        cache,
-      ),
-      (error: unknown) => {
-        ok(error instanceof HistoricalDataError);
-        equal(
-          error.message,
-          "Failed to fetch historical data:\n- VY8GR5: Vontobel warrant history unavailable (DE000VY8GR55).",
-        );
-        return true;
-      },
-    );
-    equal(
-      (db.prepare("SELECT COUNT(*) AS n FROM vontobel_coverage").get() as {
-        n: number;
-      }).n,
-      0,
-    );
-    equal(
-      (db.prepare("SELECT COUNT(*) AS n FROM alltime_series_cache").get() as {
-        n: number;
-      }).n,
-      0,
-    );
-  } finally {
-    db.close();
-  }
+    const order = { integrationId: 1, integrationKind: "ibkr" as const, account: "one", ticker, currency: "EUR", assetCategory: "WAR", quantity: 1, price: 2, date: new Date("2026-06-24") };
+    const dataset = await loadAllTimeDataset(db, {
+      positions: [], orders: [order, { ...order, quantity: -1, price: 3, date: new Date("2026-06-25") }],
+      transactionBuckets: new Map(), bucketName: null, now: clock(),
+    }, 1, "Test", cache, async input => Response.json(new URL(String(input)).pathname === "/v2/rates"
+      ? [{ base: "USD", quote: "EUR", date: "2026-06-24", rate: 1 }]
+      : { base: "USD", quote: "EUR", rate: 1 }));
+    equal(dataset.points.find(point => point.date === "2026-06-24")!.gain, null);
+    equal(dataset.points.at(-1)!.gain, 1);
+    ok(dataset.notes!.some(note => /VY8GR5.*Vontobel.*gaps/.test(note)));
+    equal((db.prepare("SELECT COUNT(*) AS n FROM vontobel_coverage").get() as { n: number }).n, 0);
+  } finally { db.close(); }
 });
 
 Deno.test("warrant chart uses bids per warrant with EUR conversion and preserves the live broker endpoint", async () => {

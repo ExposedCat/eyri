@@ -157,10 +157,18 @@ Deno.test("state changes stay ordered per user while other users and reports pro
 
 Deno.test("a failed handler is logged without stopping subsequent updates", async () => {
   const responsive = deferred();
+  const replied = deferred();
+  const replies: string[] = [];
   const logged: unknown[][] = [];
   const originalError = console.error;
   console.error = (...args) => logged.push(args);
   const bot = harness([command(1, "/portfolio"), command(2, "/start")]);
+  bot.api.config.use((previous, method, payload, signal) => {
+    if (method !== "sendMessage") return previous(method, payload, signal);
+    replies.push((payload as { text: string }).text);
+    replied.resolve();
+    return Promise.resolve({ ok: true, result: { message_id: 3, date: 1, chat: { id: 1, type: "private" } } }) as never;
+  });
   bot.command("portfolio", () => {
     throw new Error("Broker unavailable");
   });
@@ -168,9 +176,11 @@ Deno.test("a failed handler is logged without stopping subsequent updates", asyn
   const runner = runBot(bot);
   try {
     await within(responsive.promise);
+    await within(replied.promise);
     await runner.stop();
     equal(logged.length, 1);
-    equal(logged[0][1], "Broker unavailable");
+    ok(String(logged[0][0]).includes("Broker unavailable"));
+    equal(replies[0], "Unexpected bot error (1). Send this code to admin.");
   } finally {
     console.error = originalError;
     await runner.stop();

@@ -1,6 +1,8 @@
 import { accountFunding, accountWorth } from "./account_return.ts";
 import { accountFxInputs, accountFxPnl, accountTopups, proportionalCurrencyReturns } from "./account_fx.ts";
 import { requireReportNumber } from "../../utils/report_value.ts";
+import { userErrorMessage } from "../../utils/user_error.ts";
+import { HistoryMismatchError } from "./history_reconciliation.ts";
 import { formatMoney, formatMoneyChange } from "../../utils/money.ts";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import { isCfdAllocation } from "./cfd_history.ts";
@@ -64,6 +66,7 @@ type BuildIntegratedSoldPerformanceArgs = BuildIntegratedHistoryArgs & {
 };
 
 type BuildIntegratedAllTimePerformanceArgs = BuildIntegratedTickerListArgs & {
+  ignoreFx?: boolean;
   accountPerformances?: IntegrationAccountPerformance[];
   orders: IntegrationOrder[];
   transactionBuckets?: Map<string, string>;
@@ -1109,6 +1112,7 @@ export async function buildIntegratedAllTimeReport({
   transactionBuckets,
   bucketName = null,
   accountPerformances = [],
+  ignoreFx = false,
 }: BuildIntegratedAllTimePerformanceArgs) {
   const now = new Date();
   const through = now.toISOString().slice(0, 10);
@@ -1124,8 +1128,13 @@ export async function buildIntegratedAllTimeReport({
     transactionBuckets,
     bucketName,
   );
-  const fxInputs = accountFxInputs(accountPerformances, orders.filter(order => !isDisplayableOrder(order)));
-  const topups = accountTopups(accountPerformances);
+  ignoreFx ||= accountPerformances.some(account => account.fxUnavailableReason);
+  let fxInputs: ReturnType<typeof accountFxInputs> = [];
+  let fxNote = accountPerformances.find(account => account.fxUnavailableReason)?.fxUnavailableReason;
+  if (!ignoreFx) try { fxInputs = accountFxInputs(accountPerformances, orders.filter(order => !isDisplayableOrder(order))); }
+  catch (error) { fxNote = `Currency P/L excluded: ${userErrorMessage(error)}`; }
+  const fundingAccounts = ignoreFx || fxNote ? accountPerformances.map(account => ({ ...account, cashHistory: undefined })) : accountPerformances;
+  const topups = accountTopups(fundingAccounts);
   const rates = await fetchConversionRates(
     [
       ...positions.flatMap(portfolioPositionCurrencies),
@@ -1258,7 +1267,7 @@ export async function buildIntegratedAllTimeReport({
       selectedIntegrationIds.add(order.integrationId);
     }
   }
-  const funding = accountFunding(accountPerformances, selectedIntegrationIds, rates, currency);
+  const funding = accountFunding(fundingAccounts, selectedIntegrationIds, rates, currency);
   const fx = accountFxPnl(fxInputs, rates);
   const accountAdjustment = fx.reduce((sum, account) => sum + account.pnl, 0);
   total.change = instrumentPnl + accountAdjustment;
@@ -1266,7 +1275,7 @@ export async function buildIntegratedAllTimeReport({
   const totalReturnPercentage = funding.reason ? null : total.change / funding.deposits * 100;
   const currencyReturns = funding.reason ? [] : proportionalCurrencyReturns(topups, total.change, rates);
   return { performances, total, accountAdjustment, accountAdjustments, fx,
-    currencyReturns, totalReturnPercentage, returnUnavailableReason: funding.reason, accounts: accountPerformances };
+    currencyReturns, totalReturnPercentage, returnUnavailableReason: funding.reason, accounts: accountPerformances, fxNote };
 }
 
 export async function buildIntegratedAllTimePerformanceList({
@@ -1334,7 +1343,8 @@ export async function buildIntegratedAllTimePerformanceList({
     render("Total:", total, report.totalReturnPercentage),
     ...(report.accounts.some(account => account.fundingSource !== "bucket_cash") && report.currencyReturns.some(item => item.currency !== currency)
       ? [`Top-up return: ${report.currencyReturns.map(item => formatCurrencyChange(item.pnl, item.currency)).join(" / ")}`] : []),
-    ...(report.returnUnavailableReason ? [report.returnUnavailableReason] : [])].join("\n\n");
+    ...(report.returnUnavailableReason ? [`Percentage unavailable: ${userErrorMessage(new Error(report.returnUnavailableReason))}`] : []),
+    ...(report.fxNote ? [report.fxNote] : [])].join("\n\n");
 }
 
 export async function buildIntegratedDailyPerformanceList({
@@ -1485,9 +1495,8 @@ export function buildBucketedPortfolioPositions({
     for (const position of bucketed) {
       const key = getPositionDisplayKey(position.ticker, position.currency);
       if (!liveKeys.has(key)) {
-        throw new Error(
-          `Bucket holding ${position.ticker} is absent from the live portfolio. Reassign its transactions after the corporate action.`,
-        );
+        throw new HistoryMismatchError(`${position.ticker}: bucket ${position.amount}, broker 0 shares. Ask admin to check the history.`,
+          `Bucket holding ${position.ticker} is absent from the live portfolio.`);
       }
       const allocation = allocations.get(key) ?? { amount: 0, cost: 0 };
       allocation.amount += position.amount;
@@ -1507,9 +1516,8 @@ export function buildBucketedPortfolioPositions({
         if (!allocation) return [position];
         const amount = position.amount - allocation.amount;
         if (amount < -FLOAT_EPSILON) {
-          throw new Error(
-            `Bucket quantity for ${position.ticker} exceeds the live holding. Reassign its transactions after the corporate action.`,
-          );
+          throw new HistoryMismatchError(`${position.ticker}: bucket ${allocation.amount}, broker ${position.amount} shares. Ask admin to check the history.`,
+            `Bucket quantity for ${position.ticker} exceeds the live holding.`);
         }
         if (amount <= FLOAT_EPSILON) return [];
         const share = amount / position.amount;
@@ -1660,14 +1668,12 @@ export function buildBucketedPortfolioPositions({
 
     const livePosition = livePositionsByKey.get(key);
     if (!livePosition) {
-      throw new Error(
-        `Bucket holding ${draft.ticker} is absent from the live portfolio. Reassign its transactions after the corporate action.`,
-      );
+      throw new HistoryMismatchError(`${draft.ticker}: bucket ${draft.amount}, broker 0 shares. Ask admin to check the history.`,
+        `Bucket holding ${draft.ticker} is absent from the live portfolio.`);
     }
     if (draft.amount > livePosition.amount + FLOAT_EPSILON) {
-      throw new Error(
-        `Bucket quantity for ${draft.ticker} exceeds the live holding. Reassign its transactions after the corporate action.`,
-      );
+      throw new HistoryMismatchError(`${draft.ticker}: bucket ${draft.amount}, broker ${livePosition.amount} shares. Ask admin to check the history.`,
+        `Bucket quantity for ${draft.ticker} exceeds the live holding.`);
     }
 
     const currentPrice = isCfdAllocation(livePosition)

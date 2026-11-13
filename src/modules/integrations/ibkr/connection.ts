@@ -1,5 +1,15 @@
 import { EventName, IBApi } from "@stoqey/ib";
 import { assertGatewayReady } from "./gateway.ts";
+import { UserFacingError } from "../../../utils/user_error.ts";
+
+export function ibkrRequestError(error: unknown, code?: number): Error {
+  const original = error instanceof Error ? error : new Error(String(error));
+  if (original instanceof UserFacingError || code === undefined) return original;
+  const disconnected = [502, 504, 1100, 1300].includes(code);
+  return new UserFacingError(disconnected ? "IBKR connection lost. Retry."
+    : `IBKR rejected the request (code ${code}). Ask admin to check /status.`,
+    { detail: original.message, cause: original, code: disconnected ? "ibkr_connection" : "ibkr_api" });
+}
 
 export type IbkrConnectionConfig = {
   host: string;
@@ -64,7 +74,7 @@ export function connectIbkrOnce(
     };
     const onError = (error: unknown, code?: number) => {
       if (isIbkrStatusMessage(code)) return;
-      finish(error instanceof Error ? error : new Error(String(error)));
+      finish(ibkrRequestError(error, code));
     };
     const timer = setTimeout(() =>
       finish(

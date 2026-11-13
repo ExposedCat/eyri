@@ -355,6 +355,46 @@ Deno.test("IBKR preserves identical recent executions while excluding execution 
   }
 });
 
+Deno.test("IBKR chart history refreshes intraday round trips even when the holding quantity is unchanged", async () => {
+  const db = await setup();
+  const original = ibkrSessions.run, clock = Date.now;
+  let now = Date.parse("2026-10-07T12:00:00Z"), requests = 0;
+  Date.now = () => now;
+  class Api extends EventEmitter {
+    reqManagedAccts() { this.emit(EventName.managedAccounts, "U1"); }
+    reqExecutions(id: number) {
+      requests++;
+      for (const [execId, side, price] of [["buy", "BOT", .5], ["sell", "SLD", .6]] as const) {
+        this.emit(EventName.execDetails, id, { localSymbol: "VY8GTE", secType: "WAR", currency: "EUR" },
+          { execId, acctNumber: "U1", time: "20261007 11:00:00", shares: 100, side, price });
+      }
+      this.emit(EventName.execDetailsEnd, id);
+    }
+  }
+  ibkrSessions.run = async (_config, action) => {
+    await Promise.resolve();
+    return await action(new Api() as unknown as IBApi);
+  };
+  try {
+    flex(db, "old", "2026-10-01", 100);
+    const [first, concurrent] = await Promise.all([
+      ibkrAdapter.fetchOrderHistory(db, integration, { recent: true }),
+      ibkrAdapter.fetchOrderHistory(db, integration, { recent: true }),
+    ]);
+    equal(requests, 1);
+    deepStrictEqual(first, concurrent);
+    equal(first.length, 3);
+    equal(first.reduce((sum, order) => sum + order.quantity, 0), 100);
+    await ibkrAdapter.fetchOrderHistory(db, integration, { recent: true });
+    equal(requests, 1);
+    now += 15_001;
+    await ibkrAdapter.fetchOrderHistory(db, integration, { recent: true });
+    equal(requests, 2);
+    await ibkrAdapter.fetchOrderHistory(db, integration, { refresh: true });
+    equal(requests, 3);
+  } finally { ibkrSessions.run = original; Date.now = clock; db.close(); }
+});
+
 Deno.test("IBKR preserves identical buys and sells when only execution history is available", async () => {
   const db = await setup();
   try {

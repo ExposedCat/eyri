@@ -6,7 +6,7 @@ import { buildChartBenchmark } from "./chart_benchmark.ts";
 import { loadAllTimeDataset, switchChartBenchmarks } from "./alltime_chart.ts";
 import { Database } from "@db/sqlite";
 
-const near = (actual: number, expected: number) => ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
+const near = (actual: number | null, expected: number) => ok(actual !== null && Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
 const order = (ticker: string, quantity: number, price: number, day: number): IntegrationOrder => ({
   ticker, quantity, price, integrationId: 1, integrationKind: "ibkr", account: "A", assetCategory: "STK",
   currency: "USD", date: new Date(`2025-01-0${day}`), commission: { currency: "USD", amount: 0 },
@@ -51,6 +51,54 @@ Deno.test("charts and frozen index switching use the original top-up currency ra
 const history: PriceHistory = { symbol: "CSPX.L", currency: "USD", instrumentType: "ETF", splits: [], bars: [
   { date: "2024-12-31", close: 10 }, { date: "2025-01-01", close: 10 }, { date: "2025-01-02", close: 11 }, { date: "2025-01-03", close: 12 },
 ] };
+
+Deno.test("perf and alltime show the index for multiple accounts with Freedom24 funding labels and withdrawals", async () => {
+  const db = new Database(":memory:");
+  const stock: IntegrationPortfolioPosition = {
+    integrationId: 1, integrationKind: "f24", account: "A", ticker: "STOCK", assetCategory: "STK",
+    currency: "USD", amount: 1, averageUnitPrice: 10, currentPrice: 12, totalInput: 10, totalNow: 12,
+    unrealizedPnl: 2, realizedPnl: 0, dailyPnl: 0, dailyPnlPercentage: 0, dailyPnlBaseline: 12,
+    openedAt: new Date("2025-01-01"),
+  };
+  const accounts = ["intercompany", "internal_holding", "Deposit"].map((type, i) => ({
+    ...account(100), integrationId: i + 1,
+    // Legacy snapshots must not resurrect the old rejection either.
+    fundingIncludesTransfers: i < 2,
+    cashHistory: [{ date: "2025-01-01", currency: "USD", amount: 100, type }],
+  }));
+  accounts[1].withdrawals = 33;
+  accounts[1].fundingHistory!.push({ date: "2025-01-02", amount: -33 });
+  accounts[1].cashHistory.push({ date: "2025-01-02", currency: "USD", amount: -33, type: "bank" });
+  const orders = [{ ...order("STOCK", 1, 10, 1), integrationKind: "f24" as const }];
+  const cache = {
+    resolve: (source: { ticker: string }) => Promise.resolve(source.ticker),
+    get: (symbol: string) => Promise.resolve({ ...history, symbol,
+      instrumentType: symbol === "STOCK" ? "EQUITY" : "ETF" }),
+  };
+  const originalFunding = structuredClone(accounts.map(a => a.fundingHistory));
+  try {
+    for (const kind of ["perf", "alltime"] as const) {
+      const dataset = await loadAllTimeDataset(db, { positions: [stock], orders, kind,
+        accountPerformances: accounts, benchmarkSource: { positions: [stock], orders, accountPerformances: accounts },
+        transactionBuckets: new Map(), bucketName: null, now: new Date("2025-01-03") }, 1, "Person", cache as never);
+      ok(dataset.benchmark, dataset.notes?.join(" "));
+      deepStrictEqual(dataset.notes, []);
+      deepStrictEqual(dataset.benchmarkPurchases, [
+        { date: "2025-01-01", amountUsd: 100 },
+        { date: "2025-01-01", amountUsd: 100 },
+        { date: "2025-01-02", amountUsd: -33 },
+        { date: "2025-01-01", amountUsd: 100 },
+      ]);
+      near(dataset.benchmark.points.at(-1)!.gain, kind === "perf" ? 54 : 57);
+      near(dataset.benchmark.points.at(-1)!.percentage, kind === "perf" ? 20 : 19);
+      near(dataset.points.at(-1)!.percentage!, kind === "perf" ? 20 : 2 / 300 * 100);
+      const [switched] = await switchChartBenchmarks(db, JSON.parse(JSON.stringify([dataset])), "momentum", cache);
+      equal(switched.benchmark!.symbol, "IUMO.L");
+      near(switched.benchmark!.points.at(-1)!.gain, dataset.benchmark.points.at(-1)!.gain);
+    }
+    deepStrictEqual(accounts.map(a => a.fundingHistory), originalFunding);
+  } finally { db.close(); }
+});
 
 Deno.test("all report kinds display the same virtual portfolio using their own metric", () => {
   const benchmark = buildChartBenchmark(history, [{ date: "2025-01-01", amountUsd: 10, contributionUsd: 8, valuationCurrency: "CZK" }],

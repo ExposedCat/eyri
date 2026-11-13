@@ -1,6 +1,7 @@
 import { deflateSync } from "node:zlib";
 import type { AllTimeDataset } from "./alltime_chart.ts";
 import type { ChartBenchmark } from "./chart_benchmark.ts";
+import { chartPointValue, chartUsesPercentages } from "./chart_points.ts";
 
 // Both benchmark snapshots travel with the message. The selector is local and
 // needs neither widget queries nor changes to the bot's update polling.
@@ -19,27 +20,24 @@ export function renderChartWidget(
     new Map(benchmark.points.map((point) => [point.date, point]))
   );
   const rows = points.map((point) => {
-    const peers = benchmarks.map((benchmark) => benchmark.get(point.date));
-    if (peers.some((peer) => !peer)) {
-      throw new Error(
-        `Widget benchmark history is incomplete on ${point.date}.`,
-      );
-    }
-    return [point, ...peers as NonNullable<typeof peers[number]>[]];
+    const peers = benchmarks.map((benchmark) => benchmark.get(point.date) ?? { date: point.date, gain: null, percentage: null });
+    return [point, ...peers];
   });
-  const percent = dataset.kind !== "worth" &&
-    rows.every((row) => row.every((point) => point.percentage !== null));
+  const percent = chartUsesPercentages([dataset]);
   const rate = dataset.displayRate ?? 1;
   const values = rows.map((row) =>
-    row.map((point) => percent ? point.percentage! : point.gain * rate)
+    row.map((point) => chartPointValue(point, percent, rate))
   );
-  if (values.some((row) => row.some((value) => !Number.isFinite(value)))) {
+  if (values.some((row) => row.some((value) => value !== null && !Number.isFinite(value)))) {
     throw new Error("Invalid chart widget values.");
   }
 
   for (const budget of [120, 84, 60, 36, 18, 8]) {
     // Retain the first/last dates and each curve's extrema in every time bucket.
     const selected = new Set([0, points.length - 1]);
+    // Keep both sides of gaps so downsampling cannot draw through missing data.
+    for (let i = 1; i < values.length; i++) if (values[i].some((value, curve) =>
+      (value === null) !== (values[i - 1][curve] === null))) { selected.add(i - 1); selected.add(i); }
     const buckets = Math.max(1, Math.floor((budget - 2) / 6));
     for (let bucket = 0; bucket < buckets; bucket++) {
       const start = Math.floor(bucket * points.length / buckets);
@@ -47,8 +45,9 @@ export function renderChartWidget(
       for (let curve = 0; curve < 3; curve++) {
         let low = start, high = start;
         for (let i = start + 1; i < end; i++) {
-          if (values[i][curve] < values[low][curve]) low = i;
-          if (values[i][curve] > values[high][curve]) high = i;
+          if (values[i][curve] === null) continue;
+          if (values[low][curve] === null || values[i][curve]! < values[low][curve]!) low = i;
+          if (values[high][curve] === null || values[i][curve]! > values[high][curve]!) high = i;
         }
         if (start < end) {
           selected.add(low);
@@ -63,7 +62,7 @@ export function renderChartWidget(
       currency: dataset.displayCurrency ?? "USD",
       dates: indices.map((i) => points[i].date),
       values: indices.map((i) =>
-        values[i].map((value) => Math.round(value * 100) / 100)
+        values[i].map((value) => value === null ? null : Math.round(value * 100) / 100)
       ),
       notes: dataset.notes?.join(" ") ?? "",
     };
@@ -102,18 +101,18 @@ const D=${json};
 const el=id=>document.getElementById(id), ns='http://www.w3.org/2000/svg';
 let index=0;
 el('title').textContent=D.title;el('notes').textContent=D.notes;
-function format(v){return D.percent?v.toFixed(2)+'%':v.toLocaleString(undefined,{style:'currency',currency:D.currency,maximumFractionDigits:2})}
+function format(v){return v===null?'Value unavailable':D.percent?v.toFixed(2)+'%':v.toLocaleString(undefined,{style:'currency',currency:D.currency,maximumFractionDigits:2})}
 function draw(){
  const svg=el('plot');svg.innerHTML='';
  const light=typeof TelegramWidget!=='undefined'&&TelegramWidget.colorScheme==='light';
- const rows=D.values, n=rows.length, all=rows.flatMap(r=>[r[0],r[index+1]]);
+ const rows=D.values, n=rows.length, all=rows.flatMap(r=>[r[0],r[index+1]]).filter(v=>v!==null);
  let low=Math.min(0,...all),high=Math.max(0,...all),pad=(high-low||1)*.08;low-=pad;high+=pad;
  const first=Date.parse(D.dates[0]),last=Date.parse(D.dates[n-1]);
  const x=i=>54+(last===first ? .5 : (Date.parse(D.dates[i])-first)/(last-first))*296;
  const y=v=>176-(v-low)/(high-low)*162;
  function add(tag,attrs,text){const node=document.createElementNS(ns,tag);Object.keys(attrs).forEach(k=>node.setAttribute(k,attrs[k]));if(text!==undefined)node.textContent=text;svg.appendChild(node);return node}
  for(let i=0;i<4;i++){const v=low+(high-low)*i/3,yy=y(v);add('line',{x1:54,x2:350,y1:yy,y2:yy,stroke:'#87909d','stroke-opacity':'.2'});add('text',{x:49,y:yy+4,'text-anchor':'end'},D.percent?v.toFixed(1)+'%':new Intl.NumberFormat(undefined,{notation:'compact',maximumFractionDigits:1}).format(v))}
- function line(curve,color,dashed){const path=rows.map((r,i)=>(i?'L':'M')+x(i).toFixed(1)+','+y(r[curve]).toFixed(1)).join('');add('path',{d:path,fill:'none',stroke:color,'stroke-width':2,'stroke-linejoin':'round',...(dashed?{'stroke-dasharray':'5 4'}:{})});add('circle',{cx:x(n-1),cy:y(rows[n-1][curve]),r:3,fill:color})}
+ function line(curve,color,dashed){let connected=false;const path=rows.map((r,i)=>{if(r[curve]===null){connected=false;return ''}const part=(connected?'L':'M')+x(i).toFixed(1)+','+y(r[curve]).toFixed(1);connected=true;return part}).join('');add('path',{d:path,fill:'none',stroke:color,'stroke-width':2,'stroke-linejoin':'round',...(dashed?{'stroke-dasharray':'5 4'}:{})});if(rows[n-1][curve]!==null)add('circle',{cx:x(n-1),cy:y(rows[n-1][curve]),r:3,fill:color})}
  line(index+1,light?'#96630c':'#e7c678',true);line(0,light?'#087e62':'#59d6ad',false);
  add('text',{x:54,y:201},D.dates[0]);add('text',{x:350,y:201,'text-anchor':'end'},D.dates[n-1]);
  el('actual').textContent=format(rows[n-1][0]);el('benchmarkName').textContent='If '+(index?'IUMO.L':'SPYL.L');el('benchmarkValue').textContent=format(rows[n-1][index+1]);

@@ -1,10 +1,11 @@
 import { VONTOBEL_PREFIX } from "./vontobel.ts";
 import { MORGAN_STANLEY_PREFIX } from "./morgan_stanley.ts";
 
-export type FailedHistory = { ticker: string; symbol: string };
+export type FailedHistory = { ticker: string; symbol: string; cause?: unknown };
 
 export class HistoricalDataError extends Error {
   readonly commands: string[];
+  readonly failures: FailedHistory[];
   constructor(failures: FailedHistory[]) {
     const unique = new Map(
       failures.map((f) => [f.ticker.trim().toUpperCase(), f]),
@@ -27,5 +28,6 @@ export class HistoricalDataError extends Error {
     );
     this.name = "HistoricalDataError";
     this.commands = commands;
+    this.failures = [...unique.values()];
   }
 }

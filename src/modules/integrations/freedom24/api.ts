@@ -1,3 +1,4 @@
+import { httpError, networkError, UserFacingError } from "../../../utils/user_error.ts";
 import { logFetch } from "../../../utils/fetch_logging.ts";
 
 const TRADERNET_API_BASE = "https://tradernet.com/api/v2/cmd";
@@ -170,7 +171,8 @@ export async function makeTradernetApiRequest<T>(
     const bodyParams = new URLSearchParams();
     appendParams(bodyParams, payload);
 
-    const response = await fetch(`${TRADERNET_API_BASE}/${cmd}`, {
+    let response: Response;
+    try { response = await fetch(`${TRADERNET_API_BASE}/${cmd}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
@@ -179,7 +181,7 @@ export async function makeTradernetApiRequest<T>(
       },
       body: bodyParams.toString(),
       signal: AbortSignal.timeout(30_000),
-    });
+    }); } catch (cause) { throw networkError("Freedom24", cause); }
 
     const text = await response.text();
     options.onRawResponse?.(text);
@@ -191,18 +193,20 @@ export async function makeTradernetApiRequest<T>(
     }
 
     if (!response.ok) {
-      throw new Error(
-        `Freedom24 ${cmd} failed: ${response.status} ${response.statusText}${
-          text ? ` - ${text.slice(0, 500)}` : ""
-        }`,
-      );
+      throw new UserFacingError(httpError("Freedom24", response.status).userMessage,
+        { detail: `Freedom24 ${cmd} failed: ${response.status} ${response.statusText}${text ? ` - ${text.slice(0, 500)}` : ""}` });
     }
 
     const tradernetError = body && typeof body === "object"
       ? getTradernetErrorMessage(body as TradernetApiError)
       : null;
     if (tradernetError) {
-      throw new Error(`Freedom24 ${cmd} failed: ${tradernetError}`);
+      const operation = cmd === "getBrokerReport" ? "funding report" : cmd === "getOrdersHistory" ? "trade history"
+        : cmd === "getPositionJson" ? "holdings request" : "price request";
+      const message = /(?:invalid|incorrect|expired|unauthorized).*(?:api.?key|token|sign)|(?:api.?key|token|signature).*(?:invalid|incorrect|expired)/i.test(tradernetError)
+        ? "Freedom24 rejected API authentication. Update /integrations."
+        : `Freedom24 rejected the ${operation}. Ask admin to check the broker response.`;
+      throw new UserFacingError(message, { detail: `Freedom24 ${cmd} failed: ${tradernetError}` });
     }
 
     return body as T;

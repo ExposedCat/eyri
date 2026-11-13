@@ -1,6 +1,7 @@
 import type { Chart, ChartDataset, ScriptableContext } from "chart.js";
 import type { AllTimeDataset } from "./alltime_chart.ts";
 import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
+import { chartPointValue, chartUsesPercentages, requireVisibleChart } from "./chart_points.ts";
 import {
   chartColors as colors,
   chartFont,
@@ -68,6 +69,7 @@ export function renderAllTimeDatasets(
   ) {
     throw new Error("No performance points to chart.");
   }
+  requireVisibleChart(datasets);
   const first = new Date(
     Math.min(...datasets.map((dataset) => Date.parse(dataset.points[0].date))),
   );
@@ -87,7 +89,7 @@ export function renderAllTimeDatasets(
   );
   const single = datasets.length === 1;
   const worth = datasets[0].kind === "worth";
-  const percentagesAvailable = !worth && datasets.every(dataset => dataset.points.every(point => point.percentage !== null));
+  const percentagesAvailable = chartUsesPercentages(datasets);
   const displayCurrency = single ? (datasets[0].displayCurrency ?? "USD") : "USD";
   const displayRate = single ? (datasets[0].displayRate ?? 1) : 1;
   const monthTicks: { value: number }[] = [];
@@ -110,7 +112,7 @@ export function renderAllTimeDatasets(
           label: dataset.label,
           data: dataset.points.map((point) => ({
             x: Date.parse(point.date),
-            y: percentagesAvailable ? point.percentage! : point.gain * displayRate,
+            y: chartPointValue(point, percentagesAvailable, displayRate) ?? NaN,
           })),
           parsing: false,
           borderColor: palette[index % palette.length],
@@ -119,18 +121,23 @@ export function renderAllTimeDatasets(
           borderJoinStyle: "round",
           // Preserve every daily value without overshooting between samples.
           cubicInterpolationMode: "monotone",
-          pointRadius: ({ dataIndex }: ScriptableContext<"line">) =>
-            dataIndex === dataset.points.length - 1 ? 5 : 0,
+          pointRadius: ({ dataIndex }: ScriptableContext<"line">) => {
+            const usable = (index: number) => dataset.points[index] &&
+              chartPointValue(dataset.points[index], percentagesAvailable, displayRate) !== null;
+            return usable(dataIndex) && (dataIndex === dataset.points.length - 1 ||
+              !usable(dataIndex - 1) && !usable(dataIndex + 1)) ? 5 : 0;
+          },
           pointBorderWidth: 0,
           pointBackgroundColor: palette[index % palette.length],
           fill: false,
+          spanGaps: false,
         })),
         ...datasets.flatMap<ChartDataset<"line">>((dataset, index) =>
           dataset.benchmark ? [{
             label: `${dataset.label} · ${dataset.benchmark.label}`,
             data: dataset.benchmark.points.map((point) => ({
               x: Date.parse(point.date),
-              y: percentagesAvailable ? point.percentage! : point.gain * displayRate,
+              y: chartPointValue(point, percentagesAvailable, displayRate) ?? NaN,
             })),
             parsing: false as const,
             borderColor: single ? "#E7C678" : palette[index % palette.length],
@@ -144,6 +151,7 @@ export function renderAllTimeDatasets(
             pointRadius: 0,
             pointBorderWidth: 0,
             fill: false as const,
+            spanGaps: false,
           }]
           : []),
       ],
@@ -244,14 +252,15 @@ export function renderAllTimeDatasets(
             const rate = single ? (dataset.displayRate ?? 1) : 1;
             const lifetimeReturn = last.percentage === null ? ""
               : `${last.percentage >= 0 ? "+" : ""}${last.percentage.toFixed(2)}%`;
-            const label = worth ? `${name}  ${money(last.gain * rate, currency).replace(/^\+/, "")}`
-              : `${name}  ${lifetimeReturn ? `${lifetimeReturn}  ` : ""}(${money(last.gain * rate, currency)})`;
+            const amount = last.gain === null ? "Value unavailable" : money(last.gain * rate, currency);
+            const label = worth ? `${name}  ${amount.replace(/^\+/, "")}`
+              : `${name}  ${lifetimeReturn ? `${lifetimeReturn}  ` : ""}(${amount})`;
             const entries = [{ color, label, dashed: false }];
             if (dataset.benchmark) {
               const last = dataset.benchmark.points.at(-1)!;
               entries.push({
                 color: single ? "#E7C678" : palette[index % palette.length],
-                label: worth ? `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${money(last.gain * rate, currency).replace(/^\+/, "")}` : `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${dataset.points.at(-1)!.percentage === null ? "" : `${last.percentage >= 0 ? "+" : ""}${last.percentage.toFixed(2)}%  `}(${money(last.gain * rate, currency)})`,
+                label: worth ? `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${money(last.gain * rate, currency).replace(/^\+/, "")}` : `${name} · if ${CHART_BENCHMARKS[chartBenchmarkIndex(dataset.benchmark.symbol)].name}  ${last.percentage >= 0 ? "+" : ""}${last.percentage.toFixed(2)}%  (${money(last.gain * rate, currency)})`,
                 dashed: true,
               });
             }

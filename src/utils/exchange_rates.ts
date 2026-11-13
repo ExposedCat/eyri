@@ -1,4 +1,5 @@
 import { logFetch } from "./fetch_logging.ts";
+import { httpError, networkError, UserFacingError } from "./user_error.ts";
 
 // Historical factors are for the amount that could actually have been invested
 // on a funding date. Current reporting factors must not replace these.
@@ -16,20 +17,29 @@ export async function fetchHistoricalUsdConversionRates(
 	const url = new URL("https://api.frankfurter.dev/v2/rates");
 	url.search = new URLSearchParams({ base: "usd", quotes: quotes.join(",").toLowerCase(), from, to: end }).toString();
 	return await logFetch(`Historical USD exchange rates (${quotes.join(", ")})`, async () => {
-		const response = await request(url, { signal: AbortSignal.timeout(10_000) });
+		let response: Response;
+		try { response = await request(url, { signal: AbortSignal.timeout(10_000) }); }
+		catch (cause) { throw networkError("FX history service", cause); }
 		if (!response.ok) {
 			await response.body?.cancel();
-			throw new Error(`Historical exchange rates unavailable: HTTP ${response.status}`);
+			throw new UserFacingError(httpError("FX history service", response.status, "Retry shortly.").userMessage,
+				{ detail: `Historical exchange rates unavailable: HTTP ${response.status}` });
 		}
-		const data: unknown = await response.json();
-		if (!Array.isArray(data)) throw new Error("Invalid historical exchange rates");
+		let data: unknown;
+		try { data = await response.json(); }
+		catch (cause) { throw new UserFacingError("FX history reply is not JSON. Retry.", { detail: "Invalid historical exchange rates", cause }); }
+		if (!Array.isArray(data)) throw new UserFacingError("FX history reply has no rate list. Retry.", { detail: "Invalid historical exchange rates" });
 		const result = new Map(codes.map(code => [code, [] as { date: string; factor: number }[]]));
 		for (const row of data) {
 			if (row?.base !== "USD" || !quotes.includes(row?.quote) ||
 				!/^\d{4}-\d{2}-\d{2}$/.test(row?.date) ||
 				!Number.isFinite(Date.parse(row.date)) || row.date < from || row.date > end ||
 				typeof row.rate !== "number" || !Number.isFinite(row.rate) || row.rate <= 0 || !Number.isFinite(1 / row.rate)) {
-				throw new Error("Invalid historical exchange rates");
+				const problem = row?.base !== "USD" || !quotes.includes(row?.quote) ? "wrong currency pair"
+					: typeof row.rate !== "number" ? "nonnumeric rate"
+					: !Number.isFinite(row.rate) || row.rate <= 0 || !Number.isFinite(1 / row.rate) ? "nonpositive/infinite rate"
+					: "date outside the requested range";
+				throw new UserFacingError(`FX history service sent a ${problem}. Retry.`, { detail: "Invalid historical exchange rates" });
 			}
 			for (const code of codes) {
 				if ((code === "GBX" ? "GBP" : code) === row.quote) {
@@ -40,7 +50,8 @@ export async function fetchHistoricalUsdConversionRates(
 		for (const [code, rows] of result) {
 			rows.sort((a, b) => a.date.localeCompare(b.date));
 			if (!rows.length || rows.some((row, index) => index > 0 && row.date === rows[index - 1].date)) {
-				throw new Error(`Historical exchange rates unavailable for ${code}`);
+				throw new UserFacingError(`${code}: FX history ${!rows.length ? "is empty" : "repeats a date"}. Retry; if unchanged, ask admin.`,
+					{ detail: `Historical exchange rates unavailable for ${code}` });
 			}
 		}
 		return result;
@@ -56,7 +67,8 @@ export function historicalUsdFactor(
 	const rows = rates.get(currency) ?? [];
 	const row = rows.findLast(row => row.date <= date);
 	if (!row || Date.parse(date) - Date.parse(row.date) > 7 * 86_400_000) {
-		throw new Error(`Historical USD exchange rate unavailable for ${currency} on ${date}`);
+		throw new UserFacingError(`${currency}: ${row ? `last rate is ${row.date}` : "no earlier rate"} for ${date}. Retry; if unchanged, ask admin.`,
+			{ detail: `Historical USD exchange rate unavailable for ${currency} on ${date}` });
 	}
 	return row.factor;
 }
@@ -98,30 +110,36 @@ export async function fetchUsdConversionRates(
 	await Promise.all(quotes.map((currency) =>
 		logFetch(`Frankfurter USD/${currency} exchange rate`, async () => {
 			try {
-				const response = await request(
+				let response: Response;
+				try { response = await request(
 					`https://api.frankfurter.dev/v2/rate/usd/${
 						encodeURIComponent(currency.toLowerCase())
 					}`,
 					{ signal: AbortSignal.timeout(10_000) },
-				);
+				); } catch (cause) { throw networkError(`${currency} rate service`, cause); }
 				if (!response.ok) {
 					await response.body?.cancel();
-					throw new Error(`HTTP ${response.status}`);
+					throw response.status === 404
+						? new UserFacingError(`FX service has no ${currency} rate. Ask admin to check currency support.`)
+						: httpError(`${currency} rate service`, response.status, "Retry shortly.");
 				}
-				const data = await response.json();
+				let data;
+				try { data = await response.json(); }
+				catch (cause) { throw new UserFacingError(`${currency} rate reply is not JSON. Retry.`, { cause }); }
 				if (
 					data?.base !== "USD" || data?.quote !== currency ||
 					typeof data.rate !== "number" || !Number.isFinite(data.rate) ||
 					data.rate <= 0 || !Number.isFinite(1 / data.rate)
 				) {
-					throw new Error("Invalid exchange rate");
+					const problem = data?.base !== "USD" || data?.quote !== currency ? "wrong currency pair"
+						: typeof data.rate !== "number" ? "nonnumeric rate" : "nonpositive/infinite rate";
+					throw new UserFacingError(`${currency} rate service sent a ${problem}. Retry.`, { detail: "Invalid exchange rate" });
 				}
 				// The endpoint reports quote units per USD, so invert it.
 				rates.set(currency, 1 / data.rate);
 			} catch (error) {
-				throw new Error(`Could not load USD exchange rate for ${currency}.`, {
-					cause: error,
-				});
+				throw new UserFacingError(error instanceof UserFacingError ? error.userMessage : `${currency} rate request failed. Retry.`,
+					{ detail: `Could not load USD exchange rate for ${currency}.`, cause: error });
 			}
 		})
 	));

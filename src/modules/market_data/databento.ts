@@ -8,6 +8,7 @@ import {
   type Range,
 } from "./history.ts";
 import { yahooOptionContract } from "./options.ts";
+import { httpError, networkError, UserFacingError } from "../../utils/user_error.ts";
 
 const API = "https://hist.databento.com/v0/";
 const DATASET = "OPRA.PILLAR";
@@ -51,7 +52,8 @@ async function apiRequest(
   const url = new URL(API + method);
   const post = method === "timeseries.get_range";
   if (!post) url.search = new URLSearchParams(params).toString();
-  const response = await request(String(url), {
+  let response: Response;
+  try { response = await request(String(url), {
     method: post ? "POST" : "GET",
     headers: {
       Authorization: `Basic ${btoa(key + ":")}`,
@@ -60,10 +62,12 @@ async function apiRequest(
     ...(post ? { body: new URLSearchParams(params).toString() } : {}),
     redirect: "error",
     signal: AbortSignal.timeout(120_000),
-  });
+  }); } catch (cause) { throw networkError("Option archive", cause); }
   if (!response.ok) {
     await response.body?.cancel();
-    throw new Error(`Databento returned HTTP ${response.status}.`);
+    throw new UserFacingError(httpError("Option archive", response.status, response.status === 401 || response.status === 403
+      ? "Ask admin to check archive access." : "Retry shortly.").userMessage,
+      { detail: `Databento returned HTTP ${response.status}.` });
   }
   return response;
 }

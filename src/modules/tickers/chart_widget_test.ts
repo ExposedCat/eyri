@@ -110,7 +110,17 @@ Deno.test("widget handles single-point and missing-percentage histories without 
   }
 });
 
-Deno.test("long widget histories fit Telegram limits, retain endpoints and reject incomplete data", () => {
+Deno.test("widget retains the percentage axis and draws separate paths across missing dates", () => {
+  const { dataset, spyl, iumo } = fixture(5);
+  dataset.points[2] = { ...dataset.points[2], gain: null, percentage: null };
+  const get = runWidget(renderChartWidget(dataset, spyl, iumo));
+  equal(get("actual").textContent, "5.00%");
+  const paths = get("plot").children.filter(node => node.attributes.d);
+  ok(paths.some(node => (node.attributes.d.match(/M/g) ?? []).length === 2));
+  for (const element of get("plot").children) ok(!JSON.stringify(element.attributes).match(/NaN|Infinity/));
+});
+
+Deno.test("long widget histories fit Telegram limits, retain endpoints and leave missing benchmark data as gaps", () => {
   const { dataset, spyl, iumo } = fixture(7300);
   dataset.points.forEach((point, i) => {
     point.percentage = Math.sin(i * 134.1) * 40;
@@ -121,5 +131,6 @@ Deno.test("long widget histories fit Telegram limits, retain endpoints and rejec
   match(html, new RegExp(dataset.points[0].date));
   match(html, new RegExp(dataset.points.at(-1)!.date));
   spyl.points.pop();
-  throws(() => renderChartWidget(dataset, spyl, iumo), /incomplete/);
+  const get = runWidget(renderChartWidget(dataset, spyl, iumo));
+  equal(get("benchmarkValue").textContent, "Value unavailable");
 });

@@ -616,9 +616,23 @@ from the complete ledger and plots
 holdings plus cash as a monetary value, including changes from contributions.
 Cash-funded buckets use the agreed fresh-cash purchase model and keep sale proceeds.
 Filtered reports use only selected instruments and do not allocate account cash.
-Held quantities must reconcile for performance charts; worth charts also validate
-cash balances against the ledger. Missing required fee or FX history fails
-explicitly. Weekends carry the last close; splits preserve quantities and cost basis.
+When holdings disagree with cached trades, charts refresh executions/history once
+and rebuild. A remaining difference reports the ticker and both quantities;
+no balancing trades are invented. Worth charts also validate cash balances
+against the ledger. Missing required execution fees still fail explicitly.
+IBKR charts also check Gateway executions before calculation, including intraday
+buys and sales that leave the holding quantity unchanged. Concurrent syncs share
+one request; a successful sync is reused for 15 seconds. Completed Flex history
+and recent Gateway executions remain combined.
+Weekends carry the last close; splits preserve quantities and cost basis.
+Missing price histories leave gaps on affected dates, and calculation resumes
+when prices return or the affected holding is sold. A missing percentage leaves
+a gap on the percentage axis instead of switching the entire chart to money.
+Comparisons use percentages when every participant has at least one usable
+percentage in the visible period. If someone has none, everyone is compared
+using USD P/L, with an explanation in the caption. A participant with no usable
+values is rejected explicitly instead of joining as an invisible curve.
+Single charts without percentages use money; worth always uses money.
 IBKR contract exchange and ISIN metadata distinguish unrelated listings sharing a
 ticker, including London CURE versus the US leveraged ETF.
 
@@ -646,15 +660,30 @@ Non-USD deposits buy ETF shares using their native currency and funding-date FX
 rate. Daily index returns compare its value against the original native top-up
 basket, matching the actual portfolio's return basis. Both daily FX rates and
 the native contribution/withdrawal basis are frozen with the
-chart for index switching; unavailable historical FX omits the benchmark rather
-than substituting today's rate. Bucket benchmarks instead receive fresh cash on each selected
+chart for index switching. If FX history is unavailable or malformed, charts
+exclude currency P/L and use the latest known conversion consistently for both
+portfolio and index. Successful current rates are saved for later outages.
+If no conversion exists, affected values are gaps; currencies are never treated
+as equal. Captions identify the failed rate request and the fallback.
+Bucket benchmarks instead receive fresh cash on each selected
 purchase date, scaled by the user's share; bucket sale proceeds remain cash.
 Allocations to excluded owned buckets reduce the remaining account's benchmark
 capital on their purchase dates; they are distinct from external withdrawals.
 Benchmark return is `(remaining value + withdrawals - deposits) / deposits * 100`.
 Benchmarks require complete dated external funding and are omitted when it is
-unavailable or the hypothetical fund cannot cover a withdrawal. Existing chart
-sessions made with purchase-cost returns, the account-value performance numerator,
+unavailable or the hypothetical fund cannot cover a withdrawal. Funding is not
+rejected merely because multiple accounts are connected, an
+account has withdrawals, or Freedom24 labels a movement `intercompany` or
+`internal_holding`; those do not establish a transfer between connected accounts.
+If funding alone fails, `/chart perf` and `/chart alltime` still draw available
+investment P/L and show the specific index failure in the photo caption.
+Without dated funding, earlier lifetime percentages and currency P/L are omitted;
+the live percentage can still use known broker deposit totals. Worth needs the
+cash ledger to reconstruct account value. Photo captions also show award-date
+assumptions. Errors name the observed failure and the next action; quantity and
+cash mismatches include both measured totals. Unexpected failures show a code
+for the administrator, with credential-redacted details in the bot logs.
+Existing chart sessions made with purchase-cost returns, the account-value performance numerator,
 or the previous funding FX calculation
 must be recreated with `/chart`.
 The two curves and monetary gains appear together in the participant legend.
@@ -670,15 +699,22 @@ Compare retains the original chart's kind and asset filter.
 The **S&P 500** button beside Compare switches the index to **Momentum**, using
 the USD **IUMO.L** ETF with the same external funding schedule. Clicking
 **Momentum** switches back to S&P 500. The button names the current selection,
-changes every participant's benchmark together, and also appears on its own in DMs.
+changes every available participant benchmark together, and also appears on its own in DMs.
 Joining an existing chart uses that chart's selected index.
+An unavailable personal index does not disable the other participants' switch
+or prevent joining the comparison. Its reason appears beside the person's name
+in the caption. A failed switch never leaves that person's old index plotted
+against everyone else's new index.
 
 Each personal benchmark and its USD purchase schedule are saved with the owner's
 published snapshot. Switching indices never refetches broker accounts; once
 calculated, both index curves are retained so toggling back restores the same snapshot.
 Comparisons clip them to the original chart window while retaining the effect of purchases made
-before that window. Missing history rejects the chart rather than moving purchases
-to a different date; older charts without personal benchmarks must be recreated
+before that window. Validated funding inputs are retained even if index prices
+fail, allowing another index or a later switch to retry without broker requests.
+Missing history omits the affected index rather than moving purchases to a
+different date. If every requested index fails during a switch, the published
+chart stays unchanged. Older charts without funding inputs must be recreated
 with `/chart`.
 In group chats, **Compare** adds the person clicking the button to that same graph,
 up to six participants. DMs have no Compare button. While adding a participant,
@@ -921,6 +957,16 @@ reports stay together in one rich message.
 The app health check verifies the database and non-IBKR integrations. IBKR
 integrations are excluded so a gateway waiting for user 2FA does not make the
 app unhealthy.
+
+Report commands distinguish Gateway startup, login, verification, API startup,
+reconnection and halted login. A failed API request can automatically request a
+Gateway restart after an independent socket probe also fails. Concurrent requests
+share the restart, and repeated failures have a three-minute retry interval.
+An active controller login/recovery is allowed to finish. An unreachable HTTP
+health endpoint does not restart a working API. A reported expired session can
+request recovery; a generic halted state is reported as stopped login, without
+guessing that credentials expired. Restart requests return once dispatched;
+subsequent commands report the current state.
 
 Gateway automatically restarts daily at 23:59 in the `TIME_ZONE` configured in
 `.env-ibkr-1` (currently UTC), replacing its scheduled logoff. This normally

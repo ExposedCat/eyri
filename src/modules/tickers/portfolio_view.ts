@@ -21,9 +21,11 @@ import {
   getOrderTransactionKey,
 } from "./portfolio.ts";
 import { portfolioValuations } from "../integrations/usd.ts";
-import type { AccountPerformanceOptions, IntegrationPortfolioPosition } from "../integrations/types.ts";
+import type { AccountPerformanceOptions, IntegrationAccountPerformance, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { adjustOrderForCorporateActions } from "../market_data/corporate_actions.ts";
 import { buildBucketCashAccounts, excludeBucketCapital } from "./bucket_funding.ts";
+import { userErrorMessage } from "../../utils/user_error.ts";
+import { reconcileHistory } from "./history_reconciliation.ts";
 
 type PortfolioSource = {
   ownerId: number;
@@ -105,6 +107,10 @@ export function hasPortfolioViewIntegrations(
 }
 
 type Options = {
+  refreshHistory?: boolean;
+  recentHistory?: boolean;
+  // Chart replay retries the entire view + calculation together.
+  retryHistory?: boolean;
   positions?: boolean;
   history?: boolean;
   displayHistory?: boolean;
@@ -135,6 +141,17 @@ export async function fetchPortfolioView(
   options: Options = {},
   fetchers: Runtime = runtime,
 ) {
+  if (options.refreshHistory || options.retryHistory === false) return loadPortfolioView(db, userId, bucketName, options, fetchers);
+  return reconcileHistory(refresh => loadPortfolioView(db, userId, bucketName, { ...options, refreshHistory: refresh }, fetchers));
+}
+
+async function loadPortfolioView(
+  db: Database,
+  userId: number,
+  bucketName: string | null = null,
+  options: Options = {},
+  fetchers: Runtime = runtime,
+) {
   const results = await Promise.all(
     portfolioSources(db, userId, bucketName).map(
       async ({ ownerId, share, copy, names }) => {
@@ -153,9 +170,10 @@ export async function fetchPortfolioView(
             ? []
             : fetchers.portfolio(db, ownerId, false, options.warrantQuotes),
           needsOrders
-            ? (options.displayHistory ? fetchers.history : fetchers.orders)(
+            ? (options.displayHistory && !options.refreshHistory ? fetchers.history : fetchers.orders)(
               db,
               ownerId,
+              { refresh: options.refreshHistory, recent: options.recentHistory },
             )
             : [],
         ]);
@@ -205,10 +223,18 @@ export async function fetchPortfolioView(
             transactionKey,
           };
         });
-        let accountPerformances =
-          options.accountPerformance && names.has(null) && fetchers.accounts
-            ? await fetchers.accounts(db, ownerId, livePositions, sourceOrders, options.accountPerformanceOptions)
-            : [];
+        let accountPerformances: IntegrationAccountPerformance[] = [];
+        const fundingErrors: string[] = [];
+        if (options.accountPerformance && names.has(null) && fetchers.accounts) {
+          try {
+            accountPerformances = await fetchers.accounts(db, ownerId, livePositions, sourceOrders, options.accountPerformanceOptions);
+          } catch (error) {
+            if (options.accountPerformanceOptions?.purpose !== "benchmark") throw error;
+            const reference = crypto.randomUUID().slice(0, 8);
+            console.error(`Benchmark funding fetch failed (${reference}):`, error);
+            fundingErrors.push(userErrorMessage(error, reference));
+          }
+        }
         if (options.accountPerformance && names.has(null) && !wholeAccount && accountPerformances.length) {
           const excludedPositions = [...new Set(assignments.values())].filter(name => !names.has(name)).flatMap(name =>
             buildBucketedPortfolioPositions({ orders: sourceOrders, livePositions: mergePositions(livePositions), transactionBuckets: assignments, bucketName: name }));
@@ -266,6 +292,7 @@ export async function fetchPortfolioView(
           orders,
           transactionBuckets,
           accountPerformances,
+          fundingErrors,
         };
       },
     ),
@@ -276,6 +303,7 @@ export async function fetchPortfolioView(
   const transactionBuckets = new Map(
     results.flatMap((result) => [...result.transactionBuckets]),
   );
+  const fundingErrors = results.flatMap(result => result.fundingErrors);
   return {
     positions: mergePositions(results.flatMap((result) => result.positions)),
     orders,
@@ -284,6 +312,7 @@ export async function fetchPortfolioView(
     accountPerformances: results.flatMap((result) =>
       result.accountPerformances
     ),
+    ...(fundingErrors.length ? { fundingErrors } : {}),
     historyOrders: filterHistoryOrdersByBucket(
       orders,
       transactionBuckets,

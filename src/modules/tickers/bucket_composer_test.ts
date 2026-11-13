@@ -272,8 +272,8 @@ Deno.test("stock reports, dumps and allocation charts ignore unavailable warrant
     await h.command("/bucket transfer Core", owner, recipient);
     await checkReports("Core", recipient);
     await h.command("/perf options Core", recipient);
-    match(h.lastText(), /Vontobel bid quote unavailable/);
-    equal(h.lastText().match(/Failed to fetch integration data:/g)?.length, 1);
+    match(h.lastText(), /Vontobel price feed: server error.*HTTP 503.*Retry/);
+    equal(h.lastText().match(/IBKR:/g)?.length, 1);
     equal(issuerRequests, 1);
   } finally {
     ibkrAdapter.fetchPortfolio = previousPortfolio;
@@ -854,7 +854,7 @@ Deno.test("performance commands filter current and sold assets, with bot mention
           match(text, stocks ? /SOLDSTK/ : /SOLDOPT/, text);
           equal(text.includes(stocks ? "SOLDOPT" : "SOLDSTK"), false, text);
           match(text, stocks ? /Total: \+\$425\.00/ : /Total: \+\$150\.00/);
-          match(text, /Lifetime return unavailable/);
+          match(text, /Percentage unavailable/);
           equal(text.includes("%"), false);
         } else if (kind === "worth") {
           match(text, stocks ? /Total: \+100\.00% \$800\.00/ : /Total: \+50\.00% \$300\.00/);

@@ -1,6 +1,54 @@
 import { equal, match, rejects } from "node:assert/strict";
 import type { Integration } from "../../database/integration.ts";
-import type { GatewayHealth } from "./gateway.ts";
+import { GatewayError, type GatewayHealth } from "./gateway.ts";
+
+Deno.test("command recovery returns after dispatch, shares restarts, and never restarts an active login", async () => {
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  let state: GatewayHealth = { state: "unavailable", message: "status unreachable" };
+  let restarts = 0;
+  const recovery = new GatewayRecovery(async () => state, async () => { throw new Error("offline"); },
+    async (_host, requested) => { restarts++; requested?.(); await pending; }, () => {});
+  try {
+    const first = await recovery.handleFailure(integration, new GatewayError("gateway", state));
+    equal(first?.userMessage, "IBKR API is unreachable. Gateway restart requested; please wait.");
+    const second = await recovery.handleFailure(integration, new GatewayError("gateway", state));
+    equal(second?.userMessage, "Gateway is restarting. Please wait.");
+    equal(restarts, 1);
+    equal(await recovery.handleFailure(integration, new Error("IBKR funding rows differ")), null);
+  } finally { finish(); await recovery.restart(integration); }
+  state = { state: "recovering", message: "IBKR is logging in. Please wait." };
+  equal((await recovery.handleFailure(integration, new GatewayError("gateway", state)))?.userMessage, state.message);
+  equal(restarts, 1);
+});
+
+Deno.test("command recovery preserves a healthy socket despite a broken HTTP check and reports failed restart requests", async () => {
+  let restarts = 0;
+  const down = { state: "unavailable" as const, message: "status unreachable" };
+  const healthy = new GatewayRecovery(async () => down, async () => {}, async () => { restarts++; }, () => {});
+  equal((await healthy.handleFailure(integration, new GatewayError("gateway", down)))?.userMessage,
+    "IBKR API responds. Retry your command.");
+  equal(restarts, 0);
+  const failed = new GatewayRecovery(async () => down, async () => { throw new Error("offline"); },
+    async () => { restarts++; throw new Error("socket denied"); }, () => {});
+  equal((await failed.handleFailure(integration, new GatewayError("gateway", down)))?.userMessage,
+    "Gateway restart failed. Ask admin to check /status.");
+  equal((await failed.handleFailure(integration, new GatewayError("gateway", down)))?.userMessage,
+    "Gateway restart failed. Ask admin to check /status.");
+  equal(restarts, 1);
+});
+
+Deno.test("only a reported expired session is called expired; an unknown login halt is preserved", async () => {
+  const halted = { state: "blocked" as const, message: "IBKR login stopped. Ask admin to check Gateway login." };
+  let restarts = 0;
+  const recovery = new GatewayRecovery(async () => halted, async () => { throw new Error("offline"); },
+    async (_host, requested) => { restarts++; requested?.(); }, () => {});
+  equal((await recovery.handleFailure(integration, new GatewayError("gateway", halted)))?.userMessage, halted.message);
+  equal(restarts, 0);
+  equal((await recovery.handleFailure(integration, new Error("IBKR session expired")))?.userMessage,
+    "IBKR session expired. Gateway restart requested; please wait.");
+  equal(restarts, 1);
+});
 import { GatewayRecovery, restartGatewayContainer } from "./recovery.ts";
 import { GatewayWatchdog } from "./watchdog.ts";
 

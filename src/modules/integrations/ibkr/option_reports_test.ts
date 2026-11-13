@@ -19,7 +19,7 @@ const xml = (sale = false, multiplier = 100) => `<FlexQueryResponse><Trades>
   <Trade symbol="${ticker}" tradeDate="20261110" quantity="1" tradePrice="1.01" currency="USD" assetCategory="OPT" multiplier="${multiplier}" ibCommission="-1" ibCommissionCurrency="USD" />
   ${sale ? `<Trade symbol="${ticker}" tradeDate="20261112" quantity="-1" tradePrice="2.17" currency="USD" assetCategory="OPT" multiplier="${multiplier}" ibCommission="-2" ibCommissionCurrency="USD" />` : ""}
   </Trades></FlexQueryResponse>`;
-const near = (actual: number, expected: number) => ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
+const near = (actual: number | null, expected: number) => ok(actual !== null && Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
 
 Deno.test("NVS Flex purchases and Gateway sales share FIFO history across reports, charts and a Flex refresh", async () => {
   const db = new Database(":memory:");

@@ -1,5 +1,6 @@
 import { run, sequentialize } from "grammy_runner";
 import type { Bot } from "./types.ts";
+import { replyUserError } from "./errors.ts";
 
 const reportCommands = [
   "status",
@@ -47,12 +48,12 @@ export function setupBotRuntime(bot: Bot) {
       return [`user:${ctx.from.id}`];
     }),
   );
-  bot.catch(({ ctx, error }) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(
-      `Failed to handle update ${ctx.update.update_id}:`,
-      message.replaceAll(bot.token, "[redacted]"),
-    );
+  bot.catch(async ({ ctx, error }) => {
+    try {
+      await replyUserError(ctx, error);
+    } catch {
+      console.error(`Could not deliver error for update ${ctx.update.update_id}`);
+    }
   });
 }
 

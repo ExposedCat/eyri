@@ -477,7 +477,7 @@ Deno.test("computed series and rendered PNGs are cached persistently", async () 
       points: first.points.map((p) => ({
         ...p,
         percentage: p.percentage === null ? null : -p.percentage / 2,
-        gain: -p.gain / 2,
+        gain: -p.gain! / 2,
       })),
     };
     await Deno.writeFile(
@@ -515,60 +515,31 @@ Deno.test("chart retains trade classification when holding metadata omits it", a
   }
 });
 
-Deno.test("any failed or empty historical fetch rejects the entire chart and reports every affected instrument", async () => {
+Deno.test("failed instrument histories leave gaps while preserving live values and successful fetches", async () => {
   const db = new Database(":memory:");
   const fetched: string[] = [];
   const cache = {
-    resolve: (source: { ticker: string }) =>
-      source.ticker === "BAD1"
-        ? Promise.reject(new Error("No matching listing"))
-        : Promise.resolve(source.ticker),
+    resolve: (source: { ticker: string }) => source.ticker === "BAD1"
+      ? Promise.reject(new Error("No matching listing")) : Promise.resolve(source.ticker),
     get: (symbol: string) => {
       fetched.push(symbol);
-      if (symbol === "BAD2") {
-        return Promise.reject(new Error("Yahoo Finance returned HTTP 429."));
-      }
-      return Promise.resolve(
-        history("USD", symbol === "EMPTY" ? [] : undefined),
-      );
+      if (symbol === "BAD2") return Promise.reject(new Error("Yahoo Finance returned HTTP 429."));
+      return Promise.resolve(history("USD", symbol === "EMPTY" ? [] : undefined));
     },
   };
   try {
-    await rejects(
-      loadAllTimeDataset(
-        db,
-        {
-          positions: [],
-          orders: ["GOOD", "BAD1", "BAD2", "EMPTY"].map((ticker) => ({
-            ...trade(1, 100, "2025-01-02"),
-            ticker,
-          })),
-          transactionBuckets: new Map(),
-          bucketName: null,
-          now,
-        },
-        1,
-        "Daniel",
-        cache as never,
-      ),
-      (error: unknown) => {
-        ok(error instanceof Error);
-        equal(
-          error.message,
-          "Failed to fetch historical data:\n- /yahoo BAD1 BAD1\n- /yahoo BAD2 BAD2\n- /yahoo EMPTY EMPTY",
-        );
-        return true;
-      },
-    );
+    const tickers = ["GOOD", "BAD1", "BAD2", "EMPTY"];
+    const dataset = await loadAllTimeDataset(db, {
+      positions: tickers.map(ticker => ({ ...holding(1, 100, 130), ticker })),
+      orders: tickers.map(ticker => ({ ...trade(1, 100, "2025-01-02"), ticker })),
+      transactionBuckets: new Map(), bucketName: null, now,
+    }, 1, "Daniel", cache as never);
+    equal(dataset.points.find(p => p.date === "2025-01-03")!.gain, null);
+    equal(dataset.points.at(-1)!.gain, 120);
+    for (const ticker of tickers.slice(1)) ok(dataset.notes!.some(note => note.startsWith(ticker + ":")));
     deepStrictEqual(fetched, ["GOOD", "BAD2", "EMPTY"]);
-    equal(
-      (db.prepare("SELECT COUNT(*) AS count FROM alltime_series_cache")
-        .get() as { count: number }).count,
-      0,
-    );
-  } finally {
-    db.close();
-  }
+    equal((db.prepare("SELECT COUNT(*) AS n FROM alltime_series_cache").get() as { n: number }).n, 1);
+  } finally { db.close(); }
 });
 
 Deno.test("Freedom24 option series uses per-contract premiums, retains sold gains and matches alltime gains", async () => {
@@ -610,50 +581,24 @@ Deno.test("Freedom24 option series uses per-contract premiums, retains sold gain
   );
 });
 
-Deno.test("failed option archive histories reject the complete chart and keep mapping commands usable", async () => {
+Deno.test("failed option history leaves gaps until a known closing execution recovers lifetime P/L", async () => {
   const db = new Database(":memory:");
   const ticker = "+BOTZ.15MAR2024.C33";
   try {
-    await rejects(
-      loadAllTimeDataset(
-        db,
-        {
-          positions: [],
-          orders: [{
-            ...trade(1, 10, "2024-02-08"),
-            ticker,
-            integrationKind: "f24",
-            assetCategory: "OPT",
-          }],
-          transactionBuckets: new Map(),
-          bucketName: null,
-          now,
-        },
-        1,
-        "Daniel",
-        {
-          resolve: () => Promise.resolve("DATABENTO:BOTZ240315C00033000"),
-          get: () => Promise.reject(new Error("Databento returned HTTP 503.")),
-        } as never,
-      ),
-      (error: unknown) => {
-        ok(error instanceof Error);
-        equal(
-          error.message,
-          "Failed to fetch historical data:\n- /yahoo +BOTZ.15MAR2024.C33 BOTZ240315C00033000",
-        );
-        return true;
-      },
-    );
-    equal(
-      (db.prepare("SELECT COUNT(*) AS n FROM alltime_series_cache").get() as {
-        n: number;
-      }).n,
-      0,
-    );
-  } finally {
-    db.close();
-  }
+    const dataset = await loadAllTimeDataset(db, {
+      positions: [], orders: [
+        { ...trade(1, 10, "2024-02-08"), ticker, integrationKind: "f24", assetCategory: "OPT" },
+        { ...trade(-1, 0, "2024-03-15"), ticker, integrationKind: "f24", assetCategory: "OPT" },
+      ], transactionBuckets: new Map(), bucketName: null, now,
+    }, 1, "Daniel", {
+      resolve: () => Promise.resolve("DATABENTO:BOTZ240315C00033000"),
+      get: () => Promise.reject(new Error("Databento returned HTTP 503.")),
+    } as never);
+    equal(dataset.points.find(p => p.date === "2024-03-14")!.gain, null);
+    equal(dataset.points.find(p => p.date === "2024-03-15")!.gain, -10);
+    equal(dataset.points.at(-1)!.gain, -10);
+    ok(dataset.notes!.some(note => /503.*gaps/.test(note)));
+  } finally { db.close(); }
 });
 
 Deno.test("chart follows VSCO purchases through the VSXY rename and preserves their bucket", async () => {
@@ -947,8 +892,7 @@ Deno.test("a post-split APH purchase fetches only the new contract; later failur
     } as never);
     deepStrictEqual(calls, [ticker]);
     equal(dataset.points.at(-1)!.gain, 100);
-    await rejects(
-      loadAllTimeDataset(
+    const partial = await loadAllTimeDataset(
         db,
         {
           ...args,
@@ -974,9 +918,10 @@ Deno.test("a post-split APH purchase fetches only the new contract; later failur
           get: () =>
             Promise.resolve(history("USD", [{ date: "2026-08-31", close: 4 }])),
         } as never,
-      ),
-      /Failed to fetch historical data:\n- \/yahoo \+APH\.15JAN2027\.C100 APH270115C00100000/,
-    );
+      );
+    equal(partial.points.find(p => p.date === "2026-09-04")!.gain, null);
+    ok(partial.points.at(-1)!.gain !== null);
+    ok(partial.notes!.some(note => /gaps/.test(note)));
   } finally {
     db.close();
   }
@@ -1076,5 +1021,67 @@ Deno.test("switching index replays saved purchases before the visible window and
     const repeated = await switchChartBenchmarks(db, restored, "momentum", failIfFetched);
     deepStrictEqual(repeated.map(d => d.benchmark), changed.map(d => d.benchmark));
     deepStrictEqual([first, second], saved);
+  } finally { db.close(); }
+});
+
+Deno.test("a failed index feed keeps frozen funding inputs so index switching can recover it", async () => {
+  const db = new Database(":memory:");
+  try {
+    const account: IntegrationAccountPerformance = {
+      integrationId: 1, currency: "USD", deposits: 100, withdrawals: 0, netContributions: 100,
+      totalValue: 130, pnl: 30, cash: 0, ledgerCash: { USD: 0 }, positionValue: 130, investmentValue: 130,
+      openedAt: new Date("2025-01-02"), historyThrough: now,
+      fundingHistory: [{ date: "2025-01-02", amount: 100 }],
+      cashHistory: [{ date: "2025-01-02", amount: 100, currency: "USD", type: "Deposit" }],
+    };
+    const data = await loadDataset(db, {
+      kind: "perf", orders: [trade(1, 100, "2025-01-02")], positions: [holding(1, 100, 130)],
+      transactionBuckets: new Map(), bucketName: null, accountPerformances: [account], now,
+    }, 1, "Test", {
+      resolve: async () => "AAPL",
+      get: async (symbol: string) => {
+        if (symbol === "CSPX.L") throw new Error("HTTP 503");
+        return history();
+      },
+    } as never);
+    equal(data.benchmark, undefined);
+    equal(data.benchmarkInputsReady, true);
+    deepStrictEqual(data.benchmarkPurchases, [{ date: "2025-01-02", amountUsd: 100 }]);
+    ok(data.benchmarkFundingBasis!.length > 0);
+    const [recovered] = await switchChartBenchmarks(db, JSON.parse(JSON.stringify([data])), "momentum", {
+      get: async () => ({ symbol: "IUMO.L", currency: "USD", instrumentType: "ETF", splits: [],
+        bars: [{ date: "2025-01-02", close: 100 }, { date: "2025-01-06", close: 110 }] }),
+    });
+    equal(recovered.benchmark!.symbol, "IUMO.L");
+    ok(!recovered.notes!.some(note => note.startsWith("Index hidden:")));
+    deepStrictEqual(recovered.points, data.points);
+    deepStrictEqual(recovered.benchmarkFundingBasis, data.benchmarkFundingBasis);
+  } finally { db.close(); }
+});
+
+Deno.test("index switches tolerate one unavailable history without mixing index types, and restore saved curves", async () => {
+  const db = new Database(":memory:");
+  try {
+    const bars = [{ date: "2025-01-02", close: 100 }, { date: "2025-01-03", close: 100 }, { date: "2025-01-06", close: 110 }];
+    const first: AllTimeDataset = {
+      fundingReturnVersion: 5, userId: 1, label: "Older account", bucketName: null,
+      points: [{ date: "2025-01-02", gain: 0, percentage: 0 }, { date: "2025-01-06", gain: 10, percentage: 10 }],
+      benchmarkPurchases: [{ date: "2025-01-02", amountUsd: 100 }],
+    };
+    const second: AllTimeDataset = { ...first, userId: 2, label: "Newer account", benchmarkPurchases: [{ date: "2025-01-03", amountUsd: 100 }] };
+    for (const data of [first, second]) data.benchmark = buildChartBenchmark(
+      { symbol: "CSPX.L", currency: "USD", instrumentType: "ETF", splits: [], bars }, data.benchmarkPurchases!, "2025-01-02", "2025-01-06");
+    const changed = await switchChartBenchmarks(db, [first, second], "momentum", {
+      get: async () => ({ symbol: "IUMO.L", currency: "USD", instrumentType: "ETF", splits: [], bars: bars.slice(1) }),
+    });
+    equal(changed[0].benchmark, undefined);
+    equal(changed[0].benchmarkInputsReady, true);
+    equal(changed[1].benchmark!.symbol, "IUMO.L");
+    ok(changed[0].notes!.some(note => /Index hidden:.*2025-01-02/.test(note)));
+    const restored = await switchChartBenchmarks(db, JSON.parse(JSON.stringify(changed)), "sp500", {
+      get: () => { throw new Error("Frozen snapshots must not fetch"); },
+    });
+    deepStrictEqual(restored.map(data => data.benchmark), [first.benchmark, second.benchmark]);
+    ok(!restored[0].notes!.some(note => note.startsWith("Index hidden:")));
   } finally { db.close(); }
 });

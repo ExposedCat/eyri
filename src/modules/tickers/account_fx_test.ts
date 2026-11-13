@@ -18,7 +18,7 @@ const account: IntegrationAccountPerformance = {
 const conversion: IntegrationOrder = { integrationId: 1, integrationKind: "ibkr", account: "A",
   ticker: "USD.CZK", currency: "CZK", quantity: 1000, price: 25, assetCategory: "CASH",
   date: new Date("2025-01-02"), commission: { currency: "CZK", amount: -1 } };
-const near = (actual: number, expected: number) => ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
+const near = (actual: number | null, expected: number) => ok(actual !== null && Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 const fx = (a: IntegrationAccountPerformance, orders: IntegrationOrder[] = []) =>
   accountFxPnl(accountFxInputs([a], orders), rates)[0];
 

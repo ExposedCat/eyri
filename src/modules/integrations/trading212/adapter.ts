@@ -175,7 +175,7 @@ function readHistory(database: Database, integration: Integration) {
   }).sort((a, b) => +a.date - +b.date);
 }
 
-async function syncHistory(database: Database, integration: Integration) {
+async function syncHistory(database: Database, integration: Integration, refresh = false) {
   ensureHistorySchema(database);
   const client = getTrading212Client(
     parseTrading212Credentials(integration.credentials),
@@ -185,7 +185,7 @@ async function syncHistory(database: Database, integration: Integration) {
     // created before this column used REAL, without losing cached history.
     "SELECT CAST(synced_at AS REAL) AS synced_at FROM trading212_history_sync WHERE integration_id = ?",
   ).get(integration.id) as { synced_at: number } | undefined;
-  if (state && Date.now() - state.synced_at < HISTORY_CACHE_MS) {
+  if (!refresh && state && Date.now() - state.synced_at < HISTORY_CACHE_MS) {
     return readHistory(database, integration);
   }
   const knownRows = database.prepare(
@@ -226,7 +226,7 @@ async function syncHistory(database: Database, integration: Integration) {
     // A prior complete sync permits stopping at an entirely known page. An
     // interrupted first sync must still paginate all the way to the end.
     if (
-      state && fills.length > 0 &&
+      !refresh && state && fills.length > 0 &&
       fills.every((item) => known.has(String(item.fill!.id)))
     ) break;
     path = page.nextPagePath;
@@ -314,7 +314,9 @@ export const trading212Adapter: IntegrationAdapter = {
       ...buildCfdPositions(cfdOrders),
     ];
   },
-  fetchOrderHistory(database, integration) {
+  fetchOrderHistory(database, integration, options) {
+    if (options?.refresh) return Promise.all([syncHistory(database, integration, true), fetchCfdOrders(database, integration)])
+      .then(([orders, cfd]) => [...orders, ...cfd].sort((a, b) => +a.date - +b.date));
     let pending = pendingHistory.get(database);
     if (!pending) {
       pending = new Map();

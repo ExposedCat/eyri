@@ -36,7 +36,7 @@ const histories = new Map<string, PriceHistory>([
   [instrumentKey(orders[0]), { symbol: "FIRST", currency: "USD", instrumentType: "EQUITY", splits: [], bars: [{ date: "2025-01-01", close: 100 }, { date: "2025-01-02", close: 500 }] }],
   [instrumentKey(orders[2]), { symbol: "SECOND", currency: "USD", instrumentType: "EQUITY", splits: [], bars: [{ date: "2025-01-02", close: 500 }, { date: "2025-01-03", close: 525 }] }],
 ]);
-const near = (actual: number, expected: number) => ok(Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
+const near = (actual: number | null, expected: number | null) => ok(actual !== null && expected !== null && Math.abs(actual - expected) < 1e-9, `${actual} != ${expected}`);
 
 Deno.test("alltime uses instrument performance without adding cash income", async () => {
   const snapshot = { ...account, deposits: 500, netContributions: 500, totalValue: 550, pnl: 50, cash: 25, ledgerCash: { USD: 25 },
@@ -231,14 +231,16 @@ Deno.test("lifetime return keeps the original deposit after reinvesting gains an
   }
 });
 
-Deno.test("gross-deposit return handles withdrawals, redeposits, zero deposits, incomplete accounts and ambiguous transfers", () => {
+Deno.test("gross-deposit return handles withdrawals and multiple accounts without inferring transfers", () => {
   equal(accountReturn([{ ...account, totalValue: 125, withdrawals: 400 }], new Set([1]), rates).percentage, 425);
   equal(accountReturn([{ ...account, deposits: 200, withdrawals: 100 }], new Set([1]), rates).percentage, 212.5);
   equal(accountReturn([{ ...account, deposits: 0 }], new Set([1]), rates).percentage, null);
   equal(accountReturn([account], new Set([1, 2]), rates).percentage, null);
   equal(accountReturn([account, { ...account, integrationId: 2 }], new Set([1, 2]), rates).percentage, 425);
-  equal(accountReturn([account, { ...account, integrationId: 2, withdrawals: 50 }], new Set([1, 2]), rates).percentage, null);
-  equal(accountReturn([account, { ...account, integrationId: 2, fundingIncludesTransfers: true }], new Set([1, 2]), rates).percentage, null);
+  equal(accountReturn([account, { ...account, integrationId: 2, withdrawals: 50 }], new Set([1, 2]), rates).percentage, 450);
+  // Older persisted payloads can still contain the removed heuristic flag.
+  const legacy = { ...account, integrationId: 2, fundingIncludesTransfers: true };
+  equal(accountReturn([account, legacy], new Set([1, 2]), rates).percentage, 425);
   throws(() => accountReturn([account, account], new Set([1]), rates), /Duplicate/);
 });
 
@@ -266,7 +268,11 @@ Deno.test("benchmark invests the deposited 100 once, despite 600 of purchase tur
     equal(dataset.benchmarkPurchases?.[0].amountUsd, 100);
     near(dataset.benchmark!.points.at(-1)!.gain, 10);
     near(dataset.benchmark!.points.at(-1)!.percentage, 10);
-    await rejects(loadAllTimeDataset(db, { positions: [position], orders, transactionBuckets: new Map(), bucketName: null, now: new Date("2025-01-04"), accountPerformances: [{ ...account, fundingHistory: undefined }] }, 1, "Test", cache as never), /dated external funding/);
+    const undated = await loadAllTimeDataset(db, { positions: [position], orders, transactionBuckets: new Map(), bucketName: null, now: new Date("2025-01-04"), accountPerformances: [{ ...account, fundingHistory: undefined }] }, 1, "Test", cache as never);
+    equal(undated.benchmark, undefined);
+    near(undated.points.at(-1)!.gain, 425);
+    equal(undated.points.find(point => point.date === "2025-01-02")!.percentage, null);
+    ok(undated.notes!.some(note => /Index hidden: Deposit dates/.test(note)));
   } finally { db.close(); }
 });
 
@@ -313,8 +319,12 @@ Deno.test("CZK account and index share the funding basis, including an excluded 
         get: () => Promise.resolve({ symbol: "IUMO.L", currency: "USD", instrumentType: "ETF", splits: [], bars: [{ date: "2024-12-31", close: 100 }] }),
       }));
       near(switched[0].benchmark!.points.at(-1)!.gain, dataset.benchmark!.points.at(-1)!.gain);
-      await rejects(loadAllTimeDataset(db, args, 1, "Test", cache as never, async url =>
-        new URL(String(url)).pathname === "/v2/rates" ? new Response(null, { status: 503 }) : request(url)), /Historical exchange rates unavailable/);
+      const fallback = await loadAllTimeDataset(db, args, 1, "Test", cache as never, async url =>
+        new URL(String(url)).pathname === "/v2/rates" ? new Response(null, { status: 503 }) : request(url));
+      ok(fallback.benchmark);
+      near(fallback.points.at(-1)!.gain, 0);
+      near(fallback.benchmark.points.at(-1)!.gain, 0);
+      ok(fallback.notes!.some(note => /Currency P.L excluded/.test(note)));
     } finally { db.close(); }
   }
 });

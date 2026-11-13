@@ -64,6 +64,39 @@ Deno.test("portfolio stroke stays mint above and below zero when the benchmark i
   equal(red, 0, "Negative returns do not switch the portfolio to red");
 });
 
+Deno.test("comparison renders both portfolio strokes when one person has no percentages", async () => {
+  const second = { ...dataset, userId: 2, label: "Money only", points: dataset.points.map(point => ({
+    ...point, percentage: null, gain: point.gain! + 1000,
+  })) };
+  const png = renderAllTimeDatasets([dataset, second]);
+  const image = await loadImage(png), canvas = createCanvas(image.width, image.height), ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0);
+  const { data } = ctx.getImageData(0, 0, image.width, image.height);
+  for (const rgb of [[99, 216, 171], [250, 137, 145]]) {
+    let count = 0;
+    // Stay inside the plot so legend samples cannot pass the visibility check.
+    for (let y = 100; y < 1100; y++) for (let x = 250; x < 2000; x++) {
+      if (rgb.every((value, i) => data[(y * image.width + x) * 4 + i] === value)) count++;
+    }
+    ok(count > 100, `Participant stroke ${rgb} remains visible: ${count}`);
+  }
+  await Deno.writeFile("/tmp/eyri-comparison-money.png", png);
+});
+
+Deno.test("a single known point between gaps is visible even when the endpoint is missing", async () => {
+  const points = dataset.points.map((point, i) => i === 1 ? point : { ...point, gain: null, percentage: null });
+  const image = await loadImage(renderAllTimeDatasets([{ ...dataset, points }]));
+  const canvas = createCanvas(image.width, image.height), ctx = canvas.getContext("2d");
+  ctx.drawImage(image, 0, 0);
+  const { data } = ctx.getImageData(0, 0, image.width, image.height);
+  let mint = 0;
+  for (let y = 100; y < 1100; y++) for (let x = 250; x < 2000; x++) {
+    const offset = (y * image.width + x) * 4;
+    if (data[offset] === 99 && data[offset + 1] === 216 && data[offset + 2] === 171) mint++;
+  }
+  ok(mint > 30, `The isolated point has a visible marker: ${mint}`);
+});
+
 Deno.test("renderer ignores cached images from the previous line styling", async () => {
   const db = new Database(":memory:");
   try {
@@ -131,7 +164,7 @@ Deno.test("mint portfolio stays in front of an exactly overlapping gold benchmar
   const image = await loadImage(renderAllTimeDatasets([{
     ...dataset,
     points,
-    benchmark: { ...benchmark, points },
+    benchmark: { ...benchmark, points: points.map(point => ({ ...point, gain: point.gain! })) },
   }]));
   const canvas = createCanvas(image.width, image.height);
   const context = canvas.getContext("2d");

@@ -7,6 +7,9 @@ export type PriceHistory = {
   splits: StockSplit[];
   instrumentType?: string;
   priceBasis?: "BID";
+  // Explicit provider failures must stay gaps, rather than carrying a close
+  // across an unavailable contract-history segment.
+  missing?: Range[];
 };
 export type Range = { start: string; end: string };
 const DAY = 86_400_000;

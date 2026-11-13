@@ -8,7 +8,7 @@ const fundingTypes = new Set([
 ]);
 
 type FxAccount = Pick<IntegrationAccountPerformance, "integrationId" | "currency" | "fundingSource" |
-  "cashHistory" | "cashHistoryIncludesTrades" | "fundingHistory" | "deposits" | "withdrawals" | "fundingIncludesTransfers">;
+  "cashHistory" | "cashHistoryIncludesTrades" | "fundingHistory" | "deposits" | "withdrawals">;
 type Topup = { currency: string; deposits: number; withdrawals: number; source: "top_up" | "bucket" | "unknown" };
 
 function nativeFunding(account: FxAccount) {
@@ -159,7 +159,6 @@ export function datedFxAccounts(accounts: FxAccount[], date: string) {
       .reduce((sum, flow) => sum + flow.amount, 0);
     return { integrationId: account.integrationId, currency: account.currency,
       fundingSource: account.fundingSource, cashHistoryIncludesTrades: account.cashHistoryIncludesTrades,
-      fundingIncludesTransfers: account.fundingIncludesTransfers,
       deposits, withdrawals, fundingHistory, cashHistory: account.cashHistory?.filter(event => event.date <= date) };
   });
 }

@@ -97,11 +97,13 @@ export type IntegrationAdapter = {
   fetchOrderHistory: (
     database: Database,
     integration: Integration,
+    options?: { refresh?: boolean; recent?: boolean },
   ) => Promise<IntegrationOrder[]>;
   probe?: (integration: Integration) => Promise<void>;
 };
 
 export type IntegrationAccountPerformance = {
+  fxUnavailableReason?: string;
   // Live balances paired with completed funding while broker statements lag.
   fundingProvisional?: boolean;
   pendingCashAdjustment?: { date: string; amount: number; balances: Record<string, number> };
@@ -117,7 +119,6 @@ export type IntegrationAccountPerformance = {
   sourceCashBalances?: Record<string, number>;
   fundingSource?: "bucket_cash" | "account_allocated";
   fundingHistory?: { date: string; amount: number; allocation?: boolean; provisional?: boolean }[];
-  fundingIncludesTransfers?: boolean;
   integrationId: number;
   currency: string;
   totalValue: number;

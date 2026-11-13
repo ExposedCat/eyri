@@ -1,6 +1,7 @@
 import type { IntegrationAccountPerformance, IntegrationOrder } from "../types.ts";
 import { fetchConversionRates } from "../../../utils/exchange_rates.ts";
 import { conversionFactor } from "../usd.ts";
+import { userErrorMessage } from "../../../utils/user_error.ts";
 
 // The residual is unclassified cash, not verified income or a verified deposit.
 // Neutralize it as temporary funding in the report only. The next Flex statement
@@ -19,10 +20,13 @@ export async function reconcileIbkrPendingCash(
   const add = (currency: string, amount: number) => expected[currency] = (expected[currency] ?? 0) + amount;
   for (const order of recent) {
     if (order.receipt !== "gift") {
-      if (order.price === null || !Number.isFinite(order.price)) throw new Error(`Missing execution cash price for ${order.ticker}`);
       const [base, quote] = order.ticker.toUpperCase().split(/[./]/);
-      if (["CASH", "FOREX"].includes(order.assetCategory?.toUpperCase() ?? "") ||
-        /^[A-Z]{3}[./][A-Z]{3}$/.test(order.ticker)) {
+      const conversion = ["CASH", "FOREX"].includes(order.assetCategory?.toUpperCase() ?? "") || /^[A-Z]{3}[./][A-Z]{3}$/.test(order.ticker);
+      if (conversion && (!/^[A-Z]{3}$/.test(base) || !/^[A-Z]{3}$/.test(quote) || order.price === null || !Number.isFinite(order.price) || order.price <= 0)) {
+        return { ...account, fxUnavailableReason: `Currency P/L excluded: unreadable FX trade ${order.ticker}.` };
+      }
+      if (order.price === null || !Number.isFinite(order.price)) throw new Error(`Missing execution cash price for ${order.ticker}`);
+      if (conversion) {
         add(base, order.quantity);
         add(quote, -order.quantity * order.price);
       } else add(order.currency, -order.quantity * order.price);
@@ -38,7 +42,9 @@ export async function reconcileIbkrPendingCash(
   if (!recent.length && !fundingProvisional) {
     return account.fundingProvisional ? { ...account, fundingProvisional: false } : account;
   }
-  const rates = await fetchConversionRates(Object.keys(balances), account.currency, request);
+  let rates: Map<string, number>;
+  try { rates = await fetchConversionRates(Object.keys(balances), account.currency, request); }
+  catch (error) { return { ...account, fxUnavailableReason: `Currency P/L excluded: ${userErrorMessage(error)}` }; }
   const amount = Object.entries(balances).reduce((sum, [currency, value]) => sum + value * conversionFactor(currency, rates), 0);
   const date = now.toISOString().slice(0, 10);
   const deposits = account.deposits + Math.max(0, amount);

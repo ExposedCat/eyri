@@ -105,8 +105,11 @@ export async function createBucket({
     }
 
     return { success: true, data: bucket };
-  } catch {
-    return { success: false, error: "Bucket already exists" };
+  } catch (error) {
+    console.error("Bucket creation failed:", error);
+    return { success: false, error: error instanceof Error && /UNIQUE constraint failed: portfolio_buckets/.test(error.message)
+      ? "Bucket already exists. Choose another name."
+      : "Bucket storage write failed. Retry; if unchanged, ask admin." };
   }
 }
 
@@ -162,8 +165,9 @@ export async function deleteBucket({
     })();
 
     return { success: true, data: null };
-  } catch {
-    return { success: false, error: "Failed to remove bucket" };
+  } catch (error) {
+    console.error("Bucket deletion failed:", error);
+    return { success: false, error: "Bucket storage write failed. Retry; if unchanged, ask admin." };
   }
 }
 
@@ -375,8 +379,9 @@ export function allocateToBucket({
       }
     })();
     return { success: true, data: null };
-  } catch {
-    return { success: false, error: "Failed to move stocks" };
+  } catch (error) {
+    console.error("Bucket share allocation failed:", error);
+    return { success: false, error: "Bucket storage write failed. Retry; if unchanged, ask admin." };
   }
 }
 
@@ -447,8 +452,9 @@ export async function moveTransactionToBucket({
       .run(userId, transactionKey, bucketName);
 
     return { success: true, data: null };
-  } catch {
-    return { success: false, error: "Failed to move transaction" };
+  } catch (error) {
+    console.error("Bucket transaction move failed:", error);
+    return { success: false, error: "Bucket storage write failed. Retry; if unchanged, ask admin." };
   }
 }
 
@@ -493,7 +499,8 @@ export async function removeTransactionFromBucket({
       .run(userId, transactionKey, bucketName);
 
     return { success: true, data: null };
-  } catch {
-    return { success: false, error: "Failed to remove transaction" };
+  } catch (error) {
+    console.error("Bucket transaction removal failed:", error);
+    return { success: false, error: "Bucket storage write failed. Retry; if unchanged, ask admin." };
   }
 }

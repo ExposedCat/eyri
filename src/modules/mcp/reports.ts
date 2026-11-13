@@ -232,7 +232,7 @@ export async function runReport(
       notes: dataset.notes ?? [],
       points: dataset.points.map((p) => ({
         date: p.date,
-        [chartKind === "worth" ? "value" : "pnl"]: p.gain * rate,
+        [chartKind === "worth" ? "value" : "pnl"]: p.gain === null ? null : p.gain * rate,
         returnPct: p.percentage,
       })),
     };

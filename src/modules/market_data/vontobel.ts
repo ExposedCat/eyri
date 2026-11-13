@@ -1,3 +1,4 @@
+import { httpError, networkError, UserFacingError } from "../../utils/user_error.ts";
 import type { Database } from "../database/setup.ts";
 import type { IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { logFetch } from "../../utils/fetch_logging.ts";
@@ -80,20 +81,22 @@ export class NotVontobelWarrantError extends Error {}
 
 function apiRequest(path: string, request: typeof fetch, enveloped = true) {
   return logFetch(`Vontobel ${path}`, async () => {
-    const response = await request(API + path + "?c=de-de", {
+    let response: Response;
+    try { response = await request(API + path + "?c=de-de", {
       headers: {
         "User-Agent": "Mozilla/5.0 Eyri/1.0",
         Accept: "application/json",
       },
       redirect: "error",
       signal: AbortSignal.timeout(20_000),
-    });
+    }); } catch (cause) { throw networkError("Vontobel price feed", cause); }
     if (!response.ok) {
       await response.body?.cancel();
       if (response.status === 404 && path.startsWith("productdetailpage/")) {
         throw new NotVontobelWarrantError("Vontobel product not found.");
       }
-      throw new Error(`Vontobel returned HTTP ${response.status}.`);
+      throw new UserFacingError(httpError("Vontobel price feed", response.status, "Retry shortly.").userMessage,
+        { detail: `Vontobel returned HTTP ${response.status}.` });
     }
     const data = await response.json();
     // The dedicated latest-price route returns the price directly, whereas

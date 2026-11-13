@@ -6,7 +6,6 @@ import {
   morganStanleyIsin,
 } from "./morgan_stanley.ts";
 import { YahooHistoryCache } from "./yahoo.ts";
-import { HistoricalDataError } from "./errors.ts";
 import { saveYahooMapping } from "./mappings.ts";
 import { loadAllTimeDataset } from "../tickers/alltime_chart.ts";
 
@@ -241,52 +240,20 @@ Deno.test("Morgan Stanley issuer mismatches cannot price warrants or poison the 
   }
 });
 
-Deno.test("Morgan Stanley feed outages give the full chart an issuer-specific error without suggesting a Yahoo mapping", async () => {
+Deno.test("Morgan Stanley feed outages leave price gaps and recover after a known sale", async () => {
   const db = new Database(":memory:");
   try {
-    const cache = new YahooHistoryCache(
-      db,
-      () => Promise.resolve(new Response("", { status: 503 })),
-      clock,
-    );
-    await rejects(
-      loadAllTimeDataset(
-        db,
-        {
-          positions: [],
-          orders: [{
-            ...instrument,
-            integrationId: 7,
-            integrationKind: "ibkr",
-            account: "one",
-            quantity: 465,
-            price: 1.06,
-            date: new Date("2026-10-14"),
-          }],
-          transactionBuckets: new Map(),
-          bucketName: null,
-          now: clock(),
-        },
-        1,
-        "Test",
-        cache,
-      ),
-      (error: unknown) => {
-        ok(error instanceof HistoricalDataError);
-        equal(
-          error.message,
-          "Failed to fetch historical data:\n- MN03RW: Morgan Stanley warrant history unavailable (DE000MN03RW5).",
-        );
-        return true;
-      },
-    );
-    equal(
-      (db.prepare("SELECT count(*) AS n FROM alltime_series_cache").get() as {
-        n: number;
-      }).n,
-      0,
-    );
-  } finally {
-    db.close();
-  }
+    const cache = new YahooHistoryCache(db, () => Promise.resolve(new Response("", { status: 503 })), clock);
+    const order = { ...instrument, integrationId: 7, integrationKind: "ibkr" as const, account: "one", quantity: 465, price: 1.06, date: new Date("2026-10-14") };
+    const dataset = await loadAllTimeDataset(db, {
+      positions: [], orders: [order, { ...order, quantity: -465, price: 2, date: new Date("2026-10-15") }],
+      transactionBuckets: new Map(), bucketName: null, now: clock(),
+    }, 1, "Test", cache, async input => Response.json(new URL(String(input)).pathname === "/v2/rates"
+      ? [{ base: "USD", quote: "EUR", date: "2026-10-14", rate: 1 }]
+      : { base: "USD", quote: "EUR", rate: 1 }));
+    equal(dataset.points.find(point => point.date === "2026-10-14")!.gain, null);
+    ok(Math.abs(dataset.points.at(-1)!.gain! - 437.1) < 1e-8);
+    ok(dataset.notes!.some(note => /MN03RW.*Morgan Stanley.*gaps/.test(note)));
+    ok(!dataset.notes!.some(note => /mapticker/.test(note)));
+  } finally { db.close(); }
 });

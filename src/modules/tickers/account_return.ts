@@ -3,6 +3,7 @@ import { conversionFactor } from "../integrations/usd.ts";
 import { requireReportNumber } from "../../utils/report_value.ts";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import { accountTopups } from "./account_fx.ts";
+import { UserFacingError } from "../../utils/user_error.ts";
 
 export async function accountWorth(holdings: number, selectedIds: Set<number>, accounts: IntegrationAccountPerformance[], currency: string, request: typeof fetch = fetch) {
   const rates = await fetchConversionRates(accounts.map(account => account.currency), currency, request);
@@ -24,24 +25,21 @@ export function accountFunding(
   const ids = new Set<number>();
   let deposits = 0;
   for (const account of accounts) {
-    if (ids.has(account.integrationId)) throw new Error("Duplicate account reconciliation");
+    if (ids.has(account.integrationId)) throw new UserFacingError(`Bot counted account ${account.integrationId} twice. Ask admin to fix the report.`,
+      { detail: "Duplicate account reconciliation" });
     ids.add(account.integrationId);
     const contributed = requireReportNumber(account.deposits, "account deposits");
     const withdrawn = requireReportNumber(account.withdrawals, "account withdrawals");
-    if (contributed < 0 || withdrawn < 0) throw new Error("Account deposits and withdrawals must be nonnegative");
+    if (contributed < 0 || withdrawn < 0) throw new UserFacingError(`Funding totals have wrong signs: deposits ${contributed}, withdrawals ${withdrawn}. Ask admin to check the import.`,
+      { detail: "Account deposits and withdrawals must be nonnegative" });
     deposits += accountTopups([account]).reduce((sum, topup) => sum + topup.deposits *
       (topup.currency === currency ? 1 : conversionFactor(topup.currency, rates)), 0);
   }
   const complete = accounts.length > 0 && [...selectedIntegrationIds].every(id => ids.has(id));
-  const brokerAccounts = accounts.filter(account => account.fundingSource !== "bucket_cash");
-  const ambiguousTransfers = brokerAccounts.length > 1 && brokerAccounts.some(account =>
-    account.fundingIncludesTransfers || account.withdrawals > 0 &&
-      brokerAccounts.some(other => other.integrationId !== account.integrationId && other.deposits > 0)
-  );
+  // Multiple accounts, withdrawals and broker cash-type labels do not establish
+  // a transfer between the user's accounts. Use the reported funding movements.
   const reason = !complete
     ? "Lifetime return unavailable: complete account funding is required; filters and buckets have no allocated deposits or cash."
-    : ambiguousTransfers
-    ? "Lifetime return unavailable: transfers between selected accounts must be identified and excluded from deposits."
     : deposits <= 0 ? "Lifetime return unavailable: total deposits must be positive." : null;
   return { deposits, complete, reason };
 }

@@ -156,6 +156,10 @@ Deno.test("Trading 212 integration maps live positions and fills, caches history
     equal(historyCalls.length, 3); // Known first page stops incremental sync.
     equal((await fetchIntegratedOrderHistory(db, 2)).length, 1);
     equal(historyCalls.length, 4);
+    // Reconciliation bypasses both the fresh cache and the known-first-page
+    // shortcut, so older omitted fills can be recovered too.
+    await fetchIntegratedOrderHistory(db, 1, { refresh: true });
+    equal(historyCalls.length, 6);
   } finally {
     globalThis.fetch = fetch;
     Date.now = clock;

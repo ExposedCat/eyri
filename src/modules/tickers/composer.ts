@@ -4,6 +4,7 @@ import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts"
 import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
 import { parsePerformanceArgs, parseReportArgs, type ReportFilter } from "./performance_command.ts";
 import type { CustomContext } from "../bot/types.ts";
+import { replyUserError } from "../bot/errors.ts";
 import { richTextMessage, showRichMessage } from "../bot/rich.ts";
 import {
   applyBucketAllocations,
@@ -429,20 +430,11 @@ async function replyJsonDump(ctx: CustomContext, value: unknown) {
 }
 
 async function replyIntegrationError(ctx: CustomContext, error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  const detail = message.replace(/^Failed to fetch integration data:\s*/, "");
-  await ctx.reply(
-    `Failed to fetch integration data:\n\n<code>${escapeHtml(detail)}</code>`,
-    htmlReplyOptions,
-  );
+  await replyUserError(ctx, error);
 }
 
 async function replyRestartError(ctx: CustomContext, error: unknown) {
-  const message = error instanceof Error ? error.message : String(error);
-  await ctx.reply(
-    `Failed to restart IB Gateway:\n\n<code>${escapeHtml(message)}</code>`,
-    htmlReplyOptions,
-  );
+  await replyUserError(ctx, error);
 }
 
 tickersComposer.command("buckets", async (ctx) => {
@@ -892,10 +884,7 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 		}
 		await replyPortfolioText(ctx, groups.join("\n\n"));
 	} catch (error) {
-		await ctx.reply(
-			escapeHtml(error instanceof Error ? error.message : String(error)),
-			htmlReplyOptions,
-		);
+		await replyUserError(ctx, error);
 	}
 });
 

@@ -5,6 +5,7 @@ import type {
 } from "../types.ts";
 import { makeTradernetApiRequest } from "./api.ts";
 import { parseFreedom24Credentials } from "./credentials.ts";
+import { UserFacingError } from "../../../utils/user_error.ts";
 
 // Broker report fields, deliberately read as unknown until validated. The report
 // is requested from 1970, independently of the order-history lookback setting.
@@ -26,13 +27,15 @@ const incomeTypes = new Set([
 ]);
 function object(value: unknown, field: string): ObjectRow {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`Incomplete Freedom24 broker report: ${field}`);
+    throw new UserFacingError(`Freedom24 omitted ${field.replaceAll("_", " ")}. Ask admin to check the import.`,
+      { detail: `Incomplete Freedom24 broker report: ${field}` });
   }
   return value as ObjectRow;
 }
 function rows(value: unknown, field: string): ObjectRow[] {
   if (!Array.isArray(value)) {
-    throw new Error(`Incomplete Freedom24 broker report: ${field}`);
+    throw new UserFacingError(`Freedom24 omitted the ${field.replaceAll("_", " ")} list. Ask admin to check the import.`,
+      { detail: `Incomplete Freedom24 broker report: ${field}` });
   }
   return value.map((v) => object(v, field));
 }
@@ -41,7 +44,8 @@ function number(value: unknown, field: string): number {
     (typeof value !== "number" && typeof value !== "string") ||
     String(value).trim() === "" || !Number.isFinite(Number(value))
   ) {
-    throw new Error(`Invalid Freedom24 broker report number: ${field}`);
+    throw new UserFacingError(`Freedom24 ${value == null || String(value).trim() === "" ? "omitted" : "sent nonnumeric"} ${field}. Ask admin to check the import.`,
+      { detail: `Invalid Freedom24 broker report number: ${field}` });
   }
   return Number(value);
 }
@@ -52,7 +56,8 @@ function date(value: unknown, field: string) {
     !/^\d{4}-\d{2}-\d{2}$/.test(text) || !Number.isFinite(+result) ||
     result.toISOString().slice(0, 10) !== text
   ) {
-    throw new Error(`Invalid Freedom24 broker report date: ${field}`);
+    throw new UserFacingError(`Freedom24 ${text ? `sent date “${text}”` : "omitted the date"} for ${field.replaceAll("_", " ")}. Ask admin to check the import.`,
+      { detail: `Invalid Freedom24 broker report date: ${field}` });
   }
   return result;
 }
@@ -128,14 +133,14 @@ export function buildFreedom24AccountPerformance(
     "cash_flows.detailed",
   );
   if (flowRows.length !== detailed.length) {
-    throw new Error("Freedom24 cash history is incomplete");
+    throw new UserFacingError(`Freedom24 cash lists differ: ${flowRows.length} entries, ${detailed.length} details. Retry the report.`,
+      { detail: "Freedom24 cash history is incomplete" });
   }
   const seen = new Map<string, string>();
   const flowTotals = new Map<string, number>();
   let deposits = 0, withdrawals = 0;
   const fundingHistory: { date: string; amount: number }[] = [];
   const cashHistory: NonNullable<IntegrationAccountPerformance["cashHistory"]> = [];
-  let fundingIncludesTransfers = false;
   for (const row of flowRows) {
     if (
       number(row.approved, "cash approval") !== 1 ||
@@ -182,10 +187,9 @@ export function buildFreedom24AccountPerformance(
     if ((native > 0) !== (amount > 0) || (native < 0) !== (amount < 0)) {
       throw new Error("Freedom24 funding currency signs disagree");
     }
-    // Transfers between selected accounts cancel in the consolidated total.
-    // A transfer into/out of a single selected account is funding for that account.
+    // These are broker-reported account funding movements. Cash-type labels
+    // alone do not identify transfers between the user's connected accounts.
     fundingHistory.push({ date: at.toISOString().slice(0, 10), amount });
-    if (["intercompany", "internal_holding"].includes(type)) fundingIncludesTransfers = true;
     if (amount >= 0) deposits += amount;
     else withdrawals -= amount;
   }
@@ -205,9 +209,8 @@ export function buildFreedom24AccountPerformance(
           number(declaredTotals[currency], `${currency} cash flow total`),
       ) > .02
     ) {
-      throw new Error(
-        `Freedom24 cash transactions do not reconcile with the broker total for ${currency}`,
-      );
+      throw new UserFacingError(`Freedom24 ${currency} cash: entries ${(flowTotals.get(currency) ?? 0).toFixed(2)}, total ${Number(declaredTotals[currency]).toFixed(2)}. Retry; if unchanged, ask admin.`,
+        { detail: `Freedom24 cash transactions do not reconcile with the broker total for ${currency}` });
     }
   }
   // Freedom24 reports execution charges, margin interest and other fees in a
@@ -251,9 +254,8 @@ export function buildFreedom24AccountPerformance(
     if (
       Math.abs((actual.get(ticker) ?? 0) - (reported.get(ticker) ?? 0)) > 1e-7
     ) {
-      throw new Error(
-        `Freedom24 funding snapshot does not match live holdings for ${ticker}; retry the report`,
-      );
+      throw new UserFacingError(`${ticker}: Freedom24 report ${reported.get(ticker) ?? 0}, live ${actual.get(ticker) ?? 0} shares. Retry the report.`,
+        { detail: `Freedom24 funding snapshot does not match live holdings for ${ticker}; retry the report` });
     }
   }
   // A security transfer is not a cash deposit; corporate-action conversions do
@@ -284,7 +286,6 @@ export function buildFreedom24AccountPerformance(
     totalValue,
     netContributions,
     fundingHistory,
-    fundingIncludesTransfers,
     pnl: totalValue - netContributions,
     deposits,
     withdrawals,

@@ -1,7 +1,17 @@
+import { UserFacingError } from "../../../utils/user_error.ts";
+
 export type GatewayHealth = {
   state: "ready" | "recovering" | "blocked" | "unavailable" | "unknown";
   message: string;
+  reason?: "starting" | "login" | "verification" | "api_starting" | "reconnecting" | "login_paused" | "halted" | "health_unavailable" | "bad_health";
 };
+
+export class GatewayError extends UserFacingError {
+  constructor(readonly host: string, readonly health: GatewayHealth) {
+    super(health.message, { code: "gateway" });
+    this.name = "GatewayError";
+  }
+}
 
 // Only configured controller endpoints are probed. Legacy IBC gateways have
 // no HTTP health server; their socket failures are handled by the connection pool.
@@ -41,11 +51,14 @@ export class GatewayMonitor {
         signal: AbortSignal.timeout(1_000),
       });
       const health = await response.json();
+      if (!health || typeof health.state !== "string") {
+        return { state: "unavailable", reason: "bad_health", message: "Gateway status reply is unreadable. Ask admin." };
+      }
       if (health.state === "HALTED") {
         return {
           state: "blocked",
-          message:
-            "IBKR login is halted. Check the gateway authentication logs for the cause before restarting; the halted state alone does not identify a session lockout or invalid credentials.",
+          reason: "halted",
+          message: "IBKR login stopped. Ask admin to check Gateway login.",
         };
       }
       if (
@@ -56,16 +69,24 @@ export class GatewayMonitor {
       ) {
         return { state: "ready", message: "IBKR Gateway is ready." };
       }
-      return {
-        state: "recovering",
-        message:
-          "IBKR Gateway is logging in or reconnecting. Recovery is in progress; another restart can interrupt it.",
-      };
+      if (health.ccp_backoff_seconds > 0) return { state: "recovering", reason: "login_paused",
+        message: `IBKR login paused for ${Math.ceil(health.ccp_backoff_seconds)} seconds. Please wait.` };
+      if (health.state === "TWO_FA") return { state: "recovering", reason: "verification",
+        message: "IBKR verification pending. Complete Gateway login." };
+      if (["INIT", "LAUNCHING", "AGENT_WAIT", "APP_DISCOVERY"].includes(health.state)) return {
+        state: "recovering", reason: "starting", message: "Gateway is starting. Please wait." };
+      if (health.state === "LOGIN") return { state: "recovering", reason: "login",
+        message: "IBKR is logging in. Please wait." };
+      if (health.state === "UPSTREAM_DOWN" || health.upstream_connected === false) return {
+        state: "recovering", reason: "reconnecting", message: health.upstream_recovery_active === false
+          ? "IBKR server connection is down. Please wait."
+          : "IBKR is reconnecting. Please wait." };
+      return { state: "recovering", reason: "api_starting", message: "IBKR API is starting. Please wait." };
     } catch {
       return {
         state: "unavailable",
-        message:
-          "IBKR Gateway health endpoint is unavailable. The gateway may be starting or stopped.",
+        reason: "health_unavailable",
+        message: "Gateway status endpoint is unreachable. Retry shortly.",
       };
     }
   }
@@ -78,9 +99,11 @@ export const gatewayMonitor = new GatewayMonitor((host) => {
   return urls[host];
 });
 
-export async function assertGatewayReady(host: string) {
-  const health = await gatewayMonitor.read(host);
-  if (health.state !== "ready" && health.state !== "unknown") {
-    throw new Error(health.message);
+export async function assertGatewayReady(host: string, monitor: Pick<GatewayMonitor, "read"> = gatewayMonitor) {
+  const health = await monitor.read(host);
+  // An HTTP outage is not proof that the independently reachable socket API
+  // is down. Let the normal API handshake establish that state.
+  if (health.state !== "ready" && health.state !== "unknown" && health.state !== "unavailable") {
+    throw new GatewayError(host, health);
   }
 }

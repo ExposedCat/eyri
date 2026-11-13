@@ -2,6 +2,7 @@ import type { Database } from "../database/setup.ts";
 import { logFetch } from "../../utils/fetch_logging.ts";
 import { defaultYahooSymbols, likelyYahooSymbols } from "./symbols.ts";
 import { readYahooMapping } from "./mappings.ts";
+import { httpError, networkError, UserFacingError } from "../../utils/user_error.ts";
 import { yahooOptionContract } from "./options.ts";
 import { DATABENTO_PREFIX, DatabentoHistoryCache } from "./databento.ts";
 import {
@@ -66,16 +67,20 @@ async function jsonRequest(
   operation = new URL(url).pathname,
 ) {
   return logFetch(`Yahoo ${operation}`, async () => {
-    const response = await request(url, {
+    let response: Response;
+    try { response = await request(url, {
       headers,
       redirect: "error",
       signal: AbortSignal.timeout(20_000),
-    });
+    }); } catch (cause) { throw networkError("Yahoo history", cause); }
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(`Yahoo Finance returned HTTP ${response.status}.`);
+      throw new UserFacingError(httpError("Yahoo history", response.status, response.status === 404
+        ? "History was not found. Check the symbol." : "Retry shortly.").userMessage,
+        { detail: `Yahoo Finance returned HTTP ${response.status}.`, code: response.status === 429 ? "rate_limit" : "http" });
     }
-    return await response.json();
+    try { return await response.json(); }
+    catch (cause) { throw new UserFacingError("Yahoo history reply is not JSON. Retry.", { cause, code: "provider_data" }); }
   }, (data) => data?.chart?.result?.[0]?.timestamp?.length ?? data?.quotes?.length);
 }
 
@@ -170,6 +175,7 @@ export class YahooHistoryCache {
     instrument: HistoricalInstrument,
     requiredDate?: string,
     requiredEnd?: string,
+    allowPartial = false,
   ): Promise<string> {
     const sourceOption = yahooOptionContract(instrument.ticker);
     const globalMapping = readYahooMapping(this.db, instrument.ticker);
@@ -205,6 +211,7 @@ export class YahooHistoryCache {
     const cached = this.db.prepare(
       "SELECT symbol FROM yahoo_symbols WHERE source_key = ?",
     ).get(sourceKey) as { symbol: string } | undefined;
+    const partial = new Map<string, string>();
     const coversPurchase = async (symbol: string) => {
       if (!requiredDate) return true;
       const history = await this.get(
@@ -212,7 +219,9 @@ export class YahooHistoryCache {
         dayAfter(requiredDate, -7),
         requiredEnd,
       );
-      return history.bars.some((bar) => bar.date <= requiredDate!);
+      const covers = history.bars.some((bar) => bar.date <= requiredDate!);
+      if (!covers && allowPartial && history.bars.length) partial.set(symbol, history.bars[0].date);
+      return covers;
     };
     const isin = !explicit && !sourceOption ? vontobelIsin(instrument) : undefined;
     if (isin) {
@@ -225,7 +234,7 @@ export class YahooHistoryCache {
         if (
           history.currency !== instrument.currency.trim().toUpperCase() ||
           !history.bars.length ||
-          (requiredDate && !history.bars.some((bar) => bar.date <= requiredDate))
+          (requiredDate && !allowPartial && !history.bars.some((bar) => bar.date <= requiredDate))
         ) {
           throw new Error("Vontobel currency or purchase-date history does not match.");
         }
@@ -259,7 +268,7 @@ export class YahooHistoryCache {
         if (
           history.currency !== instrument.currency.trim().toUpperCase() ||
           !history.bars.length ||
-          (requiredDate && !history.bars.some((bar) => bar.date <= requiredDate))
+          (requiredDate && !allowPartial && !history.bars.some((bar) => bar.date <= requiredDate))
         ) {
           throw new Error("Morgan Stanley currency or purchase-date history does not match.");
         }
@@ -293,6 +302,7 @@ export class YahooHistoryCache {
     const candidates = explicit ? [explicit] : defaultYahooSymbols(instrument);
     const today = this.now().toISOString().slice(0, 10);
     const attempted = new Set<string>();
+    const failedRequests: UserFacingError[] = [];
     const accept = async (symbol: string, fromIsin = false) => {
       const attemptKey = `${fromIsin ? "isin" : "symbol"}:${symbol}`;
       if (attempted.has(attemptKey)) return false;
@@ -334,7 +344,8 @@ export class YahooHistoryCache {
           "INSERT OR REPLACE INTO yahoo_symbols(source_key,symbol) VALUES (?,?)",
         ).run(sourceKey, symbol);
         return true;
-      } catch {
+      } catch (cause) {
+        if (cause instanceof UserFacingError && ["network", "rate_limit", "provider_data"].includes(cause.code)) failedRequests.push(cause);
         return false;
       }
     };
@@ -390,9 +401,14 @@ export class YahooHistoryCache {
         return history.symbol;
       }
     }
-    throw new Error(
-      `Cannot resolve historical prices for ${instrument.ticker}.`,
-    );
+    if (partial.size) {
+      const symbol = [...partial].sort(([, a], [, b]) => a.localeCompare(b))[0][0];
+      this.db.prepare("INSERT OR REPLACE INTO yahoo_symbols(source_key,symbol) VALUES (?,?)").run(sourceKey, symbol);
+      return symbol;
+    }
+    if (failedRequests.length) throw failedRequests[0];
+    throw new UserFacingError(`${instrument.ticker}: history not found. Set /yahoo ${instrument.ticker} SYMBOL.`,
+      { detail: `Cannot resolve historical prices for ${instrument.ticker}.` });
   }
 
   get(symbol: string, start: string, end?: string): Promise<PriceHistory> {

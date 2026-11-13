@@ -5,7 +5,7 @@ import { buildHistoricalReportSeries, executionCash } from "./historical_report.
 import { buildReportSnapshot } from "./report.ts";
 
 const now = new Date("2025-01-02T12:00:00Z");
-const near = (actual: number, expected: number) => ok(Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
+const near = (actual: number | null, expected: number) => ok(actual !== null && Math.abs(actual - expected) < 1e-8, `${actual} != ${expected}`);
 const trade = (ticker: string, quantity: number, price: number, date = "2025-01-01", fee = 0): IntegrationOrder => ({
   integrationId: 1, integrationKind: "ibkr", account: "U1", ticker, quantity, price, date: new Date(date), currency: "USD", assetCategory: "STK",
   commission: { amount: -fee, currency: "USD" },
@@ -25,6 +25,26 @@ const histories = (ticker = "A", first = 10, last = 11) => new Map<string, Price
   symbol: ticker, currency: "USD", splits: [], bars: [{ date: "2025-01-01", close: first }, { date: "2025-01-02", close: last }],
 }]]);
 const usd = new Map([["USD", 1]]);
+
+Deno.test("an unreadable FX trade omits currency P/L without losing USD investment history", () => {
+  const notes: string[] = [];
+  const args = { positions: [position("A", 100, 1000, 11)],
+    orders: [trade("A", 100, 10), { ...trade("unreadable", 1, 1), assetCategory: "CASH" }],
+    transactionBuckets: new Map<string, string>(), bucketName: null, accountPerformances: [account()], now, notes };
+  const points = buildHistoricalReportSeries(args, histories(), usd, new Map(), "alltime");
+  near(points.at(-1)!.gain, 100);
+  near(points.at(-1)!.percentage, 10);
+  ok(notes.some(note => /Currency P.L excluded.*FX trade.*unreadable/.test(note)));
+});
+
+Deno.test("missing optional FX conversion does not punch holes in a USD position", () => {
+  const notes: string[] = [];
+  const args = { positions: [position("A", 100, 1000, 11)], orders: [trade("A", 100, 10)],
+    transactionBuckets: new Map<string, string>(), bucketName: null, accountPerformances: [account()], now, notes, ignoreFx: true };
+  const points = buildHistoricalReportSeries(args, histories(), usd, new Map(), "alltime");
+  near(points.at(-1)!.gain, 100);
+  near(points.at(-1)!.percentage, 10);
+});
 
 Deno.test("historical alltime adds stock P/L and FX while worth replays all cash movements", async () => {
   const foreign = account({ currency: "CZK", deposits: 50000, netContributions: 50000, totalValue: 66299, pnl: 16299,

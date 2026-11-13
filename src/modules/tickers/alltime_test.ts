@@ -288,7 +288,7 @@ Deno.test("alltime merges partial sales and current gains without treating turno
   equal(report?.performances.find((p) => p.ticker.toUpperCase() === "AAPL")?.change, 320);
   equal(report?.performances.find((p) => p.ticker === "MSFT")?.change, -100);
   equal(report?.total.change, 220);
-  match(await buildIntegratedAllTimePerformanceList(args), /Lifetime return unavailable/);
+  match(await buildIntegratedAllTimePerformanceList(args), /Percentage unavailable/);
   match(await buildIntegratedAllTimePerformanceList({ ...args, numberOnly: true }), /\+\$220\.00$/);
   // The broker's realizedPnl field must not count sales a second time.
 });
@@ -344,7 +344,7 @@ Deno.test("alltime without allocated funding preserves P/L and omits lifetime pe
   equal(report?.totalReturnPercentage, null);
   const text = await buildIntegratedAllTimePerformanceList(args);
   match(text, /Total: \+\$320\.00/);
-  match(text, /Lifetime return unavailable/);
+  match(text, /Percentage unavailable/);
   equal(text.includes("%"), false);
 });
 

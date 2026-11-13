@@ -1,5 +1,6 @@
 import type { Trading212Credentials } from "./credentials.ts";
 import { logFetch } from "../../../utils/fetch_logging.ts";
+import { networkError, UserFacingError } from "../../../utils/user_error.ts";
 
 export type Trading212Instrument = {
   ticker: string;
@@ -182,8 +183,9 @@ export class Trading212Client {
           redirect: "error",
           signal: AbortSignal.timeout(20_000),
         });
-      } catch {
-        throw new Error("Trading 212 request failed or timed out");
+      } catch (cause) {
+        throw new UserFacingError(networkError("Trading 212", cause).userMessage,
+          { detail: "Trading 212 request failed or timed out", cause });
       }
       if (
         response.status === 429 ||

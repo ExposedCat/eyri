@@ -102,7 +102,7 @@ Deno.test("Freedom24 lifetime funding uses historical USD values, keeps income i
   equal(account.netContributions, 600);
   equal(account.fundingHistory?.length, 6);
   equal(account.fundingHistory?.reduce((sum, flow) => sum + flow.amount, 0), 600);
-  equal(account.fundingIncludesTransfers, true);
+  equal("fundingIncludesTransfers" in account, false);
   equal(account.cash, 12);
   equal(account.pnl, 40);
   equal(account.totalValue, 640);

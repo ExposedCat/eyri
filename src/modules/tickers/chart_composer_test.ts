@@ -9,6 +9,7 @@ import { dayAfter } from "../market_data/history.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
 import { readYahooMapping } from "../market_data/mappings.ts";
 import { createBucket, transferBucketAccess } from "../database/bucket.ts";
+import { chartUsesPercentages } from "./chart_points.ts";
 
 function harness(db: Database, currencies = new Map<number, string>(), notes?: string[]) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
@@ -21,6 +22,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
   const apiResponses = new Map<string, (payload: Record<string, unknown>) => unknown>();
   const datasetGates = new Map<number, () => Promise<void>>();
   const pointsByUser = new Map<number, AllTimeDataset["points"]>();
+  const datasetOverrides = new Map<number, Partial<AllTimeDataset>>();
   const benchmarkRequests: { symbol: string; start: string; end: string }[] = [];
   const benchmarkFailures = new Set<string>();
   const benchmarkGates = new Map<string, () => Promise<void>>();
@@ -100,8 +102,9 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
         benchmark: {
           label: "If S&P 500 (CSPX.L)", symbol: "CSPX.L",
           asOf: points.at(-1)!.date,
-          points: points.map((p) => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain / 2 })),
+          points: points.map((p) => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain! / 2 })),
         },
+        ...datasetOverrides.get(ctx.from!.id),
       });
     },
     switchBenchmarks: (db, datasets, index) => switchChartBenchmarks(db, datasets, index, {
@@ -145,6 +148,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
     apiResponses,
     datasetGates,
     pointsByUser,
+    datasetOverrides,
     benchmarkRequests,
     benchmarkFailures,
     benchmarkGates,
@@ -240,6 +244,79 @@ function chartKeyboard(data: string, compareLabel: string | null = "Compare", in
   if (compareLabel) keyboard.text(compareLabel, `chart_compare:${id}`);
   return keyboard.text(index === "sp500" ? "S&P 500" : "Momentum", `chart_index:${id}:${index}`);
 }
+
+Deno.test("Compare keeps a participant without percentages visible using USD, and explains the change", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    h.pointsByUser.set(2, [{ date: "2025-01-01", gain: 0, percentage: null }, { date: "2025-01-02", gain: 25, percentage: null }]);
+    await h.compare(callback(h.calls));
+    const compared = h.renderedDatasets.at(-1)!;
+    equal(compared.length, 2);
+    equal(chartUsesPercentages(compared), false);
+    equal(compared[1].points.at(-1)!.gain, 25);
+    equal(compared[1].points.at(-1)!.percentage, null);
+    const media = h.calls.filter(call => call.method === "editMessageMedia").at(-1)!;
+    match(String((media.payload.media as { caption: string }).caption), /Comparing P.L in USD; no percentages for User 2/);
+  } finally { db.close(); }
+});
+
+Deno.test("Compare refuses an empty curve without changing the published chart", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const data = callback(h.calls), id = data.split(":")[1];
+    const before = readChartSession(db, id, -1001, 100)!.datasets;
+    h.pointsByUser.set(2, [{ date: "2025-01-01", gain: null, percentage: null }, { date: "2025-01-02", gain: null, percentage: null }]);
+    await h.compare(data);
+    equal(readChartSession(db, id, -1001, 100)!.datasets, before);
+    equal(h.calls.filter(call => call.method === "editMessageMedia").length, 0);
+    match(String(h.calls.at(-1)!.payload.text), /User 2: no usable values in this period/);
+  } finally { db.close(); }
+});
+
+Deno.test("a missing participant index does not disable the other participant's index switch", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    h.datasetOverrides.set(1, { benchmark: undefined, benchmarkPurchases: undefined,
+      notes: ["Index hidden: Deposit dates are missing. Wait for funding sync, then retry."] });
+    await h.command();
+    await h.compare(callback(h.calls));
+    const toggle = indexCallback(h.calls);
+    await h.compare(toggle, 3);
+    const compared = h.renderedDatasets.at(-1)!;
+    equal(compared[0].benchmark, undefined);
+    equal(compared[1].benchmark!.symbol, "IUMO.L");
+    match(String((h.calls.filter(call => call.method === "editMessageMedia").at(-1)!.payload.media as { caption: string }).caption),
+      /User 1: Index hidden: Deposit dates are missing/);
+    deepStrictEqual(h.fetched, [1, 2]);
+  } finally { db.close(); }
+});
+
+Deno.test("failure to align a joining person's index does not block their portfolio comparison", async () => {
+  const db = new Database(":memory:");
+  ensureSchema(db);
+  try {
+    const h = harness(db);
+    await h.command();
+    const compare = callback(h.calls);
+    await h.compare(indexCallback(h.calls), 1);
+    h.benchmarkFailures.add("IUMO.L");
+    await h.compare(compare);
+    const compared = h.renderedDatasets.at(-1)!;
+    deepStrictEqual(compared.map(dataset => dataset.userId), [1, 2]);
+    equal(compared[0].benchmark!.symbol, "IUMO.L");
+    equal(compared[1].benchmark, undefined);
+    equal(compared[1].benchmarkInputsReady, true);
+    ok(compared[1].notes!.some(note => note.startsWith("Index hidden:")));
+  } finally { db.close(); }
+});
 function indexCallback(calls: { method: string; payload: Record<string, unknown> }[]) {
   const call = calls.filter(c => c.method === "sendPhoto" || c.method === "editMessageMedia").at(-1)!;
   const rows = (call.payload.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard;
@@ -250,12 +327,13 @@ Deno.test("/chart alltime sends one photo with Compare and compares only clicker
   const db = new Database(":memory:");
   ensureSchema(db);
   try {
-    const h = harness(db, new Map(), ["Historical curve shows trade P/L.", "Benchmark unavailable: complete dated external funding is required."]);
+    const notes = ["Award dates missing; shares start today. Enable Grant Activity in Flex.", "Index hidden: Deposit dates are missing. Wait for funding sync, then retry."];
+    const h = harness(db, new Map(), notes);
     await h.command();
     const data = callback(h.calls);
     deepStrictEqual(h.calls.find(c => c.method === "sendPhoto")!.payload.reply_markup, chartKeyboard(data));
     equal(h.calls.filter((c) => c.method === "sendPhoto").length, 1);
-    equal(h.calls.find(c => c.method === "sendPhoto")!.payload.caption, undefined);
+    equal(h.calls.find(c => c.method === "sendPhoto")!.payload.caption, [notes[1], notes[0]].join("\n"));
     equal(h.calls.filter((c) => c.method === "sendDocument").length, 0);
     ok(new TextEncoder().encode(data).length <= 64);
     await h.compare(data);
@@ -263,7 +341,7 @@ Deno.test("/chart alltime sends one photo with Compare and compares only clicker
     deepStrictEqual(h.rendered, [[1], [1, 2]]);
     const edit = h.calls.find((c) => c.method === "editMessageMedia")!;
     equal((edit.payload.media as { type: string }).type, "photo");
-    equal((edit.payload.media as { caption?: string }).caption, undefined);
+    match((edit.payload.media as { caption?: string }).caption!, /Index hidden: Deposit dates are missing/);
     const session = readChartSession(db, data.split(":")[1], -1001, 100)!;
     deepStrictEqual(
       (JSON.parse(session.datasets) as AllTimeDataset[]).map((d) => d.userId),
@@ -299,7 +377,7 @@ Deno.test("DM charts show only the index toggle and never accept Compare clicks"
     db.prepare("UPDATE alltime_chart_sessions SET chat_id = '1'").run();
     await h.compare(data, 2, 1);
     deepStrictEqual(h.fetched, [1, 1]);
-    match(String(h.calls.at(-1)!.payload.text), /unavailable/);
+    match(String(h.calls.at(-1)!.payload.text), /Compare needs a group chat/);
   } finally {
     db.close();
   }
@@ -376,7 +454,7 @@ Deno.test("widget denial never redirects privately and a later command retries n
       let sends = h.calls.filter(call => call.method === "sendWidget");
       equal(sends.length, 1);
       equal(sends[0].payload.chat_id, chatId);
-      match(String(h.calls.at(-1)!.payload.text), /not allowing widgets in this chat yet/);
+      match(String(h.calls.at(-1)!.payload.text), /Telegram blocks widgets here/);
       h.apiResponses.delete("sendWidget");
       await h.command("/chart", 2, chatId);
       sends = h.calls.filter(call => call.method === "sendWidget");
@@ -417,7 +495,7 @@ Deno.test("Compare keeps the original date range and point values across older/n
     deepStrictEqual(h.renderedDatasets[0].map((d) => d.points), [original, inRange]);
     deepStrictEqual(h.renderedDatasets[0][0].benchmark, first.renderedDatasets[0][0].benchmark);
     deepStrictEqual(h.renderedDatasets[0][1].benchmark!.points,
-      inRange.map(p => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain / 2 })));
+      inRange.map(p => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain! / 2 })));
     const resumed = harness(db);
     const laterStart = [
       { date: "2025-07-01", percentage: 0, gain: 0 },
@@ -432,7 +510,7 @@ Deno.test("Compare keeps the original date range and point values across older/n
     deepStrictEqual(resumed.renderedDatasets[0].slice(0, 2).map(d => d.benchmark),
       h.renderedDatasets[0].map(d => d.benchmark));
     deepStrictEqual(resumed.renderedDatasets[0][2].benchmark!.points,
-      laterStart.map(p => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain / 2 })));
+      laterStart.map(p => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain! / 2 })));
     const stored = JSON.parse(readChartSession(db, data.split(":")[1], -1001, 100)!.datasets);
     deepStrictEqual(stored, resumed.renderedDatasets[0]);
   } finally {
@@ -449,7 +527,7 @@ Deno.test("Compare rejects a portfolio outside the chart date range and releases
     const data = callback(h.calls);
     h.pointsByUser.set(2, [{ date: "2026-01-01", percentage: 0, gain: 0 }]);
     await h.compare(data);
-    match(String(h.calls.at(-1)!.payload.text), /no performance history within this chart's date range/);
+    match(String(h.calls.at(-1)!.payload.text), /Portfolio dates do not overlap/);
     deepStrictEqual(h.rendered, [[1]]);
     h.pointsByUser.delete(2);
     await h.compare(data);
@@ -514,7 +592,7 @@ Deno.test("legacy comparison sessions require a new chart without fetching any p
     const resumed = harness(db);
     await resumed.compare(data);
     deepStrictEqual(resumed.fetched, []);
-    match(String(resumed.calls.at(-1)!.payload.text), /Create a new chart with \/chart/);
+    match(String(resumed.calls.at(-1)!.payload.text), /Run \/chart again/);
   } finally { db.close(); }
 });
 
@@ -558,7 +636,7 @@ Deno.test("Compare shows the pending name, rejects concurrent clicks without que
       chartKeyboard(data, null, "momentum"));
     await h.compare(data, 7);
     equal(h.fetched.length, 6);
-    match(String(h.calls.at(-1)!.payload.text), /six portfolios/);
+    match(String(h.calls.at(-1)!.payload.text), /Six-portfolio limit/);
   } finally {
     db.close();
   }
@@ -607,9 +685,9 @@ Deno.test("/chart reports historical failure without rendering or sending a part
     const reply = h.calls.find((c) => c.method === "sendMessage")!;
     equal(
       reply.payload.text,
-      "Failed to fetch historical data:\n- <code>/yahoo VUAA VUAA.L</code>\n- <code>/yahoo SPYL SPYL.L</code>",
+      "Failed to fetch historical data:\nVUAA: History not found. Check /yahoo VUAA VUAA.L.\nSPYL: History not found. Check /yahoo SPYL SPYL.L.",
     );
-    equal(reply.payload.parse_mode, "HTML");
+    equal(reply.payload.parse_mode, undefined);
   } finally {
     db.close();
   }
@@ -663,7 +741,7 @@ Deno.test("/yahoo validates global mappings, shares updates and resets across us
     equal(readYahooMapping(db, "VUAA"), "VUAA.DE");
     equal(
       restart.calls.at(-1)!.payload.text,
-      "Failed to fetch historical data:\n- <code>/yahoo VUAA BROKEN</code>",
+      "Failed to fetch historical data:\nVUAA: Yahoo symbol BROKEN: data not found (HTTP 404). Check the symbol and retry.",
     );
     await restart.command("/yahoo +AMD.15JAN2027.C280 AMD270115C00280000", 1);
     equal(readYahooMapping(db, "+AMD.15JAN2027.C280"), "AMD270115C00280000");
@@ -875,7 +953,7 @@ Deno.test("index switching asks to recreate older charts lacking saved purchase 
     delete saved[0].benchmarkPurchases;
     db.prepare("UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?").run(JSON.stringify(saved), id);
     await h.compare(indexCallback(h.calls));
-    match(String(h.calls.at(-1)!.payload.text), /Create a new chart/);
+    match(String(h.calls.at(-1)!.payload.text), /Saved index details are missing.*Run \/chart again/);
     equal(h.benchmarkRequests.length, 0);
     deepStrictEqual(h.fetched, [1]);
   } finally { db.close(); }

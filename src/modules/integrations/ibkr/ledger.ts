@@ -8,15 +8,15 @@ import {
   parseDate,
 } from "./flex.ts";
 import { parseIbkrCredentials } from "./credentials.ts";
+import { UserFacingError } from "../../../utils/user_error.ts";
 
 type Attributes = Record<string, string>;
 const configurationError =
   "IBKR funding requires an XML Activity Flex Query with Account Information (Account ID, Currency, Date Opened, Date Funded), Cash Transactions (Account ID, Currency, FX Rate to Base, Report Date, Date/Time, Amount, Type, Transaction ID), Cash Report (Base Currency Summary, deposits, withdrawals, starting/ending cash) and Change in NAV (starting value, deposits/withdrawals). The configured query only supplies trades or omits required funding fields.";
 function requiredNumber(value: string | undefined, field: string) {
   if (value === undefined || !value.trim() || !Number.isFinite(Number(value))) {
-    throw new Error(
-      `IBKR funding report is missing ${field}. ${configurationError}`,
-    );
+    throw new UserFacingError(`IBKR omitted ${field}. Add it to the Activity Flex query.`,
+      { detail: `IBKR funding report is missing ${field}. ${configurationError}` });
   }
   return Number(value);
 }
@@ -30,17 +30,17 @@ function requiredDate(value: string | undefined, field: string) {
     !result || !Number.isFinite(+result) ||
     result.toISOString().slice(0, 10).replaceAll("-", "") !== normalized
   ) {
-    throw new Error(
-      `IBKR funding report is missing a valid ${field}. ${configurationError}`,
-    );
+    throw new UserFacingError(`IBKR ${value ? `sent date “${value.slice(0, 20)}”` : "omitted the date"} for ${field}. Check the Activity Flex date format.`,
+      { detail: `IBKR funding report is missing a valid ${field}. ${configurationError}` });
   }
   return result;
 }
 function one(rows: { attrs: Attributes }[], field: string): Attributes {
   if (rows.length !== 1) {
-    throw new Error(
-      `IBKR funding requires exactly one ${field} for the selected account. ${configurationError}`,
-    );
+    throw new UserFacingError(rows.length === 0
+      ? `IBKR omitted ${field}. Enable it in Activity Flex.`
+      : `IBKR returned ${rows.length} ${field}s. Select one account; disable segment totals.`,
+      { detail: `IBKR funding requires exactly one ${field} for the selected account. ${configurationError}` });
   }
   return rows[0].attrs;
 }
@@ -293,9 +293,10 @@ export function parseIbkrFundingBatch(
     !close(net, navFunding) || !close(deposits, cashDeposits) ||
     !close(withdrawals, cashWithdrawals)
   ) {
-    throw new Error(
-      "IBKR funding transactions do not reconcile with Cash Report and Change in NAV; remove report filters and include all funding transactions",
-    );
+    throw new UserFacingError(!close(net, navFunding)
+      ? `IBKR funding: entries ${net.toFixed(2)}, NAV ${navFunding.toFixed(2)}. Remove Flex filters.`
+      : `IBKR deposits ${deposits.toFixed(2)}/${cashDeposits.toFixed(2)}, withdrawals ${withdrawals.toFixed(2)}/${cashWithdrawals.toFixed(2)} (entries/statement). Remove Flex filters.`,
+      { detail: "IBKR funding transactions do not reconcile with Cash Report and Change in NAV; remove report filters and include all funding transactions" });
   }
   for (const { attrs } of getXmlElements(body, ["Transfer"])) {
     if (

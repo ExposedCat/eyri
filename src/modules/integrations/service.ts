@@ -7,6 +7,8 @@ import { logFetch } from "../../utils/fetch_logging.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
 import { getIbkrHostPort } from "./ibkr/credentials.ts";
+import { gatewayRecovery } from "./ibkr/recovery.ts";
+import { IntegrationDataError } from "../../utils/user_error.ts";
 import { trading212Adapter } from "./trading212/adapter.ts";
 import { enrichPortfolioWithVontobelQuotes, VontobelQuoteCache } from "../market_data/vontobel.ts";
 import { portfolioValuations } from "./usd.ts";
@@ -141,15 +143,17 @@ async function mapIntegrationData<T>(
   );
 
   const data: T[] = [];
-  const errors: Error[] = [];
+  const failures: { label: string; publicLabel: string; error: unknown }[] = [];
   for (const [index, result] of results.entries()) {
     if (result.status === "fulfilled") {
       data.push(...result.value);
     } else {
       const integration = integrations[index];
-      const reason = result.reason instanceof Error
-        ? result.reason.message
-        : String(result.reason);
+      let failure = result.reason;
+      if (integration.kind === "ibkr") {
+        try { failure = await gatewayRecovery.handleFailure(integration, failure) ?? failure; }
+        catch (recoveryError) { console.error("Gateway recovery could not be requested:", recoveryError); }
+      }
       let label = `${integration.kind} integration #${index + 1}`;
       if (integration.kind === "ibkr") {
         label = `ibkr integration ID ${integration.id}`;
@@ -158,21 +162,15 @@ async function mapIntegrationData<T>(
           label = `ibkr (${host}:${port})`;
         } catch { /* Keep the record ID when the endpoint itself is invalid. */ }
       }
-      errors.push(
-        new Error(
-          `${label}: ${reason}`,
-        ),
-      );
+      const provider = { ibkr: "IBKR", f24: "Freedom24", t212: "Trading 212" }[integration.kind];
+      const peers = integrations.filter(item => item.kind === integration.kind);
+      failures.push({ label, publicLabel: peers.length > 1 ? `${provider} #${peers.indexOf(integration) + 1}` : provider, error: failure });
     }
   }
 
-  if (errors.length > 0) {
+  if (failures.length > 0) {
     // A partial portfolio would present incomplete balances as a full total.
-    throw new Error(
-      `Failed to fetch integration data:\n${
-        errors.map((error) => error.message).join("\n")
-      }`,
-    );
+    throw new IntegrationDataError(failures);
   }
   return data;
 }
@@ -259,12 +257,13 @@ export async function fetchIntegrationOrderHistory(
 export async function fetchIntegratedOrderHistory(
   database: Database,
   userId: number,
+  options?: { refresh?: boolean; recent?: boolean },
 ) {
   const integrations = getUserIntegrations(database, userId);
   const orders = await mapIntegrationData(
     database,
     integrations,
-    (adapter, db, integration) => adapter.fetchOrderHistory(db, integration),
+    (adapter, db, integration) => adapter.fetchOrderHistory(db, integration, options),
   );
 
   return orders.sort((a, b) => a.date.getTime() - b.date.getTime());

@@ -2,6 +2,7 @@ import { Composer } from "grammy";
 import { fetchUsdConversionRates } from "../../utils/exchange_rates.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { setUserCurrency } from "../database/user.ts";
+import { replyUserError } from "../bot/errors.ts";
 
 export function createCurrencyComposer(request: typeof fetch = fetch) {
   const composer = new Composer<CustomContext>();
@@ -32,11 +33,7 @@ export function createCurrencyComposer(request: typeof fetch = fetch) {
         `Your currency is now ${input}. Chart comparisons always use USD.`,
       );
     } catch (error) {
-      await ctx.reply(
-        `Could not set currency ${input}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
+      await replyUserError(ctx, error);
     }
   });
   return composer;

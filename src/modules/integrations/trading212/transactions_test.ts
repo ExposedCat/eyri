@@ -154,7 +154,7 @@ Deno.test("CFD purchases, full sales and open funding flow through every portfol
     );
     match(
       await buildIntegratedAllTimePerformanceList({ orders, positions }),
-      /Lifetime return unavailable/,
+      /Percentage unavailable/,
     );
     match(
       await buildIntegratedAllTimePerformanceList({

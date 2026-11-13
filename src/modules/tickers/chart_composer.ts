@@ -1,6 +1,8 @@
 import { Composer, InlineKeyboard, InputFile } from "grammy";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import type { CustomContext } from "../bot/types.ts";
+import { logUserError, replyUserError } from "../bot/errors.ts";
+import { httpError, userErrorMessage } from "../../utils/user_error.ts";
 import type { Database } from "../database/setup.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
 import { yahooOptionContract } from "../market_data/options.ts";
@@ -15,14 +17,18 @@ import { fetchPortfolioView, hasPortfolioViewIntegrations } from "./portfolio_vi
 import {
   type AllTimeDataset,
   ensureChartSchema,
+  hasChartBenchmarkInputs,
   loadAllTimeDataset,
   renderAllTimeChart,
+  selectedChartBenchmark,
   switchChartBenchmarks,
 } from "./alltime_chart.ts";
 import { CHART_BENCHMARKS, chartBenchmarkIndex } from "./chart_benchmark.ts";
 import { parseReportArgs, type ReportFilter } from "./performance_command.ts";
+import { reconcileHistory } from "./history_reconciliation.ts";
 import { isOptionPosition, isStockPosition } from "./portfolio.ts";
 import { renderChartWidget } from "./chart_widget.ts";
+import { chartComparisonNotes, requireVisibleChart } from "./chart_points.ts";
 
 type Session = {
   id: string;
@@ -38,12 +44,12 @@ const buttons = (
   compareLabel = "Compare",
   indexLabel?: string,
 ) => {
-  const index = chartBenchmarkIndex(datasets[0].benchmark?.symbol);
+  const index = selectedChartBenchmark(datasets);
   const keyboard = new InlineKeyboard();
   if (!isPrivate && datasets.length < MAX_PARTICIPANTS) {
     keyboard.text(compareLabel, `chart_compare:${id}`);
   }
-  return datasets.every(dataset => dataset.benchmark)
+  return datasets.some(hasChartBenchmarkInputs)
     ? keyboard.text(indexLabel ?? CHART_BENCHMARKS[index].name, `chart_index:${id}:${index}`)
     : keyboard;
 };
@@ -63,9 +69,11 @@ async function datasetFor(ctx: CustomContext, bucketName: string | null,
       "Configure an integration before charting your all-time performance.",
     );
   }
+  return reconcileHistory(async refreshHistory => {
   const view = await fetchPortfolioView(ctx.db, userId, bucketName, {
+    refreshHistory, recentHistory: true, retryHistory: false,
     history: true, accountPerformance: true, warrantQuotes: selection.filter !== "stocks",
-    accountPerformanceOptions: selection.kind === "perf" ? { purpose: "benchmark" } : undefined,
+    accountPerformanceOptions: selection.kind !== "worth" ? { purpose: "benchmark" } : undefined,
   });
   const matches = selection.filter === "stocks" ? isStockPosition : selection.filter === "options" ? isOptionPosition : () => true;
   const label = [ctx.from!.first_name, ctx.from!.last_name].filter(Boolean)
@@ -74,10 +82,11 @@ async function datasetFor(ctx: CustomContext, bucketName: string | null,
     ctx.db,
     { ...view, positions: view.positions.filter(matches), orders: view.orders.filter(matches),
       accountPerformances: selection.filter ? [] : view.accountPerformances,
-      benchmarkSource: { ...view, orders: view.historyOrders }, ...selection },
+      benchmarkSource: { ...view, orders: view.historyOrders, unavailableReason: view.fundingErrors?.join("\n") || undefined }, ...selection },
     userId,
     label,
   );
+  });
 }
 
 export function readChartSession(
@@ -120,19 +129,35 @@ async function validateSymbol(symbol: string, ticker?: string) {
 
 async function replyChartError(ctx: CustomContext, error: unknown) {
   if (!(error instanceof HistoricalDataError)) {
-    await ctx.reply(error instanceof Error ? error.message : String(error));
+    await replyUserError(ctx, error);
     return;
   }
+  logUserError(ctx, error);
   let message = "Failed to fetch historical data:";
-  for (const command of error.commands) {
-    const line = `\n- <code>${escapeHtml(command)}</code>`;
+  for (const failure of error.failures) {
+    const detail = failure.cause === undefined
+      ? `History not found. Check /yahoo ${failure.ticker} ${failure.symbol}.`
+      : userErrorMessage(failure.cause, String(ctx.update.update_id));
+    const line = `\n${failure.ticker}: ${detail}`;
     if (message.length + line.length > 3900) {
-      await ctx.reply(message, { parse_mode: "HTML" });
+      await ctx.reply(message);
       message = "Failed to fetch historical data:";
     }
     message += line;
   }
-  await ctx.reply(message, { parse_mode: "HTML" });
+  await ctx.reply(message);
+}
+
+function chartCaption(datasets: AllTimeDataset[]): string | undefined {
+  const notes = datasets.flatMap(dataset => (dataset.notes ?? []).map(note => {
+    const concise = /^(Index hidden:|Award dates missing;|Currency P\/L excluded|Using saved |.*affected dates are gaps|.*Affected dates are gaps|Cash history has gaps|Foreign-currency fees excluded|Live valuation missing|.*display conversion unavailable)/.test(note) ? note
+      : note.startsWith("Gift receipt dates") ? "Award dates missing; shares start today. Enable Grant Activity in Flex."
+      : note.startsWith("Benchmark unavailable:") ? `Index hidden: ${userErrorMessage(new Error(note))}`
+      : userErrorMessage(new Error(note));
+    return datasets.length > 1 ? `${dataset.label}: ${concise}` : concise;
+  }));
+  const messages = [...chartComparisonNotes(datasets), ...notes.filter(note => note.includes("Index hidden:")), ...notes];
+  return messages.length ? [...new Set(messages)].join("\n").slice(0, 1000) : undefined;
 }
 export function createChartComposer(
   runtime: Runtime = { dataset: datasetFor, render: renderAllTimeChart },
@@ -161,8 +186,10 @@ export function createChartComposer(
     }
     try {
       await (runtime.validateSymbol ?? validateSymbol)(symbol, ticker);
-    } catch {
-      await replyChartError(ctx, new HistoricalDataError([{ ticker, symbol }]));
+    } catch (cause) {
+      const status = cause instanceof Error ? cause.message.match(/HTTP (\d{3})/) : null;
+      await replyChartError(ctx, new HistoricalDataError([{ ticker, symbol,
+        cause: status ? httpError(`Yahoo symbol ${symbol}`, Number(status[1]), "Check the symbol and retry.") : cause }]));
       return;
     }
     saveYahooMapping(ctx.db, ticker, symbol);
@@ -194,9 +221,14 @@ export function createChartComposer(
       const dataset = await runtime.dataset(ctx, bucketName, { kind: selection.kind as "perf" | "alltime" | "worth", filter: selection.filter });
       const currency = ctx.dbEntities.user.currency ?? "USD";
       if (currency !== "USD") {
-        const rates = await fetchConversionRates(["USD"], currency, runtime.request);
-        dataset.displayCurrency = currency;
-        dataset.displayRate = rates.get("USD")!;
+        try {
+          const rates = await fetchConversionRates(["USD"], currency, runtime.request);
+          dataset.displayCurrency = currency;
+          dataset.displayRate = rates.get("USD")!;
+        } catch (error) {
+          logUserError(ctx, error);
+          (dataset.notes ??= []).push(`${currency} display conversion unavailable; showing USD.`);
+        }
       }
       if (widget) {
         const switchBenchmarks = runtime.switchBenchmarks ?? switchChartBenchmarks;
@@ -222,6 +254,7 @@ export function createChartComposer(
         }
         return;
       }
+      requireVisibleChart([dataset]);
       const image = await runtime.render(ctx.db, [dataset]);
       ensureChartSchema(ctx.db);
       const id = crypto.randomUUID();
@@ -231,7 +264,7 @@ export function createChartComposer(
       try {
         const message = await ctx.replyWithPhoto(
           new InputFile(image, "alltime.png"),
-          { reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
+          { caption: chartCaption([dataset]), reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
         );
         ctx.db.prepare(
           "UPDATE alltime_chart_sessions SET message_id = ? WHERE id = ?",
@@ -250,13 +283,20 @@ export function createChartComposer(
     const switching = ctx.match[1] === "index";
     const id = ctx.match[2];
     const messageId = ctx.callbackQuery.message?.message_id;
-    if (!ctx.chat || (!switching && ctx.chat.type === "private") || !ctx.from || !messageId) {
-      await ctx.answerCallbackQuery({ text: "This chart is unavailable.", show_alert: true });
+    if (!ctx.chat || !ctx.from || !messageId) {
+      await ctx.answerCallbackQuery({ text: "Chart message is inaccessible. Open the original chart.", show_alert: true });
+      return;
+    }
+    if (!switching && ctx.chat.type === "private") {
+      await ctx.answerCallbackQuery({ text: "Compare needs a group chat. Create a chart in the group.", show_alert: true });
       return;
     }
     const session = readChartSession(ctx.db, id, ctx.chat.id, messageId);
     if (!session) {
-      await ctx.answerCallbackQuery({ text: "This chart is unavailable in this chat.", show_alert: true });
+      const saved = ctx.db.prepare("SELECT id FROM alltime_chart_sessions WHERE id=?").get(id);
+      await ctx.answerCallbackQuery({ text: saved
+        ? "This is a chart copy. Open the original message."
+        : "Saved chart is missing. Run /chart again.", show_alert: true });
       return;
     }
     if (pending.has(id)) {
@@ -266,31 +306,32 @@ export function createChartComposer(
     const datasets = JSON.parse(session.datasets) as AllTimeDataset[];
     if (datasets.some((dataset) => dataset.fundingReturnVersion !== 5)) {
       await ctx.answerCallbackQuery({
-        text: "This chart uses an older return calculation. Create a new chart with /chart.",
+        text: "Saved chart uses an old calculation. Run /chart again.",
         show_alert: true,
       });
       return;
     }
-    const current = chartBenchmarkIndex(datasets[0].benchmark?.symbol);
+    const current = selectedChartBenchmark(datasets);
     if (switching) {
       if (ctx.match[3] !== current) {
         await ctx.answerCallbackQuery({ text: "The index has already changed. Use the updated button." });
         return;
       }
-      if (datasets.some((dataset) => !dataset.benchmark || !dataset.benchmarkPurchases)) {
+      if (!datasets.some(hasChartBenchmarkInputs)) {
         await ctx.answerCallbackQuery({
-          text: "This chart predates index switching. Create a new chart with /chart.",
+          text: datasets.find(dataset => !dataset.benchmark || !dataset.benchmarkPurchases)?.notes?.find(note => note.startsWith("Index hidden:"))?.slice(0, 190)
+            ?? "Saved index details are missing. Run /chart again.",
           show_alert: true,
         });
         return;
       }
     } else {
       if (datasets.some((d) => d.userId === ctx.from.id)) {
-        await ctx.answerCallbackQuery({ text: "Your all-time performance is already on this chart.", show_alert: true });
+        await ctx.answerCallbackQuery({ text: "You are already on this chart. Use your existing curve.", show_alert: true });
         return;
       }
       if (datasets.length >= MAX_PARTICIPANTS) {
-        await ctx.answerCallbackQuery({ text: "This chart already has six portfolios.", show_alert: true });
+        await ctx.answerCallbackQuery({ text: "Six-portfolio limit reached. Create another chart.", show_alert: true });
         return;
       }
     }
@@ -329,13 +370,22 @@ export function createChartComposer(
           );
           return { ...usdDataset, points, benchmark, ...(benchmarkSnapshots && { benchmarkSnapshots }) };
         });
-        if (next.at(-1)!.benchmark && chartBenchmarkIndex(next.at(-1)!.benchmark?.symbol) !== current) {
-          const [added] = await switchBenchmarks(ctx.db, [next.at(-1)!], current);
-          next[next.length - 1] = added;
+        const joining = next.at(-1)!;
+        if (hasChartBenchmarkInputs(joining) && (!joining.benchmark || chartBenchmarkIndex(joining.benchmark.symbol) !== current)) {
+          try {
+            const [aligned] = await switchBenchmarks(ctx.db, [joining], current);
+            next[next.length - 1] = aligned;
+          } catch (error) {
+            logUserError(ctx, error);
+            next[next.length - 1] = { ...joining, benchmark: undefined, benchmarkInputsReady: true, benchmarkIndex: current,
+              benchmarkSnapshots: { ...joining.benchmarkSnapshots, ...(joining.benchmark ? { [chartBenchmarkIndex(joining.benchmark.symbol)]: joining.benchmark } : {}) },
+              notes: [...(joining.notes ?? []).filter(note => !note.startsWith("Index hidden:")), `Index hidden: ${userErrorMessage(error)}`] };
+          }
         }
       }
+      requireVisibleChart(next);
       const image = await runtime.render(ctx.db, next);
-      await ctx.editMessageMedia({ type: "photo", media: new InputFile(image, "alltime.png") }, {
+      await ctx.editMessageMedia({ type: "photo", media: new InputFile(image, "alltime.png"), caption: chartCaption(next) }, {
         reply_markup: buttons(id, next, isPrivate),
       });
       ctx.db.prepare("UPDATE alltime_chart_sessions SET datasets = ? WHERE id = ?")

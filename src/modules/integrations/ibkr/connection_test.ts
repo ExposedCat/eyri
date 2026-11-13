@@ -1,7 +1,16 @@
 import { deepStrictEqual, equal, rejects } from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { EventName, type IBApi } from "@stoqey/ib";
-import { connectIbkrOnce } from "./connection.ts";
+import { connectIbkrOnce, ibkrRequestError } from "./connection.ts";
+import { UserFacingError } from "../../../utils/user_error.ts";
+
+Deno.test("IBKR connection error codes retain their state even when the broker text omits IBKR", () => {
+  const lost = ibkrRequestError(new Error("Connectivity lost"), 1100);
+  equal(lost instanceof UserFacingError && lost.code, "ibkr_connection");
+  equal(lost.message, "Connectivity lost");
+  const other = ibkrRequestError(new Error("Contract lookup failed"), 200);
+  equal(other instanceof UserFacingError && other.code, "ibkr_api");
+});
 
 const config = { host: "gateway", port: 4003, clientId: 1000, timeoutMs: 10 };
 

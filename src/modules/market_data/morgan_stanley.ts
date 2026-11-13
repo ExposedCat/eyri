@@ -1,3 +1,4 @@
+import { httpError, networkError, UserFacingError } from "../../utils/user_error.ts";
 import type { Database } from "../database/setup.ts";
 import { logFetch } from "../../utils/fetch_logging.ts";
 import { dayAfter, type PriceBar, type PriceHistory } from "./history.ts";
@@ -43,11 +44,12 @@ export class MorganStanleyHistoryError extends Error {
 }
 
 async function response(path: string, request: typeof fetch) {
-  const result = await request(ORIGIN + path, {
+  let result: Response;
+  try { result = await request(ORIGIN + path, {
     headers: { "User-Agent": "Mozilla/5.0 Eyri/1.0" },
     redirect: "error",
     signal: AbortSignal.timeout(20_000),
-  });
+  }); } catch (cause) { throw networkError("Morgan Stanley price feed", cause); }
   if (!result.ok) {
     await result.body?.cancel();
     if (result.status === 404 && path.startsWith("/produktdetails/")) {
@@ -55,7 +57,8 @@ async function response(path: string, request: typeof fetch) {
         "Morgan Stanley product not found.",
       );
     }
-    throw new Error(`Morgan Stanley returned HTTP ${result.status}.`);
+    throw new UserFacingError(httpError("Morgan Stanley price feed", result.status, "Retry shortly.").userMessage,
+      { detail: `Morgan Stanley returned HTTP ${result.status}.` });
   }
   return result;
 }

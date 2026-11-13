@@ -1,6 +1,7 @@
 import type { Integration } from "../../database/integration.ts";
 import { getIbkrHostPort } from "./credentials.ts";
-import { type GatewayHealth, gatewayMonitor } from "./gateway.ts";
+import { GatewayError, type GatewayHealth, gatewayMonitor } from "./gateway.ts";
+import { UserFacingError } from "../../../utils/user_error.ts";
 import { ibkrSessions } from "./session.ts";
 import { probeIbkrApi } from "./adapter.ts";
 
@@ -68,7 +69,7 @@ async function readConnection(conn: Deno.Conn) {
   return new TextDecoder().decode(output);
 }
 
-export async function restartGatewayContainer(containerName: string) {
+export async function restartGatewayContainer(containerName: string, onRequested?: () => void) {
   const socketPath = getPodmanSocketPath();
   const path = `/containers/${
     encodePodmanPathSegment(containerName)
@@ -117,6 +118,7 @@ export async function restartGatewayContainer(containerName: string) {
     while (offset < bytes.length) {
       offset += await conn.write(bytes.subarray(offset));
     }
+    onRequested?.();
     const response = await readConnection(conn);
     const status = parseHttpStatus(response);
     if (status >= 200 && status < 300) {
@@ -140,6 +142,8 @@ export async function restartGatewayContainer(containerName: string) {
 export class GatewayRecovery {
   private pending = new Map<string, Promise<string>>();
   private pendingRestarts = new Map<string, Promise<string>>();
+  private restartRequested = new Map<string, Promise<void>>();
+  private automaticAttempts = new Map<string, { at: number; failure?: unknown }>();
   constructor(
     private health = (host: string) => gatewayMonitor.read(host, true),
     private probe = probeIbkrApi,
@@ -157,13 +161,69 @@ export class GatewayRecovery {
     const host = getRestartContainerName(integration.credentials);
     const pending = this.pendingRestarts.get(host);
     if (pending) return pending;
+    let requested!: () => void, failed!: (error: unknown) => void;
+    const started = new Promise<void>((resolve, reject) => { requested = resolve; failed = reject; });
+    // Manual callers only await completion; do not create an unhandled rejection.
+    void started.catch(() => {});
+    this.restartRequested.set(host, started);
     const request = (async () => {
-      this.reset(host);
-      await this.restartContainer(host);
+      try {
+        this.reset(host);
+        await this.restartContainer(host, requested);
+        requested();
+      } catch (error) {
+        failed(error);
+        throw error;
+      }
       return `${host}: restarted.`;
-    })().finally(() => this.pendingRestarts.delete(host));
+    })().finally(() => { this.pendingRestarts.delete(host); this.restartRequested.delete(host); });
     this.pendingRestarts.set(host, request);
     return request;
+  }
+
+  // User commands request recovery once per host and return as soon as the
+  // restart request is written. They never wait through the login process.
+  async handleFailure(integration: Integration, error: unknown): Promise<UserFacingError | null> {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!(error instanceof GatewayError) && !(error instanceof UserFacingError && error.code === "ibkr_connection") &&
+      !/IBKR.*(?:disconnect|connection.*reset|auth.*expir|session.*expir)|(?:connecting to|waiting for) IBKR|ECONNREFUSED|ECONNRESET|EHOSTUNREACH/i.test(message)) return null;
+    const host = getRestartContainerName(integration.credentials);
+    if (this.pendingRestarts.has(host)) {
+      try { await this.restartRequested.get(host); }
+      catch (cause) { return new UserFacingError("Gateway restart failed. Ask admin to check /status.", { cause }); }
+      return new UserFacingError("Gateway is restarting. Please wait.");
+    }
+    const health = await this.health(host);
+    if (health.state === "recovering" || health.state === "blocked" && !/auth.*expir|session.*expir/i.test(message)) {
+      return new UserFacingError(health.message, { cause: error });
+    }
+    // Controller HTTP failures alone are not a reason to restart a working API.
+    try {
+      await this.probe(integration);
+      this.automaticAttempts.delete(host);
+      return new UserFacingError("IBKR API responds. Retry your command.", { cause: error });
+    } catch { /* Both the user request and independent API probe failed. */ }
+    if (this.pendingRestarts.has(host)) {
+      try { await this.restartRequested.get(host); }
+      catch (cause) { return new UserFacingError("Gateway restart failed. Ask admin to check /status.", { cause }); }
+      return new UserFacingError("Gateway is restarting. Please wait.", { cause: error });
+    }
+    const previous = this.automaticAttempts.get(host);
+    if (previous && this.now() - previous.at < 180_000) return new UserFacingError(previous.failure
+      ? "Gateway restart failed. Ask admin to check /status."
+      : "IBKR API is still unreachable. Retry shortly.");
+    const attempt = { at: this.now(), failure: undefined as unknown };
+    this.automaticAttempts.set(host, attempt);
+    const completion = this.restart(integration);
+    void completion.catch(cause => { attempt.failure = cause; console.error(`Gateway restart failed for ${host}:`, cause); });
+    try { await this.restartRequested.get(host); }
+    catch (cause) {
+      attempt.failure = cause;
+      return new UserFacingError("Gateway restart failed. Ask admin to check /status.", { cause });
+    }
+    return new UserFacingError(/auth.*expir|session.*expir/i.test(message)
+      ? "IBKR session expired. Gateway restart requested; please wait."
+      : "IBKR API is unreachable. Gateway restart requested; please wait.");
   }
 
   recover(integration: Integration): Promise<string> {

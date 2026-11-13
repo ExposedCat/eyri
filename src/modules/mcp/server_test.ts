@@ -273,7 +273,7 @@ Deno.test("MCP returns concise numerical reports matching Telegram totals and hy
     );
     match(await buildIntegratedAllTimePerformanceList({
       positions: [position], orders, formatTicker: (s) => s,
-    }), /Lifetime return unavailable/);
+    }), /Percentage unavailable/);
     equal((await call(h, "worth")).total.value, 720);
     equal((await call(h, "sold")).total.pnl, 200);
     deepStrictEqual((await call(h, "dpnl")).total, { pnl: 12, returnPct: 2 });

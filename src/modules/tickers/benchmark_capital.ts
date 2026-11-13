@@ -4,6 +4,7 @@ import type { ChartBenchmark } from "./chart_benchmark.ts";
 // Keep full portfolio funding even when the actual curve filters asset classes.
 export type BenchmarkSource = {
   accountPerformances: IntegrationAccountPerformance[];
+  unavailableReason?: string;
   // Purchases before asset filtering, scoped and scaled to the selected view.
   orders?: IntegrationOrder[];
   positions?: IntegrationPortfolioPosition[];

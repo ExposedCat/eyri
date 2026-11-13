@@ -1,5 +1,5 @@
-import { equal, match } from "node:assert/strict";
-import { GatewayMonitor } from "./gateway.ts";
+import { equal, match, rejects } from "node:assert/strict";
+import { assertGatewayReady, GatewayError, GatewayMonitor } from "./gateway.ts";
 
 Deno.test("gateway readiness is cached, shared, refreshed, and rejects a live forwarder over a dead JVM", async () => {
   let now = 0, calls = 0;
@@ -28,7 +28,7 @@ Deno.test("gateway readiness is cached, shared, refreshed, and rejects a live fo
   equal(first.state, "blocked");
   equal(second.state, "blocked");
   equal(calls, 1);
-  match(first.message, /Check the gateway authentication logs/);
+  equal(first.message, "IBKR login stopped. Ask admin to check Gateway login.");
   payload = {
     status: "healthy",
     state: "READY",
@@ -62,4 +62,26 @@ Deno.test("legacy gateways make no speculative health requests; unreachable cont
   );
   equal((await controller.read("gateway")).state, "unavailable");
   equal(calls, 1);
+});
+
+Deno.test("controller states produce distinct short messages without guessing an expired login", async () => {
+  for (const [state, message] of [
+    ["LAUNCHING", "Gateway is starting. Please wait."],
+    ["LOGIN", "IBKR is logging in. Please wait."],
+    ["TWO_FA", "IBKR verification pending. Complete Gateway login."],
+    ["API_WAIT", "IBKR API is starting. Please wait."],
+    ["UPSTREAM_DOWN", "IBKR is reconnecting. Please wait."],
+    ["HALTED", "IBKR login stopped. Ask admin to check Gateway login."],
+  ]) {
+    const monitor = new GatewayMonitor(() => "http://controller/health", async () => Response.json({ state, status: "unhealthy" }));
+    equal((await monitor.read("gateway")).message, message);
+  }
+});
+
+Deno.test("an HTTP health outage permits the socket handshake while active login and halted states stop reports", async () => {
+  await assertGatewayReady("gateway", { read: async () => ({ state: "unavailable", message: "HTTP down" }) });
+  for (const state of ["recovering", "blocked"] as const) {
+    await rejects(assertGatewayReady("gateway", { read: async () => ({ state, message: "Exact login state. Wait." }) }),
+      error => error instanceof GatewayError && error.userMessage === "Exact login state. Wait.");
+  }
 });

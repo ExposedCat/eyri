@@ -1,5 +1,6 @@
 import type { PriceHistory } from "../market_data/history.ts";
 import { dayAfter } from "../market_data/history.ts";
+import { UserFacingError } from "../../utils/user_error.ts";
 
 export const CHART_BENCHMARK_SYMBOL = "CSPX.L";
 export const CHART_BENCHMARKS = {
@@ -44,7 +45,10 @@ export function buildChartBenchmark(
   if (
     history.symbol !== symbol || history.currency !== "USD" ||
     history.instrumentType !== "ETF"
-  ) throw new Error(`${name} benchmark must use the ${symbol} USD ETF listing.`);
+  ) throw new UserFacingError(`${name} feed returned ${history.symbol !== symbol ? `symbol ${history.symbol} instead of ${symbol}`
+    : history.currency !== "USD" ? `${history.currency} prices instead of USD`
+    : `type ${history.instrumentType ?? "unknown"} instead of ETF`}. Ask admin to fix the feed.`,
+    { detail: `${name} benchmark must use the ${symbol} USD ETF listing.` });
   if (
     history.splits.some((split) =>
       !Number.isFinite(split.ratio) || split.ratio <= 0
@@ -110,12 +114,15 @@ export function buildChartBenchmark(
     for (const [currency, cashFlow] of cashFlows) {
       const previous = shares.get(currency) ?? 0;
       const quantity = previous + cashFlow / bars[barIndex].close;
-      if (quantity < -1e-7) throw new Error(`${name} benchmark cannot fund the account's withdrawals.`);
+      if (quantity < -1e-7) throw new UserFacingError(
+        `${name} on ${date}: index funds ${(previous * bars[barIndex].close).toFixed(2)} USD, withdrawal ${(-cashFlow).toFixed(2)} USD. Ask admin to review the comparison.`,
+        { detail: `${name} benchmark cannot fund the account's withdrawals.` });
       bookCosts.set(currency, cashFlow >= 0 ? (bookCosts.get(currency) ?? 0) + cashFlow
         : (bookCosts.get(currency) ?? 0) * (previous ? Math.max(0, quantity) / previous : 0));
       shares.set(currency, Math.max(0, quantity));
     }
-    if (cost < -1e-7) throw new Error(`${name} benchmark allocation exceeds contributed capital.`);
+    if (cost < -1e-7) throw new UserFacingError(`Bot index allocation exceeds deposits by ${(-cost).toFixed(2)} USD. Ask admin to check allocations.`,
+      { detail: `${name} benchmark allocation exceeds contributed capital.` });
     cost = Math.max(0, cost);
     if (date < start) continue;
     let value = 0, dailyCost = 0, dailyWithdrawals = 0;

@@ -26,6 +26,7 @@ import {
 import { logFetch } from "../../../utils/fetch_logging.ts";
 import {
   connectIbkrOnce,
+  ibkrRequestError,
   type IbkrConnectionConfig,
   isIbkrStatusMessage,
 } from "./connection.ts";
@@ -34,6 +35,7 @@ const EXECUTION_SYNC_INTERVAL_MS = 15 * 1000;
 const EXECUTION_CLIENT_ID_OFFSET = 1000;
 const EXECUTION_SYNC_REQUEST_ID = 90_000;
 const DAILY_PNL_TIMEOUT_MS = 5_000;
+const executionSyncs = new WeakMap<Database, Map<string, { pending?: Promise<void>; syncedAt?: number }>>();
 
 type IbkrPortfolioPosition = IntegrationPortfolioPosition & {
   conId?: number;
@@ -68,18 +70,19 @@ function withTimeout<T>(
   });
 }
 
-function normalizeError(error: unknown) {
-  return error instanceof Error ? error : new Error(String(error));
+function normalizeError(error: unknown, code?: number) {
+  return ibkrRequestError(error, code);
 }
 
 function normalizeIbkrCallbackError(args: unknown[]) {
+  const code = typeof args[1] === "number" ? args[1] : undefined;
   const message = args.find((arg): arg is string => typeof arg === "string");
   if (message) {
-    return new Error(message);
+    return normalizeError(message, code);
   }
 
   const error = args.find((arg): arg is Error => arg instanceof Error);
-  return error ?? new Error(args.map(String).join(" "));
+  return normalizeError(error ?? args.map(String).join(" "), code);
 }
 
 async function getManagedAccount(api: IBApi, config: IbkrConnectionConfig) {
@@ -92,7 +95,7 @@ async function getManagedAccount(api: IBApi, config: IbkrConnectionConfig) {
           resolve(accounts.split(",").filter(Boolean));
         const onError = (error: unknown, code?: number) => {
           if (isIbkrStatusMessage(code)) return;
-          reject(normalizeError(error));
+          reject(normalizeError(error, code));
         };
         const onDisconnected = () =>
           reject(
@@ -365,8 +368,18 @@ async function fetchTodayExecutions(
 async function syncIntegrationExecutions(
   database: Database,
   integration: Integration,
+  force = true,
 ) {
-  return logFetch(
+  let states = executionSyncs.get(database);
+  if (!states) executionSyncs.set(database, states = new Map());
+  const key = JSON.stringify([integration.id, integration.credentials]);
+  let state = states.get(key);
+  if (!state) states.set(key, state = {});
+  if (state.pending) return await state.pending;
+  const now = Date.now(), age = now - (state.syncedAt ?? 0);
+  if (!force && state.syncedAt !== undefined && age >= 0 && age < EXECUTION_SYNC_INTERVAL_MS &&
+    new Date(state.syncedAt).toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10)) return;
+  state.pending = logFetch(
     `IBKR execution sync integration=${integration.id}`,
     async () => {
       const { config } = getConnectionConfig(integration);
@@ -385,7 +398,8 @@ async function syncIntegrationExecutions(
         writeExecutionOrders(database, integration, orders);
       });
     },
-  );
+  ).then(() => { state.syncedAt = Date.now(); }).finally(() => { state.pending = undefined; });
+  return await state.pending;
 }
 
 function toPortfolioPosition(
@@ -723,7 +737,7 @@ async function getAccountPortfolio(
         const onError = (error: unknown, code?: number) => {
           if (isIbkrStatusMessage(code)) return;
           cleanup();
-          reject(normalizeError(error));
+          reject(normalizeError(error, code));
         };
 
         api.on(EventName.updatePortfolio, onUpdatePortfolio);
@@ -896,7 +910,7 @@ export async function readIbkrAccountSnapshot(
   };
   const onError = (error: unknown, code?: number) => {
     if (isIbkrStatusMessage(code)) return;
-    rejectRequest(normalizeError(error));
+    rejectRequest(normalizeError(error, code));
   };
   try {
     await withTimeout(
@@ -967,7 +981,7 @@ export async function readIbkrCashBalances(
   };
   const onError = (error: unknown, code?: number) => {
     if (isIbkrStatusMessage(code)) return;
-    rejectRequest(normalizeError(error));
+    rejectRequest(normalizeError(error, code));
   };
   try {
     await withTimeout(
@@ -1060,7 +1074,7 @@ export async function enrichContractIdentity(
               if (isIbkrStatusMessage(code)) return;
               if (id !== undefined && id >= 0 && id !== requestId) return;
               cleanup();
-              reject(normalizeError(error));
+              reject(normalizeError(error, code));
             };
             api.on(EventName.error, onError);
             api.on(EventName.contractDetails, onDetails);
@@ -1148,7 +1162,8 @@ export const ibkrAdapter: IntegrationAdapter = {
     });
   },
 
-  async fetchOrderHistory(database: Database, integration: Integration) {
+  async fetchOrderHistory(database: Database, integration: Integration, options) {
+    if (options?.refresh || options?.recent) await syncIntegrationExecutions(database, integration, !!options?.refresh);
     return readIbkrOrders(database, integration);
   },
 

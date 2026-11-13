@@ -24,6 +24,54 @@ import {
   fetchPortfolioView,
   hasPortfolioViewIntegrations,
 } from "./portfolio_view.ts";
+import { UserFacingError } from "../../utils/user_error.ts";
+
+Deno.test("a stale bucket quantity refreshes trades once and rebuilds against live holdings", async () => {
+  const db = new Database(":memory:");
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    createIntegration({ database: db, userId: 1, kind: "ibkr", credentials: {} });
+    await createBucket({ database: db, userId: 1, name: "Core" });
+    const buy = order(1, 2, 100, "2025-01-01");
+    await moveTransactionToBucket({ database: db, userId: 1, bucketName: "Core", transactionKey: getOrderTransactionKey(buy) });
+    const attempts: boolean[] = [];
+    const fetchers = {
+      portfolio: async () => [position(1, 1)],
+      orders: async (_db: Database, _id: number, options?: { refresh?: boolean }) => {
+        attempts.push(!!options?.refresh);
+        return options?.refresh ? [buy, order(1, -1, 110, "2025-01-02")] : [buy];
+      },
+      history: async () => [buy],
+    };
+    const view = await fetchPortfolioView(db, 1, "Core", { history: true }, fetchers);
+    equal(view.positions[0].amount, 1);
+    deepStrictEqual(attempts, [false, true]);
+  } finally { db.close(); }
+});
+
+Deno.test("perf keeps trade data when benchmark funding fails; lifetime reports retain the funding failure", async () => {
+  const db = new Database(":memory:");
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    createIntegration({ database: db, userId: 1, kind: "ibkr", credentials: {} });
+    const live = position(1, 1), trades = [order(1, 1, 100, "2025-01-01")];
+    const error = new UserFacingError("IBKR funding is downloading. Retry after the next sync.");
+    const fetchers = {
+      portfolio: async () => [live], orders: async () => trades, history: async () => trades,
+      accounts: async () => { throw error; },
+    };
+    const view = await fetchPortfolioView(db, 1, null, { history: true, accountPerformance: true,
+      accountPerformanceOptions: { purpose: "benchmark" } }, fetchers);
+    equal(view.positions.length, 1);
+    equal(view.orders.length, 1);
+    deepStrictEqual(view.accountPerformances, []);
+    deepStrictEqual(view.fundingErrors, [error.userMessage]);
+    await rejects(fetchPortfolioView(db, 1, null, { history: true, accountPerformance: true }, fetchers),
+      caught => caught === error);
+  } finally { db.close(); }
+});
 
 Deno.test("excluded buckets subtract allocated capital while complete included accounts retain broker funding", async () => {
   const db = new Database(":memory:");
