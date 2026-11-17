@@ -7,6 +7,7 @@ import { ensureSchema } from "../database/setup.ts";
 import { findOrCreateUser, setUserCurrency } from "../database/user.ts";
 import { getUserBucket, readBucketAssignments } from "../database/bucket.ts";
 import { createIntegration } from "../database/integration.ts";
+import { setPortfolioVisibility } from "../database/visibility.ts";
 import { ibkrAdapter } from "../integrations/ibkr/adapter.ts";
 import { gatewayRecovery } from "../integrations/ibkr/recovery.ts";
 import type { IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
@@ -165,6 +166,51 @@ function harness(db: Database) {
     },
   };
 }
+
+Deno.test("reply reports fetch only the public subject's holdings and switch back immediately when made private", async () => {
+  const db = new Database(":memory:");
+  const previousPath = Deno.env.get("EYRI_DATABASE_PATH");
+  const previousPortfolio = ibkrAdapter.fetchPortfolio;
+  const previousOrders = ibkrAdapter.fetchOrderHistory;
+  Deno.env.set("EYRI_DATABASE_PATH", ":memory:");
+  try {
+    ensureSchema(db);
+    const h = harness(db), caller = 123456789, subject = 2;
+    await h.command("/bucket new Own", caller);
+    await h.command("/bucket new Other", subject);
+    createIntegration({ database: db, userId: caller, kind: "ibkr", credentials: {} });
+    createIntegration({ database: db, userId: subject, kind: "ibkr", credentials: {} });
+    const fetched: number[] = [];
+    ibkrAdapter.fetchPortfolio = async (_db, integration) => {
+      fetched.push(integration.userId);
+      return [{ integrationId: integration.id, integrationKind: "ibkr", account: "fixture",
+        ticker: integration.userId === subject ? "OTHER" : "OWN", assetCategory: "STK", currency: "USD",
+        amount: 1, averageUnitPrice: 100, currentPrice: 120, totalInput: 100, totalNow: 120,
+        unrealizedPnl: 20, realizedPnl: 0, dailyPnl: 1, dailyPnlPercentage: 1,
+        dailyPnlBaseline: 119, openedAt: new Date("2025-01-01") }];
+    };
+    ibkrAdapter.fetchOrderHistory = async () => [];
+    await h.command("/buckets", caller, subject);
+    match(h.lastText(), /Other/);
+    ok(!h.lastText().includes("Own"));
+    await h.command("/perf", caller, subject);
+    match(h.lastText(), /OTHER/);
+    equal(fetched.join(","), "2");
+    setPortfolioVisibility(db, subject, false, -1001);
+    await h.command("/perf", caller, subject);
+    match(h.lastText(), /OWN/);
+    equal(fetched.join(","), "2,123456789");
+    await h.command("/bucket new CallerOnly", caller, subject);
+    ok(getUserBucket(db, caller, "CallerOnly"));
+    equal(getUserBucket(db, subject, "CallerOnly"), null);
+  } finally {
+    ibkrAdapter.fetchPortfolio = previousPortfolio;
+    ibkrAdapter.fetchOrderHistory = previousOrders;
+    if (previousPath === undefined) Deno.env.delete("EYRI_DATABASE_PATH");
+    else Deno.env.set("EYRI_DATABASE_PATH", previousPath);
+    db.close();
+  }
+});
 
 Deno.test("long history and bucket controls stay in one rich message and edit the full history", async () => {
   const db = new Database(":memory:");

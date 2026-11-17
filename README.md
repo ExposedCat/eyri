@@ -440,10 +440,31 @@ stock allocation charts, stock dumps and MCP stock reports. Bucket and account
 funding calculations retain the broker holdings they need; an excluded warrant's
 issuer feed cannot block a stock-only report.
 
-Rich integration and bucket controls use Telegram Bot API 10.3's `sendRichMessage`,
-inline `RichTextButton` and `InputRichBlockButtons` (bucket history uses rich HTML
-with `<tg-button>`). A small typed raw API wrapper
-allows these methods to work with the currently installed grammY version.
+All bot text, charts and document attachments use Telegram Bot API 10.3 rich
+messages. Reports, help and errors stay in one message without the old 4096-character
+splitting. Inline controls use rich buttons, including `<tg-button>` in HTML.
+A shared API transformer and typed raw API wrapper support the installed grammY
+version while preserving topics, replies, setup prompts and chart controls.
+Older photo charts need a fresh `/chart` before their comparison controls can
+update rich content.
+
+## Portfolio visibility
+
+Use `/settings` for two inline toggles: **Visibility** and **Chat visibility**.
+Public is green and Private is red; clicking changes the setting in place.
+The command and its response are ephemeral in groups, visible only to the caller.
+Both start Public. Untouched chats follow global visibility; changing Chat
+visibility saves an override for that user in the current chat.
+
+Reply to another user's message with any portfolio report command to see their
+portfolio, provided they have a connected portfolio or RSU awards and their
+effective visibility in that chat is Public. This includes performance, worth,
+daily and all-time reports, number reports, history, hypothetical prices, charts
+(including widgets), bucket lists, RSU views and diagnostic dumps. Reports use the
+selected user's currency, ticker preferences and buckets. Unknown users, bots,
+anonymous senders and private portfolios leave the caller's portfolio selected.
+Settings, integrations, currency changes, bucket management, RSU edits and other
+management commands always operate on the caller's own data.
 
 Freedom24 holdings and book cost come from the live portfolio, preserving ticker
 changes and stock splits. Daily P&L uses the broker's previous-day portfolio P&L;

@@ -6,6 +6,7 @@ import { parsePerformanceArgs, parseReportArgs, type ReportFilter } from "./perf
 import type { CustomContext } from "../bot/types.ts";
 import { replyUserError } from "../bot/errors.ts";
 import { richTextMessage, showRichMessage } from "../bot/rich.ts";
+import { selectPortfolioSubject } from "../bot/portfolio_subject.ts";
 import {
   applyBucketAllocations,
   findOpenPortfolioLots,
@@ -68,6 +69,7 @@ import {
 } from "./portfolio.ts";
 
 export const tickersComposer = new Composer<CustomContext>();
+tickersComposer.use(selectPortfolioSubject);
 
 const htmlReplyOptions = {
   parse_mode: "HTML" as const,
@@ -280,7 +282,7 @@ async function buildBucketMoveHtml(
   bucketName: string,
   orders: Awaited<ReturnType<typeof fetchIntegratedHistoryOrders>>,
 ) {
-  const preferences = await readTickerDisplayPreferences(ctx.from?.id ?? userId);
+  const preferences = await readTickerDisplayPreferences(userId);
   const transactionBuckets = readBucketAssignments(ctx.db, userId);
   const history = await buildIntegratedHistorySections({
     currency: ctx.dbEntities.user?.currency ?? "USD",
@@ -824,7 +826,7 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 		}
 		const view = getRsuView(awards, now, cutoff);
 		const vestings = [...view.upcoming, ...view.total, ...view.missed];
-		const preferences = await readTickerDisplayPreferences(ctx.from.id);
+		const preferences = await readTickerDisplayPreferences(ctx.dbEntities.user.userId);
 		const formatTicker = (ticker: string) =>
 			formatDecoratedTicker(
 				ticker,
@@ -983,7 +985,7 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
     return;
   }
 
-  const preferences = await readTickerDisplayPreferences(ctx.from.id);
+  const preferences = await readTickerDisplayPreferences(ctx.dbEntities.user.userId);
   const {
     tickerDecorations,
     tickerLabelPreferences,
@@ -1063,7 +1065,7 @@ tickersComposer.command("sold", async (ctx) => {
 
   const bucketName = await resolveBucketName(ctx);
   if (bucketName === undefined) return;
-  const preferences = await readTickerDisplayPreferences(ctx.from.id);
+  const preferences = await readTickerDisplayPreferences(ctx.dbEntities.user.userId);
   const {
     tickerDecorations,
     tickerLabelPreferences,
@@ -1123,7 +1125,7 @@ tickersComposer.command("history", async (ctx) => {
     tickerLabelPreferences,
     tickerLabelLinks,
     tickerEmojiMappings,
-  } = await readTickerDisplayPreferences(ctx.from.id);
+  } = await readTickerDisplayPreferences(ctx.dbEntities.user.userId);
 
   if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
     await ctx.text("no_integrations");
@@ -1169,7 +1171,7 @@ tickersComposer.command("when", async (ctx) => {
     return;
   }
 
-  const preferences = await readTickerDisplayPreferences(ctx.from.id);
+  const preferences = await readTickerDisplayPreferences(ctx.dbEntities.user.userId);
   const {
     tickerDecorations,
     tickerLabelPreferences,

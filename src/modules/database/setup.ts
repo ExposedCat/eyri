@@ -24,6 +24,13 @@ export function ensureSchema(database: Database) {
     CREATE INDEX IF NOT EXISTS integrations_user_id_idx
       ON integrations(user_id);
 
+    CREATE TABLE IF NOT EXISTS portfolio_visibility (
+      user_id INTEGER NOT NULL REFERENCES users(user_id),
+      scope TEXT NOT NULL,
+      is_public INTEGER NOT NULL CHECK (is_public IN (0, 1)),
+      PRIMARY KEY (user_id, scope)
+    );
+
     CREATE TABLE IF NOT EXISTS integration_setup_sessions (
       user_id INTEGER NOT NULL REFERENCES users(user_id),
       chat_id INTEGER NOT NULL,

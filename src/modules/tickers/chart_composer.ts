@@ -1,6 +1,7 @@
 import { Composer, InlineKeyboard, InputFile } from "grammy";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import type { CustomContext } from "../bot/types.ts";
+import { selectPortfolioSubject } from "../bot/portfolio_subject.ts";
 import { logUserError, replyUserError } from "../bot/errors.ts";
 import { httpError, userErrorMessage } from "../../utils/user_error.ts";
 import type { Database } from "../database/setup.ts";
@@ -64,7 +65,7 @@ function telegramError(error: unknown, code: number, description = "") {
 
 async function datasetFor(ctx: CustomContext, bucketName: string | null,
   selection: { kind: "perf" | "alltime" | "worth"; filter: ReportFilter } = { kind: "alltime", filter: null }) {
-  const userId = ctx.from!.id;
+  const userId = ctx.dbEntities.user!.userId;
   if (!hasPortfolioViewIntegrations(ctx.db, userId, bucketName)) {
     throw new Error(
       "Configure an integration before charting your all-time performance.",
@@ -77,7 +78,8 @@ async function datasetFor(ctx: CustomContext, bucketName: string | null,
     accountPerformanceOptions: selection.kind !== "worth" ? { purpose: "benchmark" } : undefined,
   });
   const matches = selection.filter === "stocks" ? isStockPosition : selection.filter === "options" ? isOptionPosition : () => true;
-  const label = [ctx.from!.first_name, ctx.from!.last_name].filter(Boolean)
+  const subject = ctx.portfolioSubject ?? ctx.from!;
+  const label = [subject.first_name, subject.last_name].filter(Boolean)
     .join(" ").slice(0, 60);
   return loadAllTimeDataset(
     ctx.db,
@@ -140,10 +142,6 @@ async function replyChartError(ctx: CustomContext, error: unknown) {
       ? `History not found. Check /yahoo ${failure.ticker} ${failure.symbol}.`
       : userErrorMessage(failure.cause, String(ctx.update.update_id));
     const line = `\n${failure.ticker}: ${detail}`;
-    if (message.length + line.length > 3900) {
-      await ctx.reply(message);
-      message = "Failed to fetch historical data:";
-    }
     message += line;
   }
   await ctx.reply(message);
@@ -164,6 +162,7 @@ export function createChartComposer(
   runtime: Runtime = { dataset: datasetFor, render: renderAllTimeChart },
 ) {
   const composer = new Composer<CustomContext>();
+  composer.use(selectPortfolioSubject);
   composer.command("yahoo", async (ctx) => {
     if (!ctx.dbEntities.user || !ctx.from) return;
     const parts = typeof ctx.match === "string"
@@ -212,7 +211,7 @@ export function createChartComposer(
     if (
       bucketName &&
       (!/^[A-Za-z][A-Za-z0-9_]{0,19}$/.test(bucketName) ||
-        !getUserBucket(ctx.db, ctx.from.id, bucketName))
+        !getUserBucket(ctx.db, ctx.dbEntities.user.userId, bucketName))
     ) {
       await ctx.reply(`Bucket not found. ${chartUsage}`);
       return;
@@ -287,6 +286,10 @@ export function createChartComposer(
     const messageId = ctx.callbackQuery.message?.message_id;
     if (!ctx.chat || !ctx.from || !messageId) {
       await ctx.answerCallbackQuery({ text: "Chart message is inaccessible. Open the original chart.", show_alert: true });
+      return;
+    }
+    if (ctx.callbackQuery.message?.photo && !("rich_message" in ctx.callbackQuery.message)) {
+      await ctx.answerCallbackQuery({ text: "This chart uses an older message format. Run /chart again.", show_alert: true });
       return;
     }
     if (!switching && ctx.chat.type === "private") {

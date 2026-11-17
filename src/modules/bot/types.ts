@@ -1,11 +1,12 @@
 import type { Api, Bot as TelegramBot, Context, NextFunction } from "grammy";
-import type { Message } from "grammy_types";
+import type { Message, User as TelegramUser } from "grammy_types";
 import type { Database } from "../database/setup.ts";
 import type { User } from "../database/user.ts";
 
 type Extra = Parameters<Api["sendMessage"]>[2];
 
 export type Custom = {
+  portfolioSubject?: TelegramUser;
   text: (
     text: string,
     templateData?: Record<string, string | number>,

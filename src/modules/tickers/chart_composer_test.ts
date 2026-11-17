@@ -2,6 +2,7 @@ import { deepStrictEqual, equal, match, ok } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import { Bot, InlineKeyboard } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
+import { setupRichMessages } from "../bot/rich.ts";
 import { ensureSchema } from "../database/setup.ts";
 import { createChartComposer, readChartSession } from "./chart_composer.ts";
 import { type AllTimeDataset, ensureChartSchema, switchChartBenchmarks } from "./alltime_chart.ts";
@@ -9,9 +10,11 @@ import { dayAfter } from "../market_data/history.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
 import { readYahooMapping } from "../market_data/mappings.ts";
 import { createBucket, transferBucketAccess } from "../database/bucket.ts";
+import { createIntegration } from "../database/integration.ts";
+import { setPortfolioVisibility } from "../database/visibility.ts";
 import { chartUsesPercentages } from "./chart_points.ts";
 
-function harness(db: Database, currencies = new Map<number, string>(), notes?: string[]) {
+function harness(db: Database, currencies = new Map<number, string>(), notes?: string[], richMessages = false) {
   const calls: { method: string; payload: Record<string, unknown> }[] = [];
   const fetched: number[] = [];
   const selections: { userId: number; bucketName: string | null; kind: string; filter: string | null }[] = [];
@@ -67,6 +70,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
       },
     }) as never;
   });
+  if (richMessages) setupRichMessages(bot.api);
   bot.use(async (ctx, next) => {
     ctx.db = db;
     ctx.dbEntities = { user: { userId: ctx.from!.id, currency: currencies.get(ctx.from!.id) } };
@@ -75,10 +79,10 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
   const composer = createChartComposer({
     request: async () => Response.json({ base: "USD", quote: "EUR", rate: .8 }),
     dataset: async (ctx, bucketName, selection = { kind: "alltime", filter: null }) => {
-      fetched.push(ctx.from!.id);
-      selections.push({ userId: ctx.from!.id, bucketName, ...selection });
-      await datasetGates.get(ctx.from!.id)?.();
-      if (failures.has(ctx.from!.id)) {
+      fetched.push(ctx.dbEntities.user!.userId);
+      selections.push({ userId: ctx.dbEntities.user!.userId, bucketName, ...selection });
+      await datasetGates.get(ctx.dbEntities.user!.userId)?.();
+      if (failures.has(ctx.dbEntities.user!.userId)) {
         return Promise.reject(
           new HistoricalDataError([
             { ticker: "VUAA", symbol: "VUAA.L" },
@@ -87,15 +91,15 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
           ]),
         );
       }
-      const points = pointsByUser.get(ctx.from!.id) ?? [{ date: "2025-01-01", percentage: 0, gain: 0 }, {
+      const points = pointsByUser.get(ctx.dbEntities.user!.userId) ?? [{ date: "2025-01-01", percentage: 0, gain: 0 }, {
         date: "2025-01-02", percentage: 10, gain: 100,
       }];
       return Promise.resolve({
         fundingReturnVersion: 6 as const,
         ...selection,
         ...(notes ? { notes } : {}),
-        userId: ctx.from!.id,
-        label: ctx.from!.first_name,
+        userId: ctx.dbEntities.user!.userId,
+        label: (ctx.portfolioSubject ?? ctx.from!).first_name,
         bucketName,
         points,
         benchmarkPurchases: points.map((p, i) => ({ date: p.date, amountUsd: i === 0 ? 1000 : 100 })),
@@ -104,7 +108,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
           asOf: points.at(-1)!.date,
           points: points.map((p) => ({ ...p, percentage: (p.percentage ?? 0) / 2, gain: p.gain! / 2 })),
         },
-        ...datasetOverrides.get(ctx.from!.id),
+        ...datasetOverrides.get(ctx.dbEntities.user!.userId),
       });
     },
     switchBenchmarks: (db, datasets, index) => switchChartBenchmarks(db, datasets, index, {
@@ -154,7 +158,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
     benchmarkGates,
     invalidSymbols,
     validatedSymbols,
-    command: (text = "/chart", userId = 1, chatId = -1001, threadId?: number) =>
+    command: (text = "/chart", userId = 1, chatId = -1001, threadId?: number, replyUserId?: number) =>
       bot.handleUpdate({
         update_id: ++updateId,
         message: {
@@ -164,6 +168,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
             ? { id: chatId, type: "private", first_name: `User ${chatId}` }
             : { id: chatId, type: "supergroup", title: "Investing" },
           from: from(userId),
+          ...(replyUserId === undefined ? {} : { reply_to_message: { reply_to_message: undefined, message_id: 99, date: 1, chat: { id: chatId, type: "supergroup" as const, title: "Group" }, from: from(replyUserId) } }),
           ...(threadId === undefined ? {} : { is_topic_message: true, message_thread_id: threadId }),
           text,
           entities: [{
@@ -178,6 +183,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
       userId = 2,
       chatId = -1001,
       messageId = 100,
+      legacyPhoto = false,
     ) =>
       bot.handleUpdate({
         update_id: ++updateId,
@@ -189,6 +195,7 @@ function harness(db: Database, currencies = new Map<number, string>(), notes?: s
           message: {
             message_id: messageId,
             date: 1,
+            ...(!legacyPhoto && { rich_message: { blocks: [] } }),
             chat: chatId > 0
               ? { id: chatId, type: "private", first_name: `User ${chatId}` }
               : { id: chatId, type: "supergroup", title: "Investing" },
@@ -212,6 +219,62 @@ function callback(
   }).inline_keyboard[0][0].callback_data;
   return data;
 }
+
+Deno.test("reply charts use the public subject's identity, currency and buckets; Compare still adds the clicker", async () => {
+  const db = new Database(":memory:");
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users(user_id, currency) VALUES (1, NULL), (2, 'EUR')");
+    createIntegration({ database: db, userId: 2, kind: "ibkr", credentials: {} });
+    await createBucket({ database: db, userId: 2, name: "Subject" });
+    const h = harness(db);
+    await h.command("/chart Subject", 1, -1001, undefined, 2);
+    deepStrictEqual(h.selections[0], { userId: 2, bucketName: "Subject", kind: "alltime", filter: null });
+    equal(h.renderedDatasets[0][0].label, "User 2");
+    equal(h.renderedDatasets[0][0].displayCurrency, "EUR");
+    await h.compare(callback(h.calls), 1);
+    deepStrictEqual(h.rendered.at(-1), [2, 1]);
+    setPortfolioVisibility(db, 2, false, -1001);
+    await h.command("/chart", 1, -1001, undefined, 2);
+    equal(h.selections.at(-1)!.userId, 1);
+    setPortfolioVisibility(db, 2, true, -1001);
+    await h.command("/chart widget", 1, -1001, undefined, 2);
+    equal(h.selections.at(-1)!.userId, 2);
+    equal(h.calls.at(-1)!.method, "sendWidget");
+  } finally { db.close(); }
+});
+
+Deno.test("rich chart uploads and comparison edits preserve chart sessions and interactive controls", async () => {
+  const db = new Database(":memory:");
+  try {
+    ensureSchema(db);
+    const h = harness(db, new Map(), ["Cash history has gaps"], true);
+    await h.command();
+    const sent = h.calls.find(call => call.method === "sendRichMessage")!;
+    match((sent.payload.rich_message as { html: string }).html, /<img.*Cash history has gaps/s);
+    const data = (sent.payload.reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[0][0].callback_data;
+    await h.compare(data);
+    const edit = h.calls.find(call => call.method === "editMessageText")!;
+    match((edit.payload.rich_message as { html: string }).html, /<img/);
+    deepStrictEqual(h.rendered.at(-1), [1, 2]);
+    const saved = readChartSession(db, data.split(":")[1], -1001, 100)!;
+    deepStrictEqual(JSON.parse(saved.datasets).map((dataset: AllTimeDataset) => dataset.userId), [1, 2]);
+    equal(h.calls.some(call => call.method === "sendPhoto" || call.method === "editMessageMedia"), false);
+  } finally { db.close(); }
+});
+
+Deno.test("pre-rich photo charts ask for a fresh chart before fetching accounts or attempting an incompatible edit", async () => {
+  const db = new Database(":memory:");
+  try {
+    ensureSchema(db);
+    const h = harness(db);
+    await h.command();
+    await h.compare(callback(h.calls), 2, -1001, 100, true);
+    deepStrictEqual(h.fetched, [1]);
+    match(String(h.calls.at(-1)!.payload.text), /older message format.*Run \/chart again/);
+    equal(h.calls.at(-1)!.method, "answerCallbackQuery");
+  } finally { db.close(); }
+});
 
 Deno.test("chart commands always use lifetime performance and preserve filters for Compare", async () => {
   const db = new Database(":memory:");

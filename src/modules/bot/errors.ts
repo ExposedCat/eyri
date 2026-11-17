@@ -50,17 +50,5 @@ export function logUserError(ctx: CustomContext, error: unknown) {
 
 export async function replyUserError(ctx: CustomContext, error: unknown) {
   logUserError(ctx, error);
-  let message = "";
-  for (
-    const line of userErrorMessage(error, String(ctx.update.update_id)).split(
-      "\n",
-    )
-  ) {
-    if (message && message.length + line.length > 3900) {
-      await ctx.reply(message);
-      message = "";
-    }
-    message += `${message ? "\n" : ""}${line}`;
-  }
-  if (message) await ctx.reply(message);
+  await ctx.reply(userErrorMessage(error, String(ctx.update.update_id)));
 }

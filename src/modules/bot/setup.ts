@@ -13,6 +13,8 @@ import type { Bot, CustomContext } from "./types.ts";
 import { createReplyWithTextFunc } from "./utils.ts";
 import { setupBotRuntime } from "./runtime.ts";
 import { buildBotApiUrl } from "./api_url.ts";
+import { setupRichMessages } from "./rich.ts";
+import { settingsComposer } from "../settings/composer.ts";
 
 function extendContext(bot: Bot, database: Database) {
   bot.use(async (ctx, next) => {
@@ -33,6 +35,7 @@ function extendContext(bot: Bot, database: Database) {
 
 function setupComposers(bot: Bot) {
   bot.use(startComposer);
+  bot.use(settingsComposer);
   bot.use(currencyComposer);
   bot.use(statusComposer);
   bot.use(integrationsComposer);
@@ -50,6 +53,7 @@ export function createBot(database: Database): Bot {
     client: { buildUrl: buildBotApiUrl },
   });
 
+  setupRichMessages(bot.api);
   setupBotRuntime(bot);
   extendContext(bot, database);
   setupComposers(bot);
@@ -59,6 +63,7 @@ export function createBot(database: Database): Bot {
 
 const botCommands = [
   { command: "start", description: "Show help" },
+  { command: "settings", description: "Set portfolio visibility", is_ephemeral: true },
   { command: "currency", description: "Set your reporting currency" },
   { command: "integrations", description: "Manage integration accounts" },
   { command: "t212", description: "Connect a Trading 212 account" },
