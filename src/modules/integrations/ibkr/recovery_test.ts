@@ -218,7 +218,7 @@ Deno.test("restart progress follows approval through a successful API check and 
     "Signing in to IBKR…",
     "Waiting for 2FA approval. If IBKR sends a prompt, approve it in the app.",
     "Connecting to IBKR…",
-    "IB Gateway is ready. You can run your commands again.",
+    "IB Gateway is ready.",
   ]);
   deepStrictEqual(joined, first.slice(3));
   equal(restarts, 1);
@@ -241,12 +241,33 @@ Deno.test("restart progress reports a login halt or a timeout without claiming r
       async (ms) => { now += ms; },
     );
     const updates: string[] = [];
-    await recovery.restartAndFollow(integration, (update) => updates.push(update));
-    match(updates.at(-1)!, message);
+    await rejects(recovery.restartAndFollow(integration, (update) => updates.push(update)), message);
     equal(now, status.state === "blocked" ? 0 : 600_000);
-    equal(updates.length, status.state === "recovering" ? 3 : 2);
+    equal(updates.length, status.state === "recovering" ? 2 : 1);
     equal(restarts, 1);
   }
+});
+
+Deno.test("a report follows an existing login and returns a terminal halt without restarting it", async () => {
+  const verification: GatewayHealth = { ...health("recovering"), reason: "verification" };
+  let polls = 0;
+  const recovery = new GatewayRecovery(
+    async () => ++polls < 3 ? verification : health("blocked"),
+    async () => { throw new Error("API was never ready"); },
+    () => { throw new Error("An active login should not be restarted"); },
+    () => {},
+    () => 0,
+    async () => {},
+  );
+  const progress: string[] = [];
+  const result = await recovery.handleFailure(integration, new GatewayError("gateway", verification), {
+    userId: integration.userId,
+    onProgress: (_host, message) => progress.push(message),
+  });
+  equal(polls, 3);
+  equal(progress.length, 1);
+  match(progress[0], /^Waiting for 2FA approval/);
+  match(failureMessage(result)!, /stopped trying to sign in/);
 });
 
 Deno.test("a failed restart can be retried immediately without force or a cooldown", async () => {

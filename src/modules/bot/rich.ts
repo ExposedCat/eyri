@@ -127,7 +127,7 @@ export function richTextMessage(text: string): { html: string } {
 export type RichMessageOptions = {
   message_thread_id?: number;
   reply_markup?: unknown;
-  reply_parameters?: { message_id?: number; ephemeral_message_id?: number };
+  reply_parameters?: { message_id?: number; ephemeral_message_id?: number; allow_sending_without_reply?: boolean };
   ephemeral_message_parameters?: { receiver_user_id: number };
 };
 
@@ -196,6 +196,7 @@ export async function showRichMessage(
       chat_id: ctx.chat.id,
       rich_message: richMessage,
       message_thread_id: ctx.msg?.message_thread_id,
+      ...await ctx.ibkrReportRecovery?.replyOptions(),
       ...options,
     });
   }

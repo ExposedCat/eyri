@@ -50,5 +50,7 @@ export function logUserError(ctx: CustomContext, error: unknown) {
 
 export async function replyUserError(ctx: CustomContext, error: unknown) {
   logUserError(ctx, error);
-  await ctx.reply(userErrorMessage(error, String(ctx.update.update_id)));
+  const message = userErrorMessage(error, String(ctx.update.update_id));
+  const reply = await ctx.ibkrReportRecovery?.replyOptions();
+  await ctx.reply(message, reply);
 }

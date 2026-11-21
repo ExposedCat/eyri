@@ -5,6 +5,7 @@ import { UserFacingError } from "../../../utils/user_error.ts";
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
 import { assertGatewayReady } from "./gateway.ts";
 import { isIbkrStatusMessage } from "./connection.ts";
+import { type ReportGatewayRecovery, retryIbkrReport } from "./recovery.ts";
 
 export type StockQuote = {
   price?: number;
@@ -23,10 +24,21 @@ export async function fetchIntegratedIbkrStockQuotes(
   integrations: Integration[],
   tickers: string[],
   fetchQuotes = fetchIbkrStockQuotes,
+  report?: ReportGatewayRecovery,
 ) {
-  const results = await Promise.allSettled(
+  let results = await Promise.allSettled(
     integrations.map((integration) => fetchQuotes(integration, tickers)),
   );
+  if (report && results.some((result) => result.status === "rejected") &&
+    tickers.some((ticker) => !results.some((result) =>
+      result.status === "fulfilled" && result.value.get(ticker)?.price !== undefined
+    ))) {
+    results = await Promise.allSettled(results.map((result, index) => {
+      if (result.status === "fulfilled") return result.value;
+      const integration = integrations[index];
+      return retryIbkrReport(integration, result.reason, () => fetchQuotes(integration, tickers), report);
+    }));
+  }
   const quotes = new Map<string, StockQuote>();
   const quality = (quote: StockQuote) =>
     (quote.price === undefined ? 0 : 8) + Number(!quote.delayed) * 4 +

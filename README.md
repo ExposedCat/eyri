@@ -989,8 +989,12 @@ share the restart, and repeated failures have a three-minute retry interval.
 An active controller login/recovery is allowed to finish. An unreachable HTTP
 health endpoint does not restart a working API. A reported expired session can
 request recovery; a generic halted state is reported as stopped login, without
-guessing that credentials expired. Automatic restart requests from reports return
-once dispatched. Subsequent commands report the current state.
+guessing that credentials expired. Telegram reports follow recovery for the
+sender's own Gateway and reply with progress, including when to check for 2FA.
+Once the API responds, Eyri retries the failed broker request and sends the
+original report automatically. Reports that need the same Gateway share the
+restart. If recovery stops or the ten-minute watch expires, Eyri replies with
+the reason the report could not finish.
 
 Gateway automatically restarts daily at 23:59 in the `TIME_ZONE` configured in
 `.env-ibkr-1` (currently UTC), replacing its scheduled logoff. This normally

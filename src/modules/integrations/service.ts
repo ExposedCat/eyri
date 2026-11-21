@@ -7,7 +7,7 @@ import { logFetch } from "../../utils/fetch_logging.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
 import { getIbkrHostPort } from "./ibkr/credentials.ts";
-import { gatewayRecovery } from "./ibkr/recovery.ts";
+import { type ReportGatewayRecovery, retryIbkrReport } from "./ibkr/recovery.ts";
 import { IntegrationDataError } from "../../utils/user_error.ts";
 import { trading212Adapter } from "./trading212/adapter.ts";
 import { enrichPortfolioWithVontobelQuotes, VontobelQuoteCache } from "../market_data/vontobel.ts";
@@ -134,20 +134,16 @@ async function mapIntegrationData<T>(
     database: Database,
     integration: Integration,
   ) => Promise<T[]>,
+  report?: ReportGatewayRecovery,
 ) {
   const results = await Promise.allSettled(
     integrations.map(async (integration) => {
-      const adapter = getAdapter(integration);
+      const request = () => fetcher(getAdapter(integration), database, integration);
       try {
-        return await fetcher(adapter, database, integration);
+        return await request();
       } catch (error) {
         if (integration.kind !== "ibkr") throw error;
-        const recovery = await gatewayRecovery.handleFailure(integration, error).catch((cause) => {
-          console.error("Gateway recovery could not be requested:", cause);
-          return null;
-        });
-        if (recovery === "retry") return await fetcher(adapter, database, integration);
-        throw recovery ?? error;
+        return await retryIbkrReport(integration, error, request, report);
       }
     }),
   );
@@ -185,12 +181,14 @@ export async function fetchIntegratedPortfolio(
   userId: number,
   merge = true,
   warrantQuotes = true,
+  report?: ReportGatewayRecovery,
 ) {
   const integrations = getUserIntegrations(database, userId);
   const positions = await mapIntegrationData(
     database,
     integrations,
     (_adapter, db, integration) => fetchIntegrationPortfolio(db, integration, warrantQuotes),
+    report,
   );
 
   return merge ? mergePositions(positions) : positions;
@@ -199,14 +197,14 @@ export async function fetchIntegratedPortfolio(
 export function fetchIntegratedAccountPerformances(
   database: Database, userId: number,
   positions: IntegrationPortfolioPosition[], orders: IntegrationOrder[],
-  options?: AccountPerformanceOptions,
+  options?: AccountPerformanceOptions, report?: ReportGatewayRecovery,
 ) {
   return mapIntegrationData(database, getUserIntegrations(database, userId), async (adapter, db, integration) => {
     if (!adapter.fetchAccountPerformance) return [];
     return [await adapter.fetchAccountPerformance(db, integration,
       positions.filter(p => p.integrationId === integration.id),
       orders.filter(o => o.integrationId === integration.id), options)];
-  });
+  }, report);
 }
 
 export function fetchIntegrationPortfolio(
@@ -263,12 +261,14 @@ export async function fetchIntegratedOrderHistory(
   database: Database,
   userId: number,
   options?: { refresh?: boolean; recent?: boolean },
+  report?: ReportGatewayRecovery,
 ) {
   const integrations = getUserIntegrations(database, userId);
   const orders = await mapIntegrationData(
     database,
     integrations,
     (adapter, db, integration) => adapter.fetchOrderHistory(db, integration, options),
+    report,
   );
 
   return orders.sort((a, b) => a.date.getTime() - b.date.getTime());
@@ -298,6 +298,8 @@ export async function fetchIntegratedCfdTransfers(
 export async function fetchIntegratedHistoryOrders(
   database: Database,
   userId: number,
+  _options?: { refresh?: boolean; recent?: boolean },
+  report?: ReportGatewayRecovery,
 ) {
-  return fetchIntegratedOrderHistory(database, userId);
+  return fetchIntegratedOrderHistory(database, userId, undefined, report);
 }

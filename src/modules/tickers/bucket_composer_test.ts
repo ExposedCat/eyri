@@ -11,7 +11,7 @@ import { saveRsuAward } from "../database/rsu.ts";
 import { setPortfolioVisibility } from "../database/visibility.ts";
 import { ibkrAdapter } from "../integrations/ibkr/adapter.ts";
 import { gatewayMonitor } from "../integrations/ibkr/gateway.ts";
-import { gatewayRecovery } from "../integrations/ibkr/recovery.ts";
+import { GatewayRecovery, gatewayRecovery } from "../integrations/ibkr/recovery.ts";
 import type { IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { getOrderTransactionKey } from "./portfolio.ts";
 import { tickersComposer } from "./composer.ts";
@@ -82,8 +82,10 @@ Deno.test("restart replies in a separate chain for each of the sender's gateways
   }
 });
 
-function harness(db: Database) {
-  const calls: { method: string; payload: Record<string, unknown> }[] = [];
+type TelegramCall = { method: string; payload: Record<string, unknown> };
+
+function harness(db: Database, onCall?: (call: TelegramCall) => void) {
+  const calls: TelegramCall[] = [];
   const bot = new Bot<CustomContext>("123:test", {
     botInfo: {
       id: 123,
@@ -98,10 +100,12 @@ function harness(db: Database) {
     },
   });
   bot.api.config.use((_previous, method, payload) => {
-    calls.push({
+    const call = {
       method,
       payload: payload as unknown as Record<string, unknown>,
-    });
+    };
+    calls.push(call);
+    onCall?.(call);
     return Promise.resolve({
       ok: true,
       result: {
@@ -193,6 +197,89 @@ function harness(db: Database) {
     },
   };
 }
+
+Deno.test("two Telegram reports share a restart, then each posts its original result in its reply chain", async () => {
+  const db = new Database(":memory:");
+  const originalRecovery = gatewayRecovery.handleFailure;
+  const originalPortfolio = ibkrAdapter.fetchPortfolio;
+  const approval = Promise.withResolvers<void>();
+  const results = Promise.withResolvers<void>();
+  let ready = false, restarts = 0, reports = 0, fetches = 0;
+  let nextHealthIsConnecting = true;
+  const recovery = new GatewayRecovery(
+    async () => {
+      if (!restarts) return { state: "unavailable", message: "Gateway is offline" };
+      if (!ready) return { state: "recovering", reason: "verification", message: "Waiting for 2FA approval" };
+      if (nextHealthIsConnecting) {
+        nextHealthIsConnecting = false;
+        return { state: "recovering", reason: "api_starting", message: "Connecting" };
+      }
+      return { state: "ready", message: "Ready" };
+    },
+    async () => { if (!ready) throw new Error("Gateway offline"); },
+    async () => { restarts++; },
+    () => {},
+    () => 0,
+    () => approval.promise,
+  );
+  try {
+    ensureSchema(db);
+    const userId = 123456789;
+    await findOrCreateUser(db, userId);
+    const saved = createIntegration({ database: db, userId, kind: "ibkr", credentials: { instanceUrl: "tcp://fixture:4003" } });
+    ok(saved.success);
+    gatewayRecovery.handleFailure = recovery.handleFailure.bind(recovery);
+    ibkrAdapter.fetchPortfolio = async (_db, integration) => {
+      fetches++;
+      if (!ready) throw new Error("IBKR disconnected");
+      return [{ integrationId: integration.id, integrationKind: "ibkr", account: "fixture",
+        ticker: "RECOVERED", assetCategory: "STK", currency: "USD",
+        amount: 1, averageUnitPrice: 100, currentPrice: 120, totalInput: 100, totalNow: 120,
+        unrealizedPnl: 20, realizedPnl: 0, dailyPnl: 1, dailyPnlPercentage: 1,
+        dailyPnlBaseline: 119, openedAt: new Date("2025-01-01") }];
+    };
+    const bot = harness(db, ({ method }) => {
+      if (method === "sendRichMessage" && ++reports === 2) results.resolve();
+    });
+    await bot.command("/perf stocks", userId, undefined, false, 42);
+    await bot.command("/dpnl stocks", userId, undefined, false, 42);
+    equal(restarts, 1);
+    equal(reports, 0);
+    equal(fetches, 2);
+
+    ready = true;
+    approval.resolve();
+    await results.promise;
+    equal(restarts, 1);
+    // Both original reports can reuse the same in-flight portfolio retry.
+    equal(fetches, 3);
+
+    const byParent = new Map(bot.calls.map((call, index) => [
+      (call.payload.reply_parameters as { message_id: number }).message_id,
+      { ...call, id: 101 + index },
+    ]));
+    for (const commandId of [1, 2]) {
+      const messages: string[] = [];
+      let parentId = commandId;
+      for (let call = byParent.get(parentId); call; call = byParent.get(parentId)) {
+        equal(call.payload.message_thread_id, 42);
+        messages.push(String(call.payload.text ?? (call.payload.rich_message as { html: string }).html));
+        parentId = call.id;
+      }
+      if (commandId === 1) equal(messages.shift(), "Restarting IB Gateway…");
+      match(messages[0], /^Waiting for 2FA approval/);
+      equal(messages[1], "Connecting to IBKR…");
+      match(messages[2], /RECOVERED/);
+      equal(messages.length, 3);
+    }
+  } finally {
+    ready = true;
+    approval.resolve();
+    gatewayRecovery.handleFailure = originalRecovery;
+    ibkrAdapter.fetchPortfolio = originalPortfolio;
+    db.close();
+  }
+});
 
 Deno.test("RSU commands report a halted IBKR Gateway", async () => {
   const db = new Database(":memory:");

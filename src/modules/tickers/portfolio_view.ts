@@ -1,4 +1,5 @@
 import type { Database } from "../database/setup.ts";
+import type { ReportGatewayRecovery } from "../integrations/ibkr/recovery.ts";
 import {
   getUserBucket,
   getUserBuckets,
@@ -119,6 +120,7 @@ type Options = {
   // Stock-only reports still need broker holdings for bucket/funding calculations,
   // but must not depend on issuer quotes for excluded warrants.
   warrantQuotes?: boolean;
+  gatewayRecovery?: ReportGatewayRecovery;
 };
 type Runtime = {
   request?: typeof fetch;
@@ -168,12 +170,13 @@ async function loadPortfolioView(
         const [ownerPositions, ownerOrders] = await Promise.all([
           options.positions === false
             ? []
-            : fetchers.portfolio(db, ownerId, false, options.warrantQuotes),
+            : fetchers.portfolio(db, ownerId, false, options.warrantQuotes, options.gatewayRecovery),
           needsOrders
             ? (options.displayHistory && !options.refreshHistory ? fetchers.history : fetchers.orders)(
               db,
               ownerId,
               { refresh: options.refreshHistory, recent: options.recentHistory },
+              options.gatewayRecovery,
             )
             : [],
         ]);
@@ -227,7 +230,7 @@ async function loadPortfolioView(
         const fundingErrors: string[] = [];
         if (options.accountPerformance && names.has(null) && fetchers.accounts) {
           try {
-            accountPerformances = await fetchers.accounts(db, ownerId, livePositions, sourceOrders, options.accountPerformanceOptions);
+            accountPerformances = await fetchers.accounts(db, ownerId, livePositions, sourceOrders, options.accountPerformanceOptions, options.gatewayRecovery);
           } catch (error) {
             if (options.accountPerformanceOptions?.purpose !== "benchmark") throw error;
             const reference = crypto.randomUUID().slice(0, 8);

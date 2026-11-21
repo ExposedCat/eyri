@@ -3,6 +3,7 @@ import { fetchConversionRates } from "../../utils/exchange_rates.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { selectPortfolioSubject } from "../bot/portfolio_subject.ts";
 import { logUserError, replyUserError } from "../bot/errors.ts";
+import { withIbkrReportRecovery } from "../bot/ibkr_report.ts";
 import { httpError, userErrorMessage } from "../../utils/user_error.ts";
 import type { Database } from "../database/setup.ts";
 import { HistoricalDataError } from "../market_data/errors.ts";
@@ -76,6 +77,7 @@ async function datasetFor(ctx: CustomContext, bucketName: string | null,
     refreshHistory, recentHistory: true, retryHistory: false,
     history: true, accountPerformance: true, warrantQuotes: selection.filter !== "stocks",
     accountPerformanceOptions: selection.kind !== "worth" ? { purpose: "benchmark" } : undefined,
+    gatewayRecovery: ctx.ibkrReportRecovery,
   });
   const matches = selection.filter === "stocks" ? isStockPosition : selection.filter === "options" ? isOptionPosition : () => true;
   const subject = ctx.portfolioSubject ?? ctx.from!;
@@ -144,7 +146,7 @@ async function replyChartError(ctx: CustomContext, error: unknown) {
     const line = `\n${failure.ticker}: ${detail}`;
     message += line;
   }
-  await ctx.reply(message);
+  await ctx.reply(message, await ctx.ibkrReportRecovery?.replyOptions());
 }
 
 function chartCaption(datasets: AllTimeDataset[]): string | undefined {
@@ -200,7 +202,7 @@ export function createChartComposer(
       { parse_mode: "HTML" },
     );
   });
-  composer.command("chart", async (ctx) => {
+  composer.command("chart", withIbkrReportRecovery, async (ctx) => {
     if (!ctx.dbEntities.user || !ctx.from || !ctx.chat) return;
     const selection = parseChartArgs(ctx.match);
     if (!selection) {
@@ -243,6 +245,7 @@ export function createChartComposer(
         };
         const topic = ctx.message?.is_topic_message ? { message_thread_id: ctx.message.message_thread_id } : {};
         try {
+          await ctx.ibkrReportRecovery?.replyOptions();
           await api.sendWidget({ chat_id: ctx.chat.id, html, height: 0, is_shared: true, ...topic });
         } catch (error) {
           if (telegramError(error, 400, "INPUT_MEDIA_WIDGET_NOT_ALLOWED")) {
@@ -265,7 +268,7 @@ export function createChartComposer(
       try {
         const message = await ctx.replyWithPhoto(
           new InputFile(image, "alltime.png"),
-          { caption: chartCaption([dataset]), reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
+          { ...await ctx.ibkrReportRecovery?.replyOptions(), caption: chartCaption([dataset]), reply_markup: buttons(id, [dataset], ctx.chat.type === "private") },
         );
         ctx.db.prepare(
           "UPDATE alltime_chart_sessions SET message_id = ? WHERE id = ?",

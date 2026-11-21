@@ -6,6 +6,7 @@ import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
 import { parsePerformanceArgs, parseReportArgs, type ReportFilter } from "./performance_command.ts";
 import type { CustomContext } from "../bot/types.ts";
 import { logUserError, replyUserError } from "../bot/errors.ts";
+import { withIbkrReportRecovery } from "../bot/ibkr_report.ts";
 import { richTextMessage, showRichMessage } from "../bot/rich.ts";
 import { selectPortfolioSubject } from "../bot/portfolio_subject.ts";
 import {
@@ -227,6 +228,7 @@ export async function fetchBucketedPositions(
 
   return (await fetchPortfolioView(ctx.db, userId, bucketName, {
     warrantQuotes: filter !== "stocks",
+    gatewayRecovery: ctx.ibkrReportRecovery,
   })).positions;
 }
 
@@ -242,6 +244,7 @@ async function fetchBucketedHistoryOrders(
   return (await fetchPortfolioView(ctx.db, userId, bucketName, {
     positions: false,
     displayHistory: true,
+    gatewayRecovery: ctx.ibkrReportRecovery,
   })).historyOrders;
 }
 
@@ -804,7 +807,7 @@ tickersComposer.command("removepack", async (ctx) => {
   }
 });
 
-tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
+tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], withIbkrReportRecovery, async (ctx) => {
 	if (!ctx.dbEntities.user || !ctx.from) {
 		await ctx.text("start");
 		return;
@@ -875,6 +878,8 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 			const quotes = await fetchIntegratedIbkrStockQuotes(
 				integrations,
 				vestings.map((vesting) => vesting.ticker),
+				undefined,
+				ctx.ibkrReportRecovery,
 			);
 			for (const [ticker, quote] of quotes) {
 				if (quote.price !== undefined) {
@@ -911,7 +916,7 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 	}
 });
 
-tickersComposer.command("portfolio", async (ctx) => {
+tickersComposer.command("portfolio", withIbkrReportRecovery, async (ctx) => {
 	const bucketName = await resolveBucketName(ctx);
 	if (bucketName === undefined || !ctx.dbEntities.user) return;
 	if (!hasPortfolioViewIntegrations(ctx.db, ctx.dbEntities.user.userId, bucketName)) {
@@ -930,13 +935,13 @@ tickersComposer.command("portfolio", async (ctx) => {
 		}
 		const image = await renderPortfolioChart(chart);
 		// Preserve the original PNG so text stays sharp when zooming.
-		await ctx.replyWithDocument(new InputFile(image, "portfolio.png"));
+		await ctx.replyWithDocument(new InputFile(image, "portfolio.png"), await ctx.ibkrReportRecovery?.replyOptions());
 	} catch (error) {
 		await replyIntegrationError(ctx, error);
 	}
 });
 
-tickersComposer.command("dump_options", async (ctx) => {
+tickersComposer.command("dump_options", withIbkrReportRecovery, async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
     return;
@@ -961,7 +966,7 @@ tickersComposer.command("dump_options", async (ctx) => {
   }
 });
 
-tickersComposer.command("dump_tickers", async (ctx) => {
+tickersComposer.command("dump_tickers", withIbkrReportRecovery, async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
     return;
@@ -986,7 +991,7 @@ tickersComposer.command("dump_tickers", async (ctx) => {
   }
 });
 
-tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "worth", "worthnumber"], async (ctx) => {
+tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "worth", "worthnumber"], withIbkrReportRecovery, async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
@@ -1039,6 +1044,7 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
         ctx.db, ctx.dbEntities.user.userId, bucketName, {
           history: true, accountPerformance: args.filter === null,
           warrantQuotes: args.filter !== "stocks",
+          gatewayRecovery: ctx.ibkrReportRecovery,
         },
       );
       performanceList = await buildIntegratedAllTimePerformanceList({
@@ -1052,7 +1058,9 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
       });
     } else {
       const worthView = showCurrentValue && args.filter === null
-        ? await fetchPortfolioView(ctx.db, ctx.dbEntities.user.userId, bucketName, { history: true, accountPerformance: true }) : null;
+        ? await fetchPortfolioView(ctx.db, ctx.dbEntities.user.userId, bucketName, {
+          history: true, accountPerformance: true, gatewayRecovery: ctx.ibkrReportRecovery,
+        }) : null;
       const positions = (worthView?.positions ?? await fetchBucketedPositions(ctx, bucketName, args.filter)).filter(matchesFilter);
       performanceList = isDaily
         ? await buildIntegratedDailyPerformanceList({ currency, positions, numberOnly, ...preferences, formatTicker })
@@ -1078,7 +1086,7 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
   }
 });
 
-tickersComposer.command("sold", async (ctx) => {
+tickersComposer.command("sold", withIbkrReportRecovery, async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
@@ -1107,7 +1115,9 @@ tickersComposer.command("sold", async (ctx) => {
 
   try {
     const view = await fetchPortfolioView(
-      ctx.db, ctx.dbEntities.user.userId, bucketName, { positions: false, history: true },
+      ctx.db, ctx.dbEntities.user.userId, bucketName, {
+        positions: false, history: true, gatewayRecovery: ctx.ibkrReportRecovery,
+      },
     );
     const performanceList = await buildIntegratedSoldPerformanceList({
       currency: ctx.dbEntities.user.currency ?? "USD",
@@ -1130,7 +1140,7 @@ tickersComposer.command("sold", async (ctx) => {
   }
 });
 
-tickersComposer.command("history", async (ctx) => {
+tickersComposer.command("history", withIbkrReportRecovery, async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;
@@ -1175,7 +1185,7 @@ tickersComposer.command("history", async (ctx) => {
   }
 });
 
-tickersComposer.command("when", async (ctx) => {
+tickersComposer.command("when", withIbkrReportRecovery, async (ctx) => {
   if (!ctx.dbEntities.user || !ctx.from) {
     await ctx.text("start");
     return;

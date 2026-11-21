@@ -9,9 +9,17 @@ const DEFAULT_PODMAN_SOCKET_PATH = "/run/podman/podman.sock";
 const RESTART_FOLLOW_TIMEOUT_MS = 10 * 60_000;
 const READINESS_POLL_MS = 2_000;
 
+type GatewayProgress = (message: string, ready?: boolean) => void;
+
+export type ReportGatewayRecovery = {
+  userId: number;
+  onProgress: (host: string, message: string) => void;
+};
+
 type RestartFollow = {
   message: string;
-  listeners: Set<(message: string) => void>;
+  ready?: boolean;
+  listeners: Set<GatewayProgress>;
   completion: Promise<void>;
 };
 
@@ -210,25 +218,33 @@ export class GatewayRecovery {
     return request;
   }
 
-  restartAndFollow(integration: Integration, onProgress: (message: string) => void): Promise<void> {
+  restartAndFollow(integration: Integration, onProgress: GatewayProgress): Promise<void> {
+    return this.followGateway(integration, onProgress);
+  }
+
+  private followGateway(integration: Integration, onProgress: GatewayProgress, health?: GatewayHealth): Promise<void> {
     const host = getRestartContainerName(integration.credentials);
     const active = this.followingRestarts.get(host);
     if (active) {
       active.listeners.add(onProgress);
-      onProgress(active.message);
+      onProgress(active.message, active.ready);
       return active.completion;
     }
 
+    const pending = this.pendingRestarts.get(host);
     const follow: RestartFollow = {
-      message: "Restarting IB Gateway…",
+      message: health
+        ? restartProgressMessage(health) ?? "Waiting for IB Gateway to come back…"
+        : "Restarting IB Gateway…",
       listeners: new Set([onProgress]),
       completion: Promise.resolve().then(async () => {
         try {
-          await this.restart(integration);
+          if (pending) await pending;
+          else if (!health) await this.restart(integration);
         } catch (cause) {
           throw new UserFacingError(
             "I couldn’t restart IB Gateway. Ask the bot admin to check it.",
-            { cause },
+            { cause, code: "ibkr_restart_failed" },
           );
         }
         const result = await this.waitForReadiness(
@@ -241,33 +257,48 @@ export class GatewayRecovery {
           },
         );
         if (result.outcome === "ready") {
-          publish("IB Gateway is ready. You can run your commands again.");
+          publish("IB Gateway is ready.", true);
         } else if (result.outcome === "blocked") {
-          publish("IB Gateway stopped trying to sign in. Ask the bot admin to check the login.");
+          throw new UserFacingError("IB Gateway stopped trying to sign in. Ask the bot admin to check the login.");
         } else {
-          publish(result.health.reason === "verification"
+          throw new UserFacingError(result.health.reason === "verification"
             ? "I stopped checking after 10 minutes. IB Gateway was still waiting for 2FA approval."
             : "IB Gateway still wasn’t ready after 10 minutes. Ask the bot admin to check its status.");
         }
       }).finally(() => this.followingRestarts.delete(host)),
     };
-    const publish = (message: string) => {
+    const publish = (message: string, ready?: boolean) => {
       if (follow.message === message) return;
       follow.message = message;
-      for (const listener of follow.listeners) listener(message);
+      follow.ready = ready;
+      for (const listener of follow.listeners) listener(message, ready);
     };
     this.followingRestarts.set(host, follow);
     onProgress(follow.message);
     return follow.completion;
   }
 
-  // User commands request recovery once per host and return as soon as the
-  // restart request is written. They never wait through the login process.
-  async handleFailure(integration: Integration, error: unknown): Promise<UserFacingError | "retry" | null> {
+  private async followReport(integration: Integration, onProgress: GatewayProgress, health?: GatewayHealth) {
+    try {
+      await this.followGateway(integration, onProgress, health);
+      return "retry" as const;
+    } catch (error) {
+      if (error instanceof UserFacingError) return error;
+      throw error;
+    }
+  }
+
+  async handleFailure(integration: Integration, error: unknown, report?: ReportGatewayRecovery): Promise<UserFacingError | "retry" | null> {
     const message = error instanceof Error ? error.message : String(error);
     if (!(error instanceof GatewayError) && !(error instanceof UserFacingError && error.code === "ibkr_connection") &&
       !/IBKR.*(?:disconnect|connection.*reset|auth.*expir|session.*expir)|(?:connecting to|waiting for) IBKR|ECONNREFUSED|ECONNRESET|EHOSTUNREACH/i.test(message)) return null;
     const host = getRestartContainerName(integration.credentials);
+    const onProgress: GatewayProgress | undefined = report?.userId === integration.userId
+      ? (message, ready) => { if (!ready) report.onProgress(host, message); }
+      : undefined;
+    if (onProgress && (this.pendingRestarts.has(host) || this.followingRestarts.has(host))) {
+      return await this.followReport(integration, onProgress);
+    }
     if (this.pendingRestarts.has(host)) {
       try { await this.restartRequested.get(host); }
       catch (cause) { return new UserFacingError("Gateway restart failed. Ask admin to check /status.", { cause }); }
@@ -276,6 +307,9 @@ export class GatewayRecovery {
     const follow = this.followingRestarts.get(host);
     if (follow) return new UserFacingError(follow.message, { cause: error });
     const health = await this.health(host);
+    if (health.state === "recovering" && onProgress) {
+      return await this.followReport(integration, onProgress, health);
+    }
     if (health.state === "recovering" || health.state === "blocked" && !/auth.*expir|session.*expir/i.test(message)) {
       return new UserFacingError(health.message, { cause: error });
     }
@@ -285,6 +319,9 @@ export class GatewayRecovery {
       await this.probe(integration);
       apiReady = true;
     } catch { /* Both the user request and independent API probe failed. */ }
+    if (onProgress && (this.pendingRestarts.has(host) || this.followingRestarts.has(host))) {
+      return await this.followReport(integration, onProgress);
+    }
     if (this.pendingRestarts.has(host)) {
       try { await this.restartRequested.get(host); }
       catch (cause) { return new UserFacingError("Gateway restart failed. Ask admin to check /status.", { cause }); }
@@ -297,11 +334,19 @@ export class GatewayRecovery {
       return "retry";
     }
     const previous = this.automaticAttempts.get(host);
+    if (onProgress && previous && !previous.failure && this.now() - previous.at < 180_000) {
+      return await this.followReport(integration, onProgress, health);
+    }
     if (previous && this.now() - previous.at < 180_000) return new UserFacingError(previous.failure
       ? "Gateway restart failed. Ask admin to check /status."
       : "IBKR API is still unreachable. Retry shortly.");
     const attempt = { at: this.now(), failure: undefined as unknown };
     this.automaticAttempts.set(host, attempt);
+    if (onProgress) {
+      const result = await this.followReport(integration, onProgress);
+      if (result instanceof UserFacingError && result.code === "ibkr_restart_failed") attempt.failure = result;
+      return result;
+    }
     const completion = this.restart(integration);
     void completion.catch(cause => { attempt.failure = cause; console.error(`Gateway restart failed for ${host}:`, cause); });
     try { await this.restartRequested.get(host); }
@@ -380,3 +425,17 @@ export class GatewayRecovery {
 }
 
 export const gatewayRecovery = new GatewayRecovery();
+
+export async function retryIbkrReport<T>(
+  integration: Integration,
+  error: unknown,
+  request: () => Promise<T>,
+  report?: ReportGatewayRecovery,
+): Promise<T> {
+  const recovery = await gatewayRecovery.handleFailure(integration, error, report).catch((cause) => {
+    console.error("Gateway recovery could not be requested:", cause);
+    return null;
+  });
+  if (recovery === "retry") return await request();
+  throw recovery ?? error;
+}
