@@ -1,4 +1,4 @@
-import { equal, match, rejects } from "node:assert/strict";
+import { deepStrictEqual, equal, match, rejects } from "node:assert/strict";
 import type { Integration } from "../../database/integration.ts";
 import { GatewayError, type GatewayHealth } from "./gateway.ts";
 
@@ -165,6 +165,75 @@ Deno.test("manual restart failures can be retried immediately", async () => {
   await rejects(recovery.restart(integration), /Podman unavailable/);
   equal(await recovery.restart(integration), "gateway: restarted.");
   equal(attempts, 2);
+});
+
+Deno.test("restart progress follows approval through a successful API check and shares concurrent requests", async () => {
+  const waiting = Promise.withResolvers<void>();
+  const approved = Promise.withResolvers<void>();
+  const verification: GatewayHealth = { ...health("recovering"), reason: "verification" };
+  const observations = [verification, verification, { ...health("recovering"), reason: "api_starting" as const }];
+  let now = 0, restarts = 0, probes = 0, polls = 0;
+  const recovery = new GatewayRecovery(
+    async () => observations[polls++] ?? health("ready"),
+    async () => { if (++probes === 1) throw new Error("still connecting"); },
+    async () => { restarts++; },
+    () => {},
+    () => now,
+    async (ms) => {
+      if (polls === 1) {
+        waiting.resolve();
+        await approved.promise;
+      }
+      now += ms;
+    },
+  );
+  const first: string[] = [], joined: string[] = [];
+  const completion = recovery.restartAndFollow(integration, (message) => first.push(message));
+  equal(first[0], "Restarting IB Gateway…");
+  await waiting.promise;
+  const second = recovery.restartAndFollow({ ...integration, id: 2 }, (message) => joined.push(message));
+  equal(second, completion);
+  equal(joined[0], first[1]);
+  match(joined[0], /^Waiting for 2FA approval/);
+  const error = new GatewayError("gateway", { ...health("unavailable"), reason: "health_unavailable" });
+  equal((await recovery.handleFailure(integration, error))?.userMessage, joined[0]);
+  equal(probes, 0);
+  approved.resolve();
+  await completion;
+
+  deepStrictEqual(first, [
+    "Restarting IB Gateway…",
+    "Waiting for 2FA approval. If IBKR sends a prompt, approve it in the app.",
+    "Connecting to IBKR…",
+    "IB Gateway is ready. You can run your commands again.",
+  ]);
+  deepStrictEqual(joined, first.slice(1));
+  equal(restarts, 1);
+  equal(probes, 2);
+});
+
+Deno.test("restart progress reports a login halt or a timeout without claiming readiness", async () => {
+  for (const [status, message] of [
+    [{ ...health("blocked"), reason: "halted" }, /stopped trying to sign in/],
+    [{ ...health("recovering"), reason: "verification" }, /still waiting for 2FA approval/],
+    [health("unavailable"), /still wasn’t ready after 10 minutes/],
+  ] as const) {
+    let now = 0, restarts = 0;
+    const recovery = new GatewayRecovery(
+      async () => status,
+      async () => { throw new Error("API offline"); },
+      async () => { restarts++; },
+      () => {},
+      () => now,
+      async (ms) => { now += ms; },
+    );
+    const updates: string[] = [];
+    await recovery.restartAndFollow(integration, (update) => updates.push(update));
+    match(updates.at(-1)!, message);
+    equal(now, status.state === "blocked" ? 0 : 600_000);
+    equal(updates.length, status.state === "blocked" ? 2 : 3);
+    equal(restarts, 1);
+  }
 });
 
 Deno.test("a failed restart can be retried immediately without force or a cooldown", async () => {

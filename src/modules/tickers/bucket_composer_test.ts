@@ -1,4 +1,4 @@
-import { equal, match, ok } from "node:assert/strict";
+import { deepStrictEqual, equal, match, ok } from "node:assert/strict";
 import { Database } from "@db/sqlite";
 import { Bot } from "grammy";
 import type { CustomContext } from "../bot/types.ts";
@@ -15,6 +15,7 @@ import { gatewayRecovery } from "../integrations/ibkr/recovery.ts";
 import type { IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { getOrderTransactionKey } from "./portfolio.ts";
 import { tickersComposer } from "./composer.ts";
+import { UserFacingError } from "../../utils/user_error.ts";
 
 function fundedReport(holdings: { i: string; q: number; value: number }[], deposits: number, cash = 0) {
   const flow = { id: 1, type: "bank", amount: deposits, value_usd: deposits, pay_d: "2025-01-01", currency: "USD", approved: 1, reverted: 0, phantom: 0, offbalance: null };
@@ -27,10 +28,13 @@ function fundedReport(holdings: { i: string; q: number; value: number }[], depos
     commissions: { detailed: [], total: {} }, securities_in_outs: [] } };
 }
 
-Deno.test("restart directly restarts each of the sender's gateways once without prompts", async () => {
+Deno.test("restart replies in a separate chain for each of the sender's gateways", async () => {
   const db = new Database(":memory:");
-  const originalRestart = gatewayRecovery.restart;
+  const originalRestart = gatewayRecovery.restartAndFollow;
   const restarted: number[] = [];
+  const progress = new Map<number, (message: string) => void>();
+  const first = Promise.withResolvers<void>();
+  const second = Promise.withResolvers<void>();
   try {
     ensureSchema(db);
     db.exec("INSERT INTO users(user_id) VALUES (123456789),(2)");
@@ -38,23 +42,42 @@ Deno.test("restart directly restarts each of the sender's gateways once without 
     createIntegration({ database: db, userId: 2, kind: "ibkr", credentials: { instanceUrl: "tcp://other:4003" } });
     createIntegration({ database: db, userId: 123456789, kind: "ibkr", credentials: { instanceUrl: "tcp://own:4003", accountId: "second" } });
     createIntegration({ database: db, userId: 123456789, kind: "ibkr", credentials: { instanceUrl: "tcp://own2:4003" } });
-    gatewayRecovery.restart = async (integration) => {
+    gatewayRecovery.restartAndFollow = (integration, post) => {
       restarted.push(integration.id);
-      return "Restarted.";
+      progress.set(integration.id, post);
+      post("Restarting IB Gateway…");
+      return integration.id === 1 ? first.promise : second.promise;
     };
     const bot = harness(db);
-    await bot.command("/restart");
+    await bot.command("/restart force", 123456789, undefined, false, 42);
     equal(restarted.join(","), "1,4");
     equal(bot.calls.length, 2);
-    for (const call of bot.calls) {
-      equal(call.payload.text, "Restarted.");
+
+    progress.get(1)!("Waiting for 2FA approval.");
+    progress.get(1)!("Connecting to IBKR…");
+    progress.get(1)!("IB Gateway is ready.");
+    first.resolve();
+    const failure = "I couldn’t restart IB Gateway. Ask the bot admin to check it.";
+    second.reject(new UserFacingError(failure));
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    for (const [host, messages] of [
+      ["own", ["Restarting IB Gateway…", "Waiting for 2FA approval.", "Connecting to IBKR…", "IB Gateway is ready."]],
+      ["own2", ["Restarting IB Gateway…", failure]],
+    ] as const) {
+      const replies = bot.calls.flatMap(({ payload }, index) =>
+        String(payload.text).startsWith(`${host} · `) ? [{ payload, id: 101 + index }] : []
+      );
+      deepStrictEqual(replies.map(({ payload }) => payload.text), messages.map((message) => `${host} · ${message}`));
+      let parentId = 1;
+      for (const { payload, id } of replies) {
+        deepStrictEqual(payload.reply_parameters, { message_id: parentId, allow_sending_without_reply: true });
+        equal(payload.message_thread_id, 42);
+        parentId = id;
+      }
     }
-    // Existing clients using the old force argument still restart directly.
-    await bot.command("/restart force");
-    equal(restarted.join(","), "1,4,1,4");
-    equal(bot.calls.length, 4);
   } finally {
-    gatewayRecovery.restart = originalRestart;
+    gatewayRecovery.restartAndFollow = originalRestart;
     db.close();
   }
 });
@@ -82,7 +105,7 @@ function harness(db: Database) {
     return Promise.resolve({
       ok: true,
       result: {
-        message_id: 100,
+        message_id: 100 + calls.length,
         date: 1,
         chat: { id: -1001, type: "supergroup" },
       },
@@ -112,6 +135,7 @@ function harness(db: Database) {
       userId = 123456789,
       replyUserId?: number,
       replyBot = false,
+      topicId?: number,
     ) {
       const chat = {
         id: -1001,
@@ -126,6 +150,7 @@ function harness(db: Database) {
           chat,
           from: from(userId),
           text,
+          ...(topicId === undefined ? {} : { message_thread_id: topicId, is_topic_message: true }),
           entities: [{
             type: "bot_command",
             offset: 0,

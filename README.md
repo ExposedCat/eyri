@@ -60,12 +60,12 @@ price or error, allowing trailing last-price ticks to supersede a close price.
 Best-effort daily P/L waits at most five seconds and keeps listening through
 initial unset updates; missing P/L remains unavailable.
 
-`/restart` immediately restarts each distinct gateway belonging to the sender,
-regardless of its health or login state. It allows 90 seconds for graceful logout
-and replies when the container restart completes, without waiting for API
-readiness or asking for confirmation. Manual restart requests have no cooldown;
-concurrent requests share the same in-progress container restart. Use `/status`
-to check API readiness after restarting.
+`/restart` restarts each distinct gateway belonging to the sender. The bot replies
+to the command immediately and posts follow-up replies as sign-in progresses. If
+IBKR needs 2FA, the bot tells you when to check the app. It reports readiness once
+the IBKR API responds, or explains if sign-in stops or the ten-minute watch expires.
+The container gets 90 seconds for graceful logout before the readiness checks begin.
+Concurrent requests for the same gateway follow the restart already in progress.
 
 The background watchdog checks controller health every 30 seconds and attempts
 recovery after two minutes of persistent unreachability. It leaves authentication
@@ -989,8 +989,8 @@ share the restart, and repeated failures have a three-minute retry interval.
 An active controller login/recovery is allowed to finish. An unreachable HTTP
 health endpoint does not restart a working API. A reported expired session can
 request recovery; a generic halted state is reported as stopped login, without
-guessing that credentials expired. Restart requests return once dispatched;
-subsequent commands report the current state.
+guessing that credentials expired. Automatic restart requests from reports return
+once dispatched. Subsequent commands report the current state.
 
 Gateway automatically restarts daily at 23:59 in the `TIME_ZONE` configured in
 `.env-ibkr-1` (currently UTC), replacing its scheduled logoff. This normally

@@ -1,10 +1,11 @@
 import { Composer, InputFile } from "grammy";
 import { fetchConversionRates } from "../../utils/exchange_rates.ts";
+import { UserFacingError } from "../../utils/user_error.ts";
 import { buildPortfolioChart, renderPortfolioChart } from "./portfolio_chart.ts";
 import { portfolioPositionsInCurrency } from "../integrations/usd.ts";
 import { parsePerformanceArgs, parseReportArgs, type ReportFilter } from "./performance_command.ts";
 import type { CustomContext } from "../bot/types.ts";
-import { replyUserError } from "../bot/errors.ts";
+import { logUserError, replyUserError } from "../bot/errors.ts";
 import { richTextMessage, showRichMessage } from "../bot/rich.ts";
 import { selectPortfolioSubject } from "../bot/portfolio_subject.ts";
 import {
@@ -31,6 +32,7 @@ import { fetchPortfolioView, hasPortfolioViewIntegrations } from "./portfolio_vi
 import {
   getUserIntegrations,
   hasUserIntegrations,
+  type Integration,
 } from "../database/integration.ts";
 import { fetchIntegratedHistoryOrders } from "../integrations/service.ts";
 import { gatewayRecovery, getRestartContainerName } from "../integrations/ibkr/recovery.ts";
@@ -435,10 +437,6 @@ async function replyIntegrationError(ctx: CustomContext, error: unknown) {
   await replyUserError(ctx, error);
 }
 
-async function replyRestartError(ctx: CustomContext, error: unknown) {
-  await replyUserError(ctx, error);
-}
-
 tickersComposer.command("buckets", async (ctx) => {
   if (!ctx.dbEntities.user) {
     await ctx.text("start");
@@ -633,8 +631,13 @@ tickersComposer.callbackQuery(BUCKET_TOGGLE_PATTERN, async (ctx) => {
 });
 
 tickersComposer.command("restart", async (ctx) => {
+  const { message_id: commandId, message_thread_id: topicId, is_topic_message } = ctx.msg;
+  const reply = (text: string, messageId = commandId) => ctx.reply(text, {
+    ...(is_topic_message ? { message_thread_id: topicId } : {}),
+    reply_parameters: { message_id: messageId, allow_sending_without_reply: true },
+  });
   if (!ctx.dbEntities.user) {
-    await ctx.text("start");
+    await reply("Run /start to set up Eyri before restarting IB Gateway.");
     return;
   }
 
@@ -644,19 +647,45 @@ tickersComposer.command("restart", async (ctx) => {
       ctx.dbEntities.user.userId,
     ).filter((item) => item.kind === "ibkr");
     if (!integrations.length) {
-      throw new Error("IBKR integration is not configured");
+      await reply("You haven’t connected an IBKR account yet. Use /integrations to add one.");
+      return;
     }
 
-    const restartedHosts = new Set<string>();
+    const gateways = new Map<string, Integration>();
+    const initialReplies = [];
     for (const integration of integrations) {
-      const host = getRestartContainerName(integration.credentials);
-      if (restartedHosts.has(host)) continue;
-      await ctx.reply(await gatewayRecovery.restart(integration));
-      restartedHosts.add(host);
+      try {
+        const host = getRestartContainerName(integration.credentials);
+        if (!gateways.has(host)) gateways.set(host, integration);
+      } catch (error) {
+        logUserError(ctx, error);
+        initialReplies.push(reply("I couldn’t find the address for one of your IB Gateways. Check it in /integrations."));
+      }
     }
 
+    for (const [host, integration] of gateways) {
+      let replyTo = commandId;
+      let sent = Promise.resolve();
+      const post = (message: string) => {
+        const text = gateways.size > 1 ? `${host} · ${message}` : message;
+        sent = sent.then(async () => {
+          const response = await reply(text, replyTo);
+          replyTo = response.message_id;
+        }).catch((error) => logUserError(ctx, error));
+      };
+      // A slow login should not keep this Telegram update or the sender's queue open.
+      void gatewayRecovery.restartAndFollow(integration, post).catch((error) => {
+        logUserError(ctx, error);
+        post(error instanceof UserFacingError
+          ? error.userMessage
+          : "I couldn’t finish checking IB Gateway. Ask the bot admin to check its status.");
+      });
+      initialReplies.push(sent);
+    }
+    await Promise.all(initialReplies);
   } catch (error) {
-    await replyRestartError(ctx, error);
+    logUserError(ctx, error);
+    await reply("I couldn’t start the IB Gateway restart. Ask the bot admin to check it.");
   }
 });
 

@@ -6,6 +6,27 @@ import { ibkrSessions } from "./session.ts";
 import { probeIbkrApi } from "./adapter.ts";
 
 const DEFAULT_PODMAN_SOCKET_PATH = "/run/podman/podman.sock";
+const RESTART_FOLLOW_TIMEOUT_MS = 10 * 60_000;
+const READINESS_POLL_MS = 2_000;
+
+type RestartFollow = {
+  message: string;
+  listeners: Set<(message: string) => void>;
+  completion: Promise<void>;
+};
+
+function restartProgressMessage(health: GatewayHealth) {
+  switch (health.reason) {
+    case "starting": return "IB Gateway is starting up…";
+    case "login": return "Signing in to IBKR…";
+    case "verification":
+      return "Waiting for 2FA approval. If IBKR sends a prompt, approve it in the app.";
+    case "login_paused":
+      return "IBKR has paused sign-in. I’ll keep checking.";
+    case "reconnecting": return "Reconnecting to IBKR…";
+    default: return "Connecting to IBKR…";
+  }
+}
 
 function getPodmanSocketPath() {
   return Deno.env.get("PODMAN_SOCKET_PATH") ?? DEFAULT_PODMAN_SOCKET_PATH;
@@ -142,6 +163,7 @@ export async function restartGatewayContainer(containerName: string, onRequested
 export class GatewayRecovery {
   private pending = new Map<string, Promise<string>>();
   private pendingRestarts = new Map<string, Promise<string>>();
+  private followingRestarts = new Map<string, RestartFollow>();
   private restartRequested = new Map<string, Promise<void>>();
   private automaticAttempts = new Map<string, { at: number; failure?: unknown }>();
   constructor(
@@ -181,6 +203,54 @@ export class GatewayRecovery {
     return request;
   }
 
+  restartAndFollow(integration: Integration, onProgress: (message: string) => void): Promise<void> {
+    const host = getRestartContainerName(integration.credentials);
+    const active = this.followingRestarts.get(host);
+    if (active) {
+      active.listeners.add(onProgress);
+      onProgress(active.message);
+      return active.completion;
+    }
+
+    const follow: RestartFollow = {
+      message: "Restarting IB Gateway…",
+      listeners: new Set([onProgress]),
+      completion: Promise.resolve().then(async () => {
+        try {
+          await this.restart(integration);
+        } catch (cause) {
+          throw new UserFacingError(
+            "I couldn’t restart IB Gateway. Ask the bot admin to check it.",
+            { cause },
+          );
+        }
+        const result = await this.waitForReadiness(
+          integration,
+          host,
+          RESTART_FOLLOW_TIMEOUT_MS,
+          (health) => publish(restartProgressMessage(health)),
+        );
+        if (result.outcome === "ready") {
+          publish("IB Gateway is ready. You can run your commands again.");
+        } else if (result.outcome === "blocked") {
+          publish("IB Gateway stopped trying to sign in. Ask the bot admin to check the login.");
+        } else {
+          publish(result.health.reason === "verification"
+            ? "I stopped checking after 10 minutes. IB Gateway was still waiting for 2FA approval."
+            : "IB Gateway still wasn’t ready after 10 minutes. Ask the bot admin to check its status.");
+        }
+      }).finally(() => this.followingRestarts.delete(host)),
+    };
+    const publish = (message: string) => {
+      if (follow.message === message) return;
+      follow.message = message;
+      for (const listener of follow.listeners) listener(message);
+    };
+    this.followingRestarts.set(host, follow);
+    onProgress(follow.message);
+    return follow.completion;
+  }
+
   // User commands request recovery once per host and return as soon as the
   // restart request is written. They never wait through the login process.
   async handleFailure(integration: Integration, error: unknown): Promise<UserFacingError | null> {
@@ -193,6 +263,8 @@ export class GatewayRecovery {
       catch (cause) { return new UserFacingError("Gateway restart failed. Ask admin to check /status.", { cause }); }
       return new UserFacingError("Gateway is restarting. Please wait.");
     }
+    const follow = this.followingRestarts.get(host);
+    if (follow) return new UserFacingError(follow.message, { cause: error });
     const health = await this.health(host);
     if (health.state === "recovering" || health.state === "blocked" && !/auth.*expir|session.*expir/i.test(message)) {
       return new UserFacingError(health.message, { cause: error });
@@ -208,6 +280,8 @@ export class GatewayRecovery {
       catch (cause) { return new UserFacingError("Gateway restart failed. Ask admin to check /status.", { cause }); }
       return new UserFacingError("Gateway is restarting. Please wait.", { cause: error });
     }
+    const active = this.followingRestarts.get(host);
+    if (active) return new UserFacingError(active.message, { cause: error });
     const previous = this.automaticAttempts.get(host);
     if (previous && this.now() - previous.at < 180_000) return new UserFacingError(previous.failure
       ? "Gateway restart failed. Ask admin to check /status."
@@ -254,24 +328,39 @@ export class GatewayRecovery {
         return `${host}: API is ready; restart was unnecessary.`;
       } catch { /* The API failed even if the container looks ready. */ }
     }
+    const follow = this.followingRestarts.get(host);
+    if (follow) return `${host}: ${follow.message}`;
     await this.restart(integration);
-    const deadline = this.now() + 180_000;
-    let status: GatewayHealth = health;
-    while (this.now() < deadline) {
-      status = await this.health(host);
-      if (status.state === "blocked") return `${host}: ${status.message}`;
+    const result = await this.waitForReadiness(integration, host, 180_000);
+    if (result.outcome === "blocked") return `${host}: ${result.health.message}`;
+    if (result.outcome === "ready") return `${host}: API readiness confirmed.`;
+    return `${host}: restart completed, but API readiness is still unconfirmed. Login may need approval. The bot admin can check /status; avoid repeating the restart.`;
+  }
+
+  private async waitForReadiness(
+    integration: Integration,
+    host: string,
+    timeoutMs: number,
+    onHealth?: (health: GatewayHealth) => void,
+  ) {
+    const deadline = this.now() + timeoutMs;
+    while (true) {
+      const health = await this.health(host);
+      if (health.state === "blocked") return { outcome: "blocked", health } as const;
+      onHealth?.(health);
       if (
-        status.state === "ready" || status.state === "unknown" ||
-        status.state === "unavailable"
+        health.state === "ready" || health.state === "unknown" ||
+        health.state === "unavailable"
       ) {
         try {
           await this.probe(integration);
-          return `${host}: API readiness confirmed.`;
+          return { outcome: "ready", health } as const;
         } catch { /* Login can take several minutes, keep checking. */ }
       }
-      await this.sleep(2_000);
+      const remaining = deadline - this.now();
+      if (remaining <= 0) return { outcome: "timeout", health } as const;
+      await this.sleep(Math.min(remaining, READINESS_POLL_MS));
     }
-    return `${host}: restart completed, but API readiness is still unconfirmed. Login may need approval. The bot admin can check /status; avoid repeating the restart.`;
   }
 }
 
