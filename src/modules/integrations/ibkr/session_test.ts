@@ -70,6 +70,32 @@ Deno.test("connection failures fail fast during cooldown and recover on the next
   }
 });
 
+Deno.test("confirmed readiness clears the cooldown for that gateway and preserves healthy sessions", async () => {
+  const healthy = { ...config, clientId: 42 };
+  const offline = { ...config, host: "other" };
+  const api = new Api();
+  let connections = 0;
+  let available = false;
+  const sessions = new IbkrSessions(async ({ host, clientId }) => {
+    connections++;
+    if (host === offline.host || clientId !== healthy.clientId && !available) throw new Error("offline");
+    return (clientId === healthy.clientId ? api : new Api()) as unknown as IBApi;
+  }, async () => {}, () => 0);
+  try {
+    await sessions.run(healthy, async () => {});
+    await rejects(sessions.run(config, async () => {}), /offline/);
+    await rejects(sessions.run(offline, async () => {}), /offline/);
+    available = true;
+    sessions.resume(config.host);
+    await sessions.run(config, async () => {});
+    await rejects(sessions.run(offline, async () => {}), /offline/);
+    await sessions.run(healthy, async (reused) => equal(reused, api));
+    equal(connections, 4);
+  } finally {
+    sessions.close();
+  }
+});
+
 Deno.test("upstream disconnect discards subscriptions and reconnects; report errors do not trip the gateway circuit", async () => {
   let now = 0;
   const apis: Api[] = [];

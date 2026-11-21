@@ -75,7 +75,7 @@ export class GatewayMonitor {
         message: "IBKR verification pending. Complete Gateway login." };
       if (["INIT", "LAUNCHING", "AGENT_WAIT", "APP_DISCOVERY"].includes(health.state)) return {
         state: "recovering", reason: "starting", message: "Gateway is starting. Please wait." };
-      if (health.state === "LOGIN") return { state: "recovering", reason: "login",
+      if (health.state === "LOGIN" || health.state === "POST_LOGIN") return { state: "recovering", reason: "login",
         message: "IBKR is logging in. Please wait." };
       if (health.state === "UPSTREAM_DOWN" || health.upstream_connected === false) return {
         state: "recovering", reason: "reconnecting", message: health.upstream_recovery_active === false

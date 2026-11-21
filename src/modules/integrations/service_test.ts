@@ -7,6 +7,7 @@ import {
 import { ensureSchema } from "../database/setup.ts";
 import { freedom24Adapter } from "./freedom24/adapter.ts";
 import { ibkrAdapter } from "./ibkr/adapter.ts";
+import { gatewayRecovery } from "./ibkr/recovery.ts";
 import {
   fetchIntegratedOrderHistory,
   fetchIntegratedPortfolio,
@@ -392,6 +393,49 @@ Deno.test("2 Freedom24 + 2 IBKR accounts fetch independently and aggregate holdi
       freedom24Adapter.fetchOrderHistory,
       ibkrAdapter.fetchOrderHistory,
     ] = original;
+    db.close();
+  }
+});
+
+Deno.test("a report retries IBKR once when recovery confirms the API is reachable", async () => {
+  const db = new Database(":memory:");
+  const originalFetch = ibkrAdapter.fetchPortfolio;
+  const originalRecovery = gatewayRecovery.handleFailure;
+  let requests = 0;
+  let recoveryChecks = 0;
+  const disconnected = new Error("IBKR disconnected");
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users (user_id) VALUES (1)");
+    const { data: integration } = createIntegration({
+      database: db,
+      userId: 1,
+      kind: "ibkr",
+      credentials: { instanceUrl: "tcp://fixture:4003" },
+    });
+    ok(integration);
+    gatewayRecovery.handleFailure = async (_integration, error) => {
+      equal(error, disconnected);
+      recoveryChecks++;
+      return "retry";
+    };
+    const positions = [position(integration)];
+    ibkrAdapter.fetchPortfolio = async () => {
+      if (++requests % 2 === 1) throw disconnected;
+      return positions;
+    };
+    deepStrictEqual(await fetchIntegratedPortfolio(db, 1, false, false), positions);
+    equal(requests, 2);
+    ibkrAdapter.fetchPortfolio = async () => {
+      if (++requests % 2 === 1) throw disconnected;
+      throw new Error("IBKR returned no managed accounts");
+    };
+    await rejects(fetchIntegratedPortfolio(db, 1, false, false), /no managed accounts/);
+    equal(requests, 4);
+    equal(recoveryChecks, 2);
+  } finally {
+    ibkrAdapter.fetchPortfolio = originalFetch;
+    gatewayRecovery.handleFailure = originalRecovery;
     db.close();
   }
 });

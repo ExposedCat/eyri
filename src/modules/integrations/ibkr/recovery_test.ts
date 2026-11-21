@@ -1,6 +1,13 @@
 import { deepStrictEqual, equal, match, rejects } from "node:assert/strict";
 import type { Integration } from "../../database/integration.ts";
 import { GatewayError, type GatewayHealth } from "./gateway.ts";
+import { GatewayRecovery, restartGatewayContainer } from "./recovery.ts";
+import { GatewayWatchdog } from "./watchdog.ts";
+
+function failureMessage(result: Awaited<ReturnType<GatewayRecovery["handleFailure"]>>) {
+  if (result === "retry") throw new Error("Expected a user-facing error");
+  return result?.userMessage;
+}
 
 Deno.test("command recovery returns after dispatch, shares restarts, and never restarts an active login", async () => {
   let finish!: () => void;
@@ -11,14 +18,14 @@ Deno.test("command recovery returns after dispatch, shares restarts, and never r
     async (_host, requested) => { restarts++; requested?.(); await pending; }, () => {});
   try {
     const first = await recovery.handleFailure(integration, new GatewayError("gateway", state));
-    equal(first?.userMessage, "IBKR API is unreachable. Gateway restart requested; please wait.");
+    equal(failureMessage(first), "IBKR API is unreachable. Gateway restart requested; please wait.");
     const second = await recovery.handleFailure(integration, new GatewayError("gateway", state));
-    equal(second?.userMessage, "Gateway is restarting. Please wait.");
+    equal(failureMessage(second), "Gateway is restarting. Please wait.");
     equal(restarts, 1);
     equal(await recovery.handleFailure(integration, new Error("IBKR funding rows differ")), null);
   } finally { finish(); await recovery.restart(integration); }
   state = { state: "recovering", message: "IBKR is logging in. Please wait." };
-  equal((await recovery.handleFailure(integration, new GatewayError("gateway", state)))?.userMessage, state.message);
+  equal(failureMessage(await recovery.handleFailure(integration, new GatewayError("gateway", state))), state.message);
   equal(restarts, 1);
 });
 
@@ -26,14 +33,13 @@ Deno.test("command recovery preserves a healthy socket despite a broken HTTP che
   let restarts = 0;
   const down = { state: "unavailable" as const, message: "status unreachable" };
   const healthy = new GatewayRecovery(async () => down, async () => {}, async () => { restarts++; }, () => {});
-  equal((await healthy.handleFailure(integration, new GatewayError("gateway", down)))?.userMessage,
-    "IBKR API responds. Retry your command.");
+  equal(await healthy.handleFailure(integration, new GatewayError("gateway", down)), "retry");
   equal(restarts, 0);
   const failed = new GatewayRecovery(async () => down, async () => { throw new Error("offline"); },
     async () => { restarts++; throw new Error("socket denied"); }, () => {});
-  equal((await failed.handleFailure(integration, new GatewayError("gateway", down)))?.userMessage,
+  equal(failureMessage(await failed.handleFailure(integration, new GatewayError("gateway", down))),
     "Gateway restart failed. Ask admin to check /status.");
-  equal((await failed.handleFailure(integration, new GatewayError("gateway", down)))?.userMessage,
+  equal(failureMessage(await failed.handleFailure(integration, new GatewayError("gateway", down))),
     "Gateway restart failed. Ask admin to check /status.");
   equal(restarts, 1);
 });
@@ -43,15 +49,12 @@ Deno.test("only a reported expired session is called expired; an unknown login h
   let restarts = 0;
   const recovery = new GatewayRecovery(async () => halted, async () => { throw new Error("offline"); },
     async (_host, requested) => { restarts++; requested?.(); }, () => {});
-  equal((await recovery.handleFailure(integration, new GatewayError("gateway", halted)))?.userMessage, halted.message);
+  equal(failureMessage(await recovery.handleFailure(integration, new GatewayError("gateway", halted))), halted.message);
   equal(restarts, 0);
-  equal((await recovery.handleFailure(integration, new Error("IBKR session expired")))?.userMessage,
+  equal(failureMessage(await recovery.handleFailure(integration, new Error("IBKR session expired"))),
     "IBKR session expired. Gateway restart requested; please wait.");
   equal(restarts, 1);
 });
-import { GatewayRecovery, restartGatewayContainer } from "./recovery.ts";
-import { GatewayWatchdog } from "./watchdog.ts";
-
 const integration: Integration = {
   id: 1,
   userId: 1,
@@ -171,16 +174,24 @@ Deno.test("restart progress follows approval through a successful API check and 
   const waiting = Promise.withResolvers<void>();
   const approved = Promise.withResolvers<void>();
   const verification: GatewayHealth = { ...health("recovering"), reason: "verification" };
-  const observations = [verification, verification, { ...health("recovering"), reason: "api_starting" as const }];
+  const observations: GatewayHealth[] = [
+    health("unavailable"),
+    { ...health("recovering"), reason: "starting" },
+    { ...health("recovering"), reason: "login" },
+    verification,
+    health("unavailable"),
+    verification,
+    { ...health("recovering"), reason: "api_starting" },
+  ];
   let now = 0, restarts = 0, probes = 0, polls = 0;
   const recovery = new GatewayRecovery(
     async () => observations[polls++] ?? health("ready"),
-    async () => { if (++probes === 1) throw new Error("still connecting"); },
+    async () => { if (++probes < 4) throw new Error("still connecting"); },
     async () => { restarts++; },
     () => {},
     () => now,
     async (ms) => {
-      if (polls === 1) {
+      if (polls === 4) {
         waiting.resolve();
         await approved.promise;
       }
@@ -193,23 +204,25 @@ Deno.test("restart progress follows approval through a successful API check and 
   await waiting.promise;
   const second = recovery.restartAndFollow({ ...integration, id: 2 }, (message) => joined.push(message));
   equal(second, completion);
-  equal(joined[0], first[1]);
+  equal(joined[0], first.at(-1));
   match(joined[0], /^Waiting for 2FA approval/);
   const error = new GatewayError("gateway", { ...health("unavailable"), reason: "health_unavailable" });
-  equal((await recovery.handleFailure(integration, error))?.userMessage, joined[0]);
-  equal(probes, 0);
+  equal(failureMessage(await recovery.handleFailure(integration, error)), joined[0]);
+  equal(probes, 1);
   approved.resolve();
   await completion;
 
   deepStrictEqual(first, [
     "Restarting IB Gateway…",
+    "IB Gateway is starting up…",
+    "Signing in to IBKR…",
     "Waiting for 2FA approval. If IBKR sends a prompt, approve it in the app.",
     "Connecting to IBKR…",
     "IB Gateway is ready. You can run your commands again.",
   ]);
-  deepStrictEqual(joined, first.slice(1));
+  deepStrictEqual(joined, first.slice(3));
   equal(restarts, 1);
-  equal(probes, 2);
+  equal(probes, 4);
 });
 
 Deno.test("restart progress reports a login halt or a timeout without claiming readiness", async () => {
@@ -231,7 +244,7 @@ Deno.test("restart progress reports a login halt or a timeout without claiming r
     await recovery.restartAndFollow(integration, (update) => updates.push(update));
     match(updates.at(-1)!, message);
     equal(now, status.state === "blocked" ? 0 : 600_000);
-    equal(updates.length, status.state === "blocked" ? 2 : 3);
+    equal(updates.length, status.state === "recovering" ? 3 : 2);
     equal(restarts, 1);
   }
 });

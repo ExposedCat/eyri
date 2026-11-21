@@ -6,7 +6,7 @@ export function ibkrRequestError(error: unknown, code?: number): Error {
   const original = error instanceof Error ? error : new Error(String(error));
   if (original instanceof UserFacingError || code === undefined) return original;
   const disconnected = [502, 504, 1100, 1300].includes(code);
-  return new UserFacingError(disconnected ? "IBKR connection lost. Retry."
+  return new UserFacingError(disconnected ? "IBKR was unreachable while I was loading your report. Please try again."
     : `IBKR rejected the request (code ${code}). Ask admin to check /status.`,
     { detail: original.message, cause: original, code: disconnected ? "ibkr_connection" : "ibkr_api" });
 }

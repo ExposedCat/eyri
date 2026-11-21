@@ -185,7 +185,7 @@ const rules: [RegExp, string | ((match: RegExpMatchArray) => string)][] = [
   ],
   [
     /IBKR.*(?:disconnected|connection.*reset)|Timed out.*IBKR/i,
-    "IBKR connection interrupted. Retry.",
+    "IBKR was unreachable while I was loading your report. Please try again.",
   ],
   [
     /Freedom24.*does not cover.*lifetime/is,
@@ -611,9 +611,13 @@ export function userErrorMessage(
   if (error instanceof IntegrationDataError) {
     return [
       ...new Set(
-        error.failures.map((f) =>
-          `${f.publicLabel ?? f.label}: ${userErrorMessage(f.error, reference)}`
-        ),
+        error.failures.map((f) => {
+          const message = userErrorMessage(f.error, reference);
+          const label = f.publicLabel ?? f.label;
+          return message.startsWith(`${label} `) || message.startsWith(`${label}:`)
+            ? message
+            : `${label}: ${message}`;
+        }),
       ),
     ].join("\n");
   }

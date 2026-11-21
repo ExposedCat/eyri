@@ -22,7 +22,7 @@ Deno.test("public errors keep known causes and actions, hiding diagnostic detail
     publicLabel: "IBKR",
     error,
   }]);
-  equal(userErrorMessage(grouped), "IBKR: IBKR is logging in. Please wait.");
+  equal(userErrorMessage(grouped), "IBKR is logging in. Please wait.");
   equal(
     userErrorMessage(new Error("secret unexpected provider response"), "42"),
     "Unexpected bot error (42). Send this code to admin.",

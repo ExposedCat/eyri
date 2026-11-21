@@ -136,9 +136,19 @@ async function mapIntegrationData<T>(
   ) => Promise<T[]>,
 ) {
   const results = await Promise.allSettled(
-    integrations.map((integration) => {
+    integrations.map(async (integration) => {
       const adapter = getAdapter(integration);
-      return fetcher(adapter, database, integration);
+      try {
+        return await fetcher(adapter, database, integration);
+      } catch (error) {
+        if (integration.kind !== "ibkr") throw error;
+        const recovery = await gatewayRecovery.handleFailure(integration, error).catch((cause) => {
+          console.error("Gateway recovery could not be requested:", cause);
+          return null;
+        });
+        if (recovery === "retry") return await fetcher(adapter, database, integration);
+        throw recovery ?? error;
+      }
     }),
   );
 
@@ -149,11 +159,6 @@ async function mapIntegrationData<T>(
       data.push(...result.value);
     } else {
       const integration = integrations[index];
-      let failure = result.reason;
-      if (integration.kind === "ibkr") {
-        try { failure = await gatewayRecovery.handleFailure(integration, failure) ?? failure; }
-        catch (recoveryError) { console.error("Gateway recovery could not be requested:", recoveryError); }
-      }
       let label = `${integration.kind} integration #${index + 1}`;
       if (integration.kind === "ibkr") {
         label = `ibkr integration ID ${integration.id}`;
@@ -164,7 +169,7 @@ async function mapIntegrationData<T>(
       }
       const provider = { ibkr: "IBKR", f24: "Freedom24", t212: "Trading 212" }[integration.kind];
       const peers = integrations.filter(item => item.kind === integration.kind);
-      failures.push({ label, publicLabel: peers.length > 1 ? `${provider} #${peers.indexOf(integration) + 1}` : provider, error: failure });
+      failures.push({ label, publicLabel: peers.length > 1 ? `${provider} #${peers.indexOf(integration) + 1}` : provider, error: result.reason });
     }
   }
 

@@ -68,6 +68,7 @@ Deno.test("controller states produce distinct short messages without guessing an
   for (const [state, message] of [
     ["LAUNCHING", "Gateway is starting. Please wait."],
     ["LOGIN", "IBKR is logging in. Please wait."],
+    ["POST_LOGIN", "IBKR is logging in. Please wait."],
     ["TWO_FA", "IBKR verification pending. Complete Gateway login."],
     ["API_WAIT", "IBKR API is starting. Please wait."],
     ["UPSTREAM_DOWN", "IBKR is reconnecting. Please wait."],

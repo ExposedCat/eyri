@@ -125,6 +125,14 @@ export class IbkrSessions {
     this.sessions.clear();
   }
 
+  resume(host: string) {
+    for (const [key, session] of this.sessions) {
+      if (session.api || JSON.parse(key)[0] !== host) continue;
+      session.retryAt = 0;
+      session.error = undefined;
+    }
+  }
+
   reset(host: string) {
     for (const [key, session] of this.sessions) {
       if (JSON.parse(key)[0] !== host) continue;
