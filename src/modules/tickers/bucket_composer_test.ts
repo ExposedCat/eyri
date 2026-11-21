@@ -7,8 +7,10 @@ import { ensureSchema } from "../database/setup.ts";
 import { findOrCreateUser, setUserCurrency } from "../database/user.ts";
 import { getUserBucket, readBucketAssignments } from "../database/bucket.ts";
 import { createIntegration } from "../database/integration.ts";
+import { saveRsuAward } from "../database/rsu.ts";
 import { setPortfolioVisibility } from "../database/visibility.ts";
 import { ibkrAdapter } from "../integrations/ibkr/adapter.ts";
+import { gatewayMonitor } from "../integrations/ibkr/gateway.ts";
 import { gatewayRecovery } from "../integrations/ibkr/recovery.ts";
 import type { IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { getOrderTransactionKey } from "./portfolio.ts";
@@ -166,6 +168,46 @@ function harness(db: Database) {
     },
   };
 }
+
+Deno.test("RSU commands report a halted IBKR Gateway", async () => {
+  const db = new Database(":memory:");
+  const originalRead = gatewayMonitor.read;
+  const message = "IBKR login stopped. Ask admin to check Gateway login.";
+  try {
+    ensureSchema(db);
+    const userId = 123456789;
+    await findOrCreateUser(db, userId);
+    createIntegration({
+      database: db,
+      userId,
+      kind: "ibkr",
+      credentials: { instanceUrl: "tcp://fixture:4003" },
+    });
+    saveRsuAward(db, userId, {
+      ticker: "MSFT",
+      amount: 1,
+      price: 100,
+      awardDate: "2025-01-01",
+      vesting: [{ date: "2090-01-01", amount: 1 }],
+    });
+    gatewayMonitor.read = async () => ({
+      state: "blocked",
+      reason: "halted",
+      message,
+    });
+    const bot = harness(db);
+    for (const command of ["/rsu", "/rsu_at 01.01.2090"]) {
+      await bot.command(command);
+      equal(
+        bot.lastText(),
+        `Prices unavailable from all IBKR integrations. ${message}`,
+      );
+    }
+  } finally {
+    gatewayMonitor.read = originalRead;
+    db.close();
+  }
+});
 
 Deno.test("reply reports fetch only the public subject's holdings and switch back immediately when made private", async () => {
   const db = new Database(":memory:");

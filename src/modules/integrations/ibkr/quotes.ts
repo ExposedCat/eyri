@@ -1,6 +1,7 @@
 import { EventName, IBApi, SecType } from "@stoqey/ib";
 import type { Integration } from "../../database/integration.ts";
 import { logFetch } from "../../../utils/fetch_logging.ts";
+import { UserFacingError } from "../../../utils/user_error.ts";
 import { getIbkrHostPort, parseIbkrCredentials } from "./credentials.ts";
 import { assertGatewayReady } from "./gateway.ts";
 import { isIbkrStatusMessage } from "./connection.ts";
@@ -43,7 +44,15 @@ export async function fetchIntegratedIbkrStockQuotes(
     integrations.length &&
     results.every((result) => result.status === "rejected")
   ) {
-    throw new Error("Prices unavailable from all IBKR integrations.");
+    const failures: unknown[] = results.map((result) => result.reason);
+    const messages = new Set(failures.flatMap((error) =>
+      error instanceof UserFacingError ? [error.userMessage] : []
+    ));
+    const summary = "Prices unavailable from all IBKR integrations.";
+    const action = messages.size ? [...messages].join("\n") : "Retry.";
+    throw new UserFacingError(`${summary} ${action}`, {
+      cause: new AggregateError(failures, summary),
+    });
   }
   return quotes;
 }

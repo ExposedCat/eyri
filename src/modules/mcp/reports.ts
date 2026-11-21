@@ -147,25 +147,20 @@ export async function runReport(
     );
     const prices = new Map<string, number>();
     const notes: string[] = [];
-    if (integrations.length) {
-      try {
-        const quotes = await runtime.rsuQuotes(
-          integrations,
-          [...view.upcoming, ...view.total, ...view.missed].map(
-            (v) => v.ticker,
-          ),
-        );
-        for (const [ticker, quote] of quotes) {
-          if (quote.price !== undefined) prices.set(ticker, quote.price);
-          else notes.push(`${ticker}: price unavailable. ${quote.error ?? ""}`);
-        }
-      } catch (error) {
-        notes.push(
-          `Prices unavailable: ${error instanceof Error ? error.message : String(error)}`,
-        );
+    const vestings = [...view.upcoming, ...view.total, ...view.missed];
+    if (!integrations.length) {
+      notes.push("Configure /ibkr to fetch current RSU prices.");
+    } else if (vestings.length) {
+      const quotes = await runtime.rsuQuotes(
+        integrations,
+        vestings.map((vesting) => vesting.ticker),
+      );
+      for (const [ticker, quote] of quotes) {
+        if (quote.price !== undefined) prices.set(ticker, quote.price);
+        else notes.push(`${ticker}: price unavailable. ${quote.error ?? ""}`);
       }
-    } else notes.push("Configure /ibkr to fetch current RSU prices.");
-    if (notes.length && (view.upcoming.length || view.total.length || view.missed.length)) {
+    }
+    if (notes.length && vestings.length) {
       throw new Error(notes.join("\n"));
     }
     const rate = conversionFactor(

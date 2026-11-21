@@ -840,29 +840,21 @@ tickersComposer.command(["rsu", "rsu_at", "rsu_rm"], async (ctx) => {
 		);
 		const prices = new Map<string, number>();
 		const notes: string[] = [];
-		if (integrations.length) {
-			try {
-				const quotes = await fetchIntegratedIbkrStockQuotes(
-					integrations,
-					vestings.map((vesting) => vesting.ticker),
-				);
-				for (const [ticker, quote] of quotes) {
-					if (quote.price !== undefined) {
-						prices.set(ticker, quote.price);
-					} else {
-						notes.push(
-							`${ticker}: price unavailable. ${quote.error ?? ""}`,
-						);
-					}
+		if (!integrations.length) {
+			notes.push("Configure /ibkr to fetch current RSU prices.");
+		} else if (vestings.length) {
+			const quotes = await fetchIntegratedIbkrStockQuotes(
+				integrations,
+				vestings.map((vesting) => vesting.ticker),
+			);
+			for (const [ticker, quote] of quotes) {
+				if (quote.price !== undefined) {
+					prices.set(ticker, quote.price);
+				} else {
+					notes.push(`${ticker}: price unavailable. ${quote.error ?? ""}`);
 				}
-			} catch (error) {
-				notes.push(
-					`Prices unavailable: ${
-						error instanceof Error ? error.message : String(error)
-					}`,
-				);
 			}
-		} else notes.push("Configure /ibkr to fetch current RSU prices.");
+		}
 		if (notes.length && vestings.length) throw new Error(notes.join("\n"));
 		const currency = ctx.dbEntities.user.currency ?? "USD";
 		const displayRate = (await fetchConversionRates(["USD"], currency)).get("USD")!;
