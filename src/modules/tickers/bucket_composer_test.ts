@@ -281,10 +281,25 @@ Deno.test("two Telegram reports share a restart, then each posts its original re
   }
 });
 
-Deno.test("RSU commands report a halted IBKR Gateway", async () => {
+Deno.test("RSU commands share automatic recovery for a halted IBKR Gateway", async () => {
   const db = new Database(":memory:");
   const originalRead = gatewayMonitor.read;
-  const message = "IBKR login stopped. Ask admin to check Gateway login.";
+  const originalRecovery = gatewayRecovery.handleFailure;
+  const halted = {
+    state: "blocked",
+    reason: "halted",
+    message: "IBKR login stopped. Ask admin to check Gateway login.",
+  } as const;
+  let restarts = 0;
+  const recovery = new GatewayRecovery(
+    () => Promise.resolve(halted),
+    () => Promise.reject(new Error("API offline")),
+    () => {
+      restarts++;
+      return Promise.resolve();
+    },
+    () => {},
+  );
   try {
     ensureSchema(db);
     const userId = 123456789;
@@ -302,21 +317,25 @@ Deno.test("RSU commands report a halted IBKR Gateway", async () => {
       awardDate: "2025-01-01",
       vesting: [{ date: "2090-01-01", amount: 1 }],
     });
-    gatewayMonitor.read = async () => ({
-      state: "blocked",
-      reason: "halted",
-      message,
-    });
-    const bot = harness(db);
-    for (const command of ["/rsu", "/rsu_at 01.01.2090"]) {
+    gatewayMonitor.read = () => Promise.resolve(halted);
+    gatewayRecovery.handleFailure = recovery.handleFailure.bind(recovery);
+    for (const [command, outcome] of [
+      ["/rsu", "IB Gateway stopped trying to sign in. Eyri will try again automatically."],
+      ["/rsu_at 01.01.2090", "IBKR login stopped again. Eyri will retry automatically."],
+    ]) {
+      const sent = Promise.withResolvers<void>();
+      const bot = harness(db, ({ payload }) => {
+        const text = payload.text ?? (payload.rich_message as { html?: string })?.html;
+        if (String(text).includes("Prices unavailable from all IBKR integrations.")) sent.resolve();
+      });
       await bot.command(command);
-      equal(
-        bot.lastText(),
-        `Prices unavailable from all IBKR integrations. ${message}`,
-      );
+      await sent.promise;
+      equal(bot.lastText(), `Prices unavailable from all IBKR integrations. ${outcome}`);
     }
+    equal(restarts, 1);
   } finally {
     gatewayMonitor.read = originalRead;
+    gatewayRecovery.handleFailure = originalRecovery;
     db.close();
   }
 });

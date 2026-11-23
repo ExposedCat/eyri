@@ -22,17 +22,21 @@ logging message text or callback data.
 
 ## IBKR availability and recovery
 
-Both gateways use the pinned ibg-controller image. The first retains its existing
-login credentials, phone approval and settings volume; the second uses TOTP.
-Controller 0.16.3 fixes daily restart configuration and adoption: older versions
-could leave Gateway in its default daily logoff mode despite `AUTO_RESTART_TIME`,
-or interrupt Gateway while it restored a saved session after restarting.
+Both Gateways build from the pinned ibg-controller image with a patch for
+daily restart adoption. The first uses phone approval and the second uses TOTP.
+The controller gives the replacement JVM 60 seconds to restore its session
+before it can submit credentials, and requires an editable login form for
+five consecutive seconds. It keeps an adopted JVM whose API becomes ready
+during a login attempt. This prevents a lingering login window from triggering
+a fresh login while the saved session is still starting up.
 Settings volumes mount at `/home/ibgateway/settings`, separate from the image's
 Gateway installation in `/home/ibgateway/Jts`. Keep the existing volume names
 when upgrading so saved login settings are preserved.
-Routine daily restarts adopt the new Gateway JVM and preserve its session where
-IBKR permits. IBKR still invalidates authentication tokens weekly and can revoke
-them earlier. Restarting or recreating the container can require a fresh login.
+IB Gateway uses its built-in daily restart at 23:59 UTC in place of the default
+daily logoff. The controller adopts the new Gateway JVM and reuses its session
+when IBKR allows it. IBKR requires a fresh sign-in after its weekly server reset
+and can revoke a session earlier. Restarting or recreating the container can
+also require a fresh login.
 
 Use `/status` in the admin's private chat to check login state and actual API
 readiness alongside the other connectors. Gateway health
@@ -48,8 +52,8 @@ other sessions. In particular, `Passed pwd authentication` followed by
 `Authorization failed: incorrect security code` identifies a rejected 2FA code,
 even if the controller later calls it a persistent CCP lockout. A controller's
 `2FA handled successfully` line only confirms that it submitted the code.
-Verify recovery with `/status` and API readiness. Do not enable automatic
-restarts of halted containers to work around this diagnostic ambiguity.
+If a fresh login attempt still gets stuck, use these logs to diagnose the cause
+and verify recovery with `/status`.
 
 API requests reuse connections and serialize account subscriptions per client.
 Execution polling every 15 seconds keeps its connection active and reconnects
@@ -67,12 +71,13 @@ the IBKR API responds, or explains if sign-in stops or the ten-minute watch expi
 The container gets 90 seconds for graceful logout before the readiness checks begin.
 Concurrent requests for the same gateway follow the restart already in progress.
 
-The background watchdog checks controller health every 30 seconds and attempts
-recovery after two minutes of persistent unreachability. It leaves authentication
-halts and the controller's own JVM/upstream recovery alone. The controller manages
-those transient failures internally, including re-authentication when unattended
-login is available. Phone-based login can still need your approval. Standalone
-MCP does not start the watchdog.
+The background watchdog checks controller health every 30 seconds. It can
+restart a halted Gateway on the next check and attempts recovery after two
+minutes of persistent unreachability. Repeated automatic attempts on a halted
+Gateway are spaced at least 15 minutes apart per Gateway, including requests
+from report commands. The watchdog lets active login and the controller's own
+JVM/upstream recovery finish. Phone-based login can still need your approval.
+Standalone MCP does not start the watchdog.
 
 Compose allows 90 seconds for gateway shutdown. On podman-compose 1.5 this affects
 Compose stop/down commands but does not persist into the container's default stop
@@ -173,7 +178,6 @@ an Interactive Brokers integration for the current user.
 TOTP login. It uses its own settings volume and the same private network as
 Eyri. Both Gateway instances are managed by the existing PM3 project.
 
-The second Gateway uses the unmodified, pinned controller image.
 `EXISTING_SESSION_DETECTED_ACTION=primary` accepts session-conflict prompts,
 and `BYPASS_WARNING=Continue Login,Reconnect This Session` also handles those
 buttons if they appear after authentication while the API is starting.
@@ -987,20 +991,17 @@ reconnection and halted login. A failed API request can automatically request a
 Gateway restart after an independent socket probe also fails. Concurrent requests
 share the restart, and repeated failures have a three-minute retry interval.
 An active controller login/recovery is allowed to finish. An unreachable HTTP
-health endpoint does not restart a working API. A reported expired session can
-request recovery; a generic halted state is reported as stopped login, without
-guessing that credentials expired. Telegram reports follow recovery for the
-sender's own Gateway and reply with progress, including when to check for 2FA.
+health endpoint does not restart a working API. A halted login can trigger a
+fresh restart, subject to the shared 15-minute retry interval. Telegram reports
+follow recovery for the sender's own Gateway and reply with progress, including
+when to check for 2FA.
 Once the API responds, Eyri retries the failed broker request and sends the
 original report automatically. Reports that need the same Gateway share the
-restart. If recovery stops or the ten-minute watch expires, Eyri replies with
-the reason the report could not finish.
+restart. If recovery stops or a ten-minute sign-in watch expires, Eyri replies
+with the reason the report could not finish.
 
-Gateway automatically restarts daily at 23:59 in the `TIME_ZONE` configured in
-`.env-ibkr-1` (currently UTC), replacing its scheduled logoff. This normally
-preserves authentication during the week; weekly 2FA is still required.
-After pulling this configuration, apply it with
-`podman compose up -d --force-recreate ib_gateway` and complete the initial login.
+Both Gateways' daily restart schedules are configured via `AUTO_RESTART_TIME`
+and `TIME_ZONE` in `compose.yaml`.
 
 Use `/restart` in Telegram to request an IB Gateway restart for the current
 user's IBKR integrations. Each distinct gateway is restarted once. The bot derives the container name from the saved IBKR

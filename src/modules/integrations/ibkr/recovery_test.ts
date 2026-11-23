@@ -44,16 +44,22 @@ Deno.test("command recovery preserves a healthy socket despite a broken HTTP che
   equal(restarts, 1);
 });
 
-Deno.test("only a reported expired session is called expired; an unknown login halt is preserved", async () => {
+Deno.test("reports retry a halted login without assuming the session expired", async () => {
   const halted = { state: "blocked" as const, message: "IBKR login stopped. Ask admin to check Gateway login." };
   let restarts = 0;
-  const recovery = new GatewayRecovery(async () => halted, async () => { throw new Error("offline"); },
+  const recovery = new GatewayRecovery(async () => halted, async () => {},
     async (_host, requested) => { restarts++; requested?.(); }, () => {});
-  equal(failureMessage(await recovery.handleFailure(integration, new GatewayError("gateway", halted))), halted.message);
-  equal(restarts, 0);
-  equal(failureMessage(await recovery.handleFailure(integration, new Error("IBKR session expired"))),
-    "IBKR session expired. Gateway restart requested; please wait.");
+  equal(failureMessage(await recovery.handleFailure(integration, new GatewayError("gateway", halted))),
+    "IBKR login stopped. Gateway restart requested; please wait.");
   equal(restarts, 1);
+  equal(failureMessage(await recovery.handleFailure(integration, new GatewayError("gateway", halted))),
+    "IBKR login stopped again. Eyri will retry automatically.");
+  equal(restarts, 1);
+  const expired = new GatewayRecovery(async () => halted, async () => { throw new Error("offline"); },
+    async (_host, requested) => { restarts++; requested?.(); }, () => {});
+  equal(failureMessage(await expired.handleFailure(integration, new Error("IBKR session expired"))),
+    "IBKR session expired. Gateway restart requested; please wait.");
+  equal(restarts, 2);
 });
 const integration: Integration = {
   id: 1,
@@ -68,20 +74,18 @@ const health = (state: GatewayHealth["state"]): GatewayHealth => ({
   message: state,
 });
 
-Deno.test("recovery leaves healthy, recovering and authentication-halted gateways running", async () => {
+Deno.test("recovery leaves a working API and an active login running", async () => {
   let state: GatewayHealth["state"] = "ready", restarts = 0, probes = 0;
   const recovery = new GatewayRecovery(async () => health(state), async () => {
     probes++;
   }, async () => {
     restarts++;
   });
-  match(await recovery.recover(integration), /API is ready/);
+  equal(await recovery.recover(integration), "gateway: API is ready; restart was unnecessary.");
   state = "unavailable";
-  match(await recovery.recover(integration), /API is ready/);
+  equal(await recovery.recover(integration), "gateway: API is ready; restart was unnecessary.");
   state = "recovering";
-  match(await recovery.recover(integration), /recovering/);
-  state = "blocked";
-  equal(await recovery.recover(integration), "gateway: blocked");
+  equal(await recovery.recover(integration), "gateway: recovering");
   equal(restarts, 0);
   equal(probes, 2);
 });
@@ -109,7 +113,7 @@ Deno.test("recovery coalesces concurrent attempts and confirms readiness after r
   );
   const first = recovery.recover(integration);
   equal(recovery.recover(integration), first);
-  match(await first, /API readiness confirmed/);
+  equal(await first, "gateway: API readiness confirmed.");
   equal(probes, 2);
   equal(restarts, 1);
 });
@@ -248,13 +252,20 @@ Deno.test("restart progress reports a login halt or a timeout without claiming r
   }
 });
 
-Deno.test("a report follows an existing login and returns a terminal halt without restarting it", async () => {
+Deno.test("a report lets an existing login finish and retries it if it halts", async () => {
   const verification: GatewayHealth = { ...health("recovering"), reason: "verification" };
-  let polls = 0;
+  let polls = 0, restarts = 0, probes = 0;
   const recovery = new GatewayRecovery(
-    async () => ++polls < 3 ? verification : health("blocked"),
-    async () => { throw new Error("API was never ready"); },
-    () => { throw new Error("An active login should not be restarted"); },
+    async () => {
+      polls++;
+      if (restarts) return health("ready");
+      return polls < 3 ? verification : health("blocked");
+    },
+    async () => { probes++; },
+    async () => {
+      equal(polls, 4);
+      restarts++;
+    },
     () => {},
     () => 0,
     async () => {},
@@ -264,10 +275,12 @@ Deno.test("a report follows an existing login and returns a terminal halt withou
     userId: integration.userId,
     onProgress: (_host, message) => progress.push(message),
   });
-  equal(polls, 3);
-  equal(progress.length, 1);
+  equal(result, "retry");
+  equal(restarts, 1);
+  equal(probes, 1);
+  equal(progress.length, 3);
   match(progress[0], /^Waiting for 2FA approval/);
-  match(failureMessage(result)!, /stopped trying to sign in/);
+  deepStrictEqual(progress.slice(1), ["Restarting IB Gateway…", "Connecting to IBKR…"]);
 });
 
 Deno.test("a failed restart can be retried immediately without force or a cooldown", async () => {
@@ -281,7 +294,7 @@ Deno.test("a failed restart can be retried immediately without force or a cooldo
     async () => { throw new Error("Unexpected wait"); },
   );
   await rejects(recovery.recover(integration), /Podman unavailable/);
-  match(await recovery.recover(integration), /API readiness confirmed/);
+  equal(await recovery.recover(integration), "gateway: API readiness confirmed.");
   equal(restarts, 2);
 });
 
@@ -299,11 +312,11 @@ Deno.test("restart success is not reported as API readiness when login never com
       now += ms;
     },
   );
-  match(await recovery.recover(integration), /readiness is still unconfirmed/);
+  match(await recovery.recover(integration) ?? "", /readiness is still unconfirmed/);
   equal(now, 180_000);
 });
 
-Deno.test("watchdog waits for a sustained controller outage, backs off, and never restarts deliberate halts", async () => {
+Deno.test("watchdog waits for a sustained controller outage and backs off for repeat outages", async () => {
   let state: GatewayHealth["state"] = "unavailable", now = 0, restarts = 0;
   const watchdog = new GatewayWatchdog(async () => health(state), async () => {
     restarts++;
@@ -319,7 +332,7 @@ Deno.test("watchdog waits for a sustained controller outage, backs off, and neve
   now = 150_000;
   await watchdog.check(integration);
   equal(restarts, 1);
-  for (const next of ["blocked", "recovering", "unknown", "ready"] as const) {
+  for (const next of ["recovering", "unknown", "ready"] as const) {
     state = next;
     now += 900_000;
     await watchdog.check(integration);
@@ -330,6 +343,55 @@ Deno.test("watchdog waits for a sustained controller outage, backs off, and neve
   now += 120_000;
   await watchdog.check(integration);
   equal(restarts, 2);
+});
+
+Deno.test("the watchdog restarts a halted login and shares its retry interval with reports", async () => {
+  const halted = health("blocked");
+  const restarting = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  let now = 0, restarts = 0, probes = 0;
+  let state = halted;
+  const recovery = new GatewayRecovery(
+    async () => state,
+    async () => { probes++; },
+    async () => {
+      if (++restarts === 2) {
+        restarting.resolve();
+        await started.promise;
+        state = health("ready");
+      }
+    },
+    () => {},
+    () => now,
+  );
+  const watchdog = new GatewayWatchdog(async () => state, (item) => recovery.recover(item), () => now);
+  const error = new GatewayError("gateway", halted);
+
+  await watchdog.check(integration);
+  equal(restarts, 1);
+  now = 15 * 60_000 - 1;
+  await watchdog.check(integration);
+  equal(failureMessage(await recovery.handleFailure(integration, error)),
+    "IBKR login stopped again. Eyri will retry automatically.");
+  equal(restarts, 1);
+  equal(probes, 0);
+
+  now++;
+  const secondCheck = watchdog.check(integration);
+  await restarting.promise;
+  const messages: string[] = [];
+  const report = recovery.handleFailure(integration, error, {
+    userId: integration.userId,
+    onProgress: (_host, message) => {
+      messages.push(message);
+      started.resolve();
+    },
+  });
+  equal(await report, "retry");
+  await secondCheck;
+  deepStrictEqual(messages, ["Restarting IB Gateway…", "Connecting to IBKR…"]);
+  equal(restarts, 2);
+  equal(probes, 2);
 });
 
 Deno.test("Podman restart explicitly allows 90 seconds for graceful logout", async () => {

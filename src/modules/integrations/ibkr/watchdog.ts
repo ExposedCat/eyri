@@ -4,14 +4,13 @@ import {
 } from "../../database/integration.ts";
 import type { Database } from "../../database/setup.ts";
 import { gatewayMonitor } from "./gateway.ts";
-import { gatewayRecovery, getRestartContainerName } from "./recovery.ts";
+import { GATEWAY_RETRY_INTERVAL_MS, gatewayRecovery, getRestartContainerName } from "./recovery.ts";
 
-// The controller already recovers JVM/upstream failures. Only restart a
-// controller that remains unreachable; never interrupt its own recovery or
-// turn a deliberate authentication halt into a fresh-login loop.
+// Let the controller finish its own recovery. A halted controller has stopped
+// attempting login, so it can start a fresh attempt without an outage delay.
 export class GatewayWatchdog {
   private unavailableSince = new Map<string, number>();
-  private lastAttempt = new Map<string, number>();
+  private lastUnavailableAttempt = new Map<string, number>();
   constructor(
     private health = (host: string) => gatewayMonitor.read(host, true),
     private recover = (integration: Integration) =>
@@ -24,17 +23,18 @@ export class GatewayWatchdog {
     const health = await this.health(host);
     if (health.state !== "unavailable") {
       this.unavailableSince.delete(host);
-      return;
+      if (health.state !== "blocked") return;
+    } else {
+      const now = this.now();
+      const since = this.unavailableSince.get(host) ?? now;
+      this.unavailableSince.set(host, since);
+      const lastAttempt = this.lastUnavailableAttempt.get(host);
+      if (now - since < 120_000 ||
+          (lastAttempt !== undefined && now - lastAttempt < GATEWAY_RETRY_INTERVAL_MS)) return;
+      this.lastUnavailableAttempt.set(host, now);
     }
-    const since = this.unavailableSince.get(host) ?? this.now();
-    this.unavailableSince.set(host, since);
-    const lastAttempt = this.lastAttempt.get(host);
-    if (
-      this.now() - since < 120_000 ||
-      (lastAttempt !== undefined && this.now() - lastAttempt < 15 * 60_000)
-    ) return;
-    this.lastAttempt.set(host, this.now());
-    console.warn(`IBKR watchdog ${host}: ${await this.recover(integration)}`);
+    const result = await this.recover(integration);
+    if (result) console.warn(`IBKR watchdog ${host}: ${result}`);
   }
 }
 
