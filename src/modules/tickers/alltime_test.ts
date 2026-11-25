@@ -349,16 +349,25 @@ Deno.test("alltime without allocated funding preserves P/L and omits lifetime pe
   equal(text.includes("%"), false);
 });
 
-Deno.test("missing daily metrics fail the whole report and optional dates never render placeholders", async () => {
+Deno.test("missing daily P/L is flagged per holding, invalid daily metrics fail, and optional dates never render placeholders", async () => {
   const dailyPosition = position({ dailyPnl: 0, dailyPnlPercentage: 0, dailyPnlBaseline: 720 });
-  for (const overrides of [
-    { dailyPnl: null }, { dailyPnl: Number.NaN }, { dailyPnlPercentage: null },
-  ]) {
+  for (const overrides of [{ dailyPnl: Number.NaN }, { dailyPnlPercentage: null }]) {
     await rejects(buildIntegratedDailyPerformanceList({
       positions: [dailyPosition, { ...dailyPosition, ...overrides }], formatTicker,
-    }), /daily.*unavailable/);
+    }));
   }
-  match(await buildIntegratedDailyPerformanceList({ positions: [dailyPosition], formatTicker }), /Total: 0\.00% \$0\.00 today/);
+  const moving = position({ ticker: "MSFT", dailyPnl: 12, dailyPnlPercentage: 2, dailyPnlBaseline: 600 });
+  const partial = await buildIntegratedDailyPerformanceList({
+    positions: [moving, { ...dailyPosition, dailyPnl: null, dailyPnlPercentage: null, dailyPnlBaseline: null }], formatTicker,
+  });
+  match(partial, /AAPL \? today ⚠️/);
+  match(partial, /Total: \+2\.00% \+\$12\.00 today ⚠️/);
+  equal(await buildIntegratedDailyPerformanceList({
+    positions: [{ ...dailyPosition, dailyPnl: null }], formatTicker, numberOnly: true,
+  }), `${numberSeparator}\n? ⚠️`);
+  match(await buildIntegratedDailyPerformanceList({ positions: [{ ...moving, dailyPnlCached: true }], formatTicker }),
+    /MSFT \+2\.00% \+\$12\.00 today ⚠️\n\n.*Total: \+2\.00% \+\$12\.00 today ⚠️/s);
+  match(await buildIntegratedDailyPerformanceList({ positions: [dailyPosition], formatTicker }), /Total: 0\.00% \$0\.00 today$/);
   for (const build of [buildIntegratedTickerList, buildIntegratedPerformanceList]) {
     const text = await build({ positions: [position({ openedAt: null })], formatTicker });
     ok(!text.includes("?"));

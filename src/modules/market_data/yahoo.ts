@@ -429,6 +429,49 @@ export class YahooHistoryCache {
     return result;
   }
 
+  // Previously stored Yahoo closes, without any request. Callers must present
+  // the result as cached: the newest close can be arbitrarily old.
+  stored(symbol: string, start: string): PriceHistory | undefined {
+    if (
+      [MORGAN_STANLEY_PREFIX, VONTOBEL_PREFIX, DATABENTO_PREFIX].some((prefix) =>
+        symbol.startsWith(prefix)
+      )
+    ) return undefined;
+    const recentRow = this.db.prepare(
+      "SELECT payload FROM yahoo_recent WHERE symbol = ?",
+    ).get(symbol) as { payload: string } | undefined;
+    const recent: PriceHistory | undefined = recentRow
+      ? JSON.parse(recentRow.payload)
+      : undefined;
+    const rows = this.db.prepare(
+      "SELECT date,close,currency FROM yahoo_prices WHERE symbol = ? AND date >= ? ORDER BY date",
+    ).all(symbol, start) as (PriceBar & { currency: string })[];
+    const currency = recent?.currency ?? rows.at(-1)?.currency;
+    if (!currency) return undefined;
+    const splits = this.db.prepare(
+      "SELECT date,ratio FROM yahoo_splits WHERE symbol = ? ORDER BY date",
+    ).all(symbol) as StockSplit[];
+    const bars = new Map(
+      rows.filter((row) => row.currency === currency)
+        .map((row) => [row.date, { date: row.date, close: row.close }]),
+    );
+    for (const bar of recent?.bars ?? []) {
+      if (bar.date >= start) {
+        bars.set(bar.date, {
+          ...bar,
+          close: bar.close * this.futureSplitFactor(bar.date, splits),
+        });
+      }
+    }
+    return {
+      symbol,
+      currency,
+      bars: [...bars.values()].sort((a, b) => a.date.localeCompare(b.date)),
+      splits,
+      instrumentType: recent?.instrumentType,
+    };
+  }
+
   private async load(
     symbol: string,
     start: string,
@@ -609,4 +652,15 @@ export class YahooHistoryCache {
       ).run(history.symbol, range.start, range.end);
     })();
   }
+}
+
+const sharedCaches = new WeakMap<Database, YahooHistoryCache>();
+// One cache per database lets concurrent reports share pending requests.
+export function sharedYahooHistoryCache(db: Database) {
+  let cache = sharedCaches.get(db);
+  if (!cache) {
+    cache = new YahooHistoryCache(db);
+    sharedCaches.set(db, cache);
+  }
+  return cache;
 }

@@ -34,6 +34,8 @@ export type IntegrationPortfolioPosition = {
   dailyPnlBaseline: number | null;
   // Some brokers use current value for the portfolio-level daily percentage.
   dailyPnlTotalBaseline?: number | null;
+  // Daily P/L derived from stored closes because live market data failed.
+  dailyPnlCached?: boolean;
   openedAt: Date | null;
   yahooSymbol?: string;
   isin?: string;

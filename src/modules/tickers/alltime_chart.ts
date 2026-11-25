@@ -47,7 +47,7 @@ import { isCfdAllocation } from "./cfd_history.ts";
 import {
   dayAfter,
   type PriceHistory,
-  YahooHistoryCache,
+  sharedYahooHistoryCache,
 } from "../market_data/yahoo.ts";
 import {
   buildIntegratedSoldPerformances,
@@ -479,14 +479,8 @@ export function buildAllTimeSeries(
   return points;
 }
 
-const caches = new WeakMap<Database, YahooHistoryCache>();
 export function historyCache(db: Database) {
-  let cache = caches.get(db);
-  if (!cache) {
-    cache = new YahooHistoryCache(db);
-    caches.set(db, cache);
-  }
-  return cache;
+  return sharedYahooHistoryCache(db);
 }
 export function ensureChartSchema(db: Database) {
   db.exec(`

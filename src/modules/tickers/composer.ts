@@ -220,6 +220,7 @@ export async function fetchBucketedPositions(
   ctx: CustomContext,
   bucketName: string | null,
   filter: ReportFilter = null,
+  dailyPnl = false,
 ) {
   const userId = ctx.dbEntities.user?.userId;
   if (!userId) {
@@ -228,6 +229,7 @@ export async function fetchBucketedPositions(
 
   return (await fetchPortfolioView(ctx.db, userId, bucketName, {
     warrantQuotes: filter !== "stocks",
+    dailyPnl,
     gatewayRecovery: ctx.ibkrReportRecovery,
   })).positions;
 }
@@ -1061,7 +1063,7 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
         ? await fetchPortfolioView(ctx.db, ctx.dbEntities.user.userId, bucketName, {
           history: true, accountPerformance: true, gatewayRecovery: ctx.ibkrReportRecovery,
         }) : null;
-      const positions = (worthView?.positions ?? await fetchBucketedPositions(ctx, bucketName, args.filter)).filter(matchesFilter);
+      const positions = (worthView?.positions ?? await fetchBucketedPositions(ctx, bucketName, args.filter, isDaily)).filter(matchesFilter);
       performanceList = isDaily
         ? await buildIntegratedDailyPerformanceList({ currency, positions, numberOnly, ...preferences, formatTicker })
         : await buildIntegratedPerformanceList({

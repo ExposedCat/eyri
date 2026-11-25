@@ -191,6 +191,7 @@ export async function runReport(
     displayHistory: name === "history",
     accountPerformance: name === "chart" || !args.filter && ["alltime", "allnumber", "worth", "worthnumber"].includes(name),
     warrantQuotes: name !== "stocks" && name !== "portfolio" && args.filter !== "stocks",
+    dailyPnl: name === "dpnl" || compactKind === "dpnl",
   });
   const matches = args.filter === "stocks" ? isStockPosition : args.filter === "options" ? isOptionPosition : () => true;
   const view = { ...rawView, positions: rawView.positions.filter(matches), orders: rawView.orders.filter(matches),
@@ -371,10 +372,17 @@ export async function runReport(
         ticker: p.ticker,
         pnl: p.dailyPnl,
         returnPct: p.dailyPnl === null ? null : p.dailyPnlPercentage,
+        ...(p.dailyPnlCached ? { cached: true } : {}),
       })),
       total: !positions.length
         ? null
-        : { pnl: totals.dailyChange, returnPct: totals.dailyPercentageChange },
+        : {
+          pnl: totals.dailyChange,
+          returnPct: totals.dailyPercentageChange,
+          // Holdings with null pnl are excluded from this total.
+          ...(totals.dailyIncomplete ? { incomplete: true } : {}),
+          ...(totals.dailyCached ? { cached: true } : {}),
+        },
     };
   }
   const detailed = ["stocks", "options", "when"].includes(name);

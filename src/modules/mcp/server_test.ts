@@ -414,11 +414,24 @@ Deno.test("MCP preserves empty results, rejects missing metrics, and reports RSU
       bucketName: null,
       accountPerformances: [],
     });
-    for (const name of ["number", "dpnl"]) {
-      const result = await h.client.callTool({ name, arguments: { userId: 1 } });
-      equal(result.isError, true);
-      match(JSON.stringify(result.structuredContent), /unavailable/);
-    }
+    const result = await h.client.callTool({ name: "number", arguments: { userId: 1 } });
+    equal(result.isError, true);
+    match(JSON.stringify(result.structuredContent), /unavailable/);
+    // Daily P/L does not depend on a current price; a holding without daily
+    // data is flagged instead of failing the report.
+    equal((await call(h, "dpnl", { userId: 1 })).total.pnl, 12);
+    h.runtime.view = async () => ({
+      positions: [position, { ...position, ticker: "MSFT", dailyPnl: null, dailyPnlPercentage: null, dailyPnlBaseline: null }],
+      orders: [],
+      historyOrders: [],
+      transactionBuckets: new Map(),
+      bucketName: null,
+      accountPerformances: [],
+    });
+    const daily = await call(h, "dpnl", { userId: 1 });
+    equal(daily.positions.find((p: { ticker: string }) => p.ticker === "MSFT").pnl, null);
+    equal(daily.total.pnl, 12);
+    equal(daily.total.incomplete, true);
     ok(
       createIntegration({
         database: h.db,

@@ -519,23 +519,8 @@ function buildIntegratedPortfolioTotals(
     { totalInput: 0, totalNow: 0, totalChange: 0, hasMissingPrice: false },
   );
 
-  if (totals.hasMissingPrice) {
-    return {
-      ...totals,
-      totalChange: null,
-      totalPercentageChange: null,
-      dailyChange: null,
-      dailyPercentageChange: null,
-      monthlyChange: null,
-      monthlyPercentageChange: null,
-      elapsedPeriod,
-    };
-  }
-
-  const totalChange = totals.totalChange;
-  const totalPercentageChange = totals.totalInput === 0
-    ? 0
-    : (totalChange / totals.totalInput) * 100;
+  // Daily P/L is reported by the broker or market data, independently of
+  // current prices. Holdings without it are left out; dailyIncomplete flags it.
   const dailyPnlTotals = performances.reduce(
     (totals, { position }) => {
       if (position.dailyPnl === null) {
@@ -543,6 +528,7 @@ function buildIntegratedPortfolioTotals(
         return totals;
       }
 
+      totals.hasDailyPnl = true;
       totals.dailyPnl += position.dailyPnl;
       const baseline = position.dailyPnlTotalBaseline ??
         position.dailyPnlBaseline;
@@ -557,25 +543,45 @@ function buildIntegratedPortfolioTotals(
     {
       dailyPnl: 0,
       dailyPnlBaseline: 0,
+      hasDailyPnl: false,
       hasMissingDailyPnl: false,
       hasMissingDailyPnlPercentage: false,
     },
   );
-  const dailyPnlPercentage = dailyPnlTotals.hasMissingDailyPnlPercentage ||
-      dailyPnlTotals.dailyPnlBaseline === 0
-    ? null
-    : (dailyPnlTotals.dailyPnl / dailyPnlTotals.dailyPnlBaseline) * 100;
+  const hasDaily = dailyPnlTotals.hasDailyPnl || !performances.length;
+  const daily = {
+    dailyChange: hasDaily ? dailyPnlTotals.dailyPnl : null,
+    dailyPercentageChange: !hasDaily ||
+        dailyPnlTotals.hasMissingDailyPnlPercentage ||
+        dailyPnlTotals.dailyPnlBaseline === 0
+      ? null
+      : (dailyPnlTotals.dailyPnl / dailyPnlTotals.dailyPnlBaseline) * 100,
+    dailyIncomplete: dailyPnlTotals.hasMissingDailyPnl,
+    dailyCached: performances.some(({ position }) => position.dailyPnlCached === true),
+  };
+
+  if (totals.hasMissingPrice) {
+    return {
+      ...totals,
+      ...daily,
+      totalChange: null,
+      totalPercentageChange: null,
+      monthlyChange: null,
+      monthlyPercentageChange: null,
+      elapsedPeriod,
+    };
+  }
+
+  const totalChange = totals.totalChange;
+  const totalPercentageChange = totals.totalInput === 0
+    ? 0
+    : (totalChange / totals.totalInput) * 100;
 
   return {
     ...totals,
+    ...daily,
     totalChange,
     totalPercentageChange,
-    dailyChange: dailyPnlTotals.hasMissingDailyPnl
-      ? null
-      : dailyPnlTotals.dailyPnl,
-    dailyPercentageChange: dailyPnlTotals.hasMissingDailyPnl
-      ? null
-      : dailyPnlPercentage,
     monthlyChange: elapsedPeriod.months === null
       ? null
       : totalChange / elapsedPeriod.months,
@@ -811,8 +817,10 @@ export async function buildIntegratedPositionReport(
   for (const performance of performances) {
     const ticker = performance.position.ticker;
     if (daily) {
-      requireReportNumber(performance.position.dailyPnl, `${ticker} daily P/L`);
-      requireReportNumber(performance.position.dailyPnlPercentage, `${ticker} daily percentage`);
+      // A holding without daily data is shown as unavailable instead.
+      if (performance.position.dailyPnl !== null) {
+        requireReportNumber(performance.position.dailyPnlPercentage, `${ticker} daily percentage`);
+      }
     } else {
       requireReportNumber(performance.currentValue, `${ticker} current value`);
       requireReportNumber(performance.totalInput, `${ticker} purchase cost`);
@@ -821,8 +829,7 @@ export async function buildIntegratedPositionReport(
     }
   }
   const totals = buildIntegratedPortfolioTotals(performances, now);
-  if (daily && performances.length) {
-    requireReportNumber(totals.dailyChange, "total daily P/L");
+  if (daily && totals.dailyChange !== null) {
     requireReportNumber(totals.dailyPercentageChange, "total daily percentage");
   }
   const currentValue = performances.reduce<number | null>(
@@ -1368,8 +1375,11 @@ export async function buildIntegratedDailyPerformanceList({
   const { performances, totals } = await buildIntegratedPositionReport({
     positions, request, currency, priceOverrides,
   }, true);
+  const totalWarning = totals.dailyIncomplete || totals.dailyCached ? " ⚠️" : "";
+  const totalChange = totals.dailyChange === null ? "?"
+    : formatCurrencyChange(totals.dailyChange, currency);
   if (numberOnly) return buildNumberSummary(performances.map(item => item.position.ticker),
-    formatCurrencyChange(requireReportNumber(totals.dailyChange, "total daily P/L"), currency), tickerDecorations, tickerEmojiMappings);
+    `${totalChange}${totalWarning}`, tickerDecorations, tickerEmojiMappings);
 
   const lines = buildSeparatedChangeLines(
     performances,
@@ -1384,20 +1394,18 @@ export async function buildIntegratedDailyPerformanceList({
         tickerEmojiMappings,
         formatTicker,
       );
-      if (position.dailyPnl === null) {
-        throw new Error(`Cannot build report: daily P/L is unavailable for ${position.ticker}.`);
-      }
+      if (position.dailyPnl === null) return `${tickerName} ? today ⚠️`;
 
       const percentage = formatMoneyChange(requireReportNumber(position.dailyPnlPercentage, `${position.ticker} daily percentage`), "%");
       return `${tickerName} ${percentage} ${
         formatCurrencyChange(position.dailyPnl, position.currency)
-      } today`;
+      } today${position.dailyPnlCached ? " ⚠️" : ""}`;
     },
   );
 
-  const totalLine = `Total: ${
+  const totalLine = totals.dailyChange === null ? `Total: ? today${totalWarning}` : `Total: ${
     formatMoneyChange(requireReportNumber(totals.dailyPercentageChange, "total daily percentage"), "%")
-  } ${formatCurrencyChange(requireReportNumber(totals.dailyChange, "total daily P/L"), currency)} today`;
+  } ${totalChange} today${totalWarning}`;
 
   return [...lines, totalLine].join("\n\n");
 }
@@ -1714,6 +1722,7 @@ export function buildBucketedPortfolioPositions({
         currentPriceSource: livePosition.currentPriceSource,
         currentPriceAsOf: livePosition.currentPriceAsOf,
         currentPriceCached: livePosition.currentPriceCached,
+        ...(livePosition.dailyPnlCached ? { dailyPnlCached: true } : {}),
         currency: draft.currency,
         totalInput: draft.totalInput,
         totalNow,

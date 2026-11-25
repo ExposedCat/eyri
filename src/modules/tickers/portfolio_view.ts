@@ -27,6 +27,8 @@ import { adjustOrderForCorporateActions } from "../market_data/corporate_actions
 import { buildBucketCashAccounts, excludeBucketCapital } from "./bucket_funding.ts";
 import { userErrorMessage } from "../../utils/user_error.ts";
 import { reconcileHistory } from "./history_reconciliation.ts";
+import { fillMissingDailyPnl } from "../market_data/daily_pnl.ts";
+import { sharedYahooHistoryCache } from "../market_data/yahoo.ts";
 
 type PortfolioSource = {
   ownerId: number;
@@ -120,17 +122,21 @@ type Options = {
   // Stock-only reports still need broker holdings for bucket/funding calculations,
   // but must not depend on issuer quotes for excluded warrants.
   warrantQuotes?: boolean;
+  // Daily reports derive missing broker daily P/L from market data.
+  dailyPnl?: boolean;
   gatewayRecovery?: ReportGatewayRecovery;
 };
 type Runtime = {
   request?: typeof fetch;
   portfolio: typeof fetchIntegratedPortfolio;
+  dailyPnl?: (db: Database, positions: IntegrationPortfolioPosition[]) => Promise<IntegrationPortfolioPosition[]>;
   orders: typeof fetchIntegratedOrderHistory;
   history: typeof fetchIntegratedHistoryOrders;
   accounts?: typeof fetchIntegratedAccountPerformances;
 };
 const runtime: Runtime = {
   portfolio: fetchIntegratedPortfolio,
+  dailyPnl: (db, positions) => fillMissingDailyPnl(positions, sharedYahooHistoryCache(db)),
   orders: fetchIntegratedOrderHistory,
   history: fetchIntegratedHistoryOrders,
   accounts: fetchIntegratedAccountPerformances,
@@ -180,7 +186,9 @@ async function loadPortfolioView(
             )
             : [],
         ]);
-        const livePositions = ownerPositions.map((p) => scalePosition(p, share));
+        const livePositions = (options.dailyPnl && fetchers.dailyPnl
+          ? await fetchers.dailyPnl(db, ownerPositions)
+          : ownerPositions).map((p) => scalePosition(p, share));
         const sourceOrders = applyBucketAllocations(
           ownerOrders,
           readBucketAllocations(db, ownerId),

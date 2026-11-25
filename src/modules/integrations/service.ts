@@ -74,6 +74,9 @@ function mergePosition(
     ...(current.currentPriceCached || next.currentPriceCached
       ? { currentPriceCached: true }
       : {}),
+    ...(current.dailyPnlCached || next.dailyPnlCached
+      ? { dailyPnlCached: true }
+      : {}),
     ...(current.brokerValuations || next.brokerValuations ? {
       brokerValuations: [...portfolioValuations(current), ...portfolioValuations(next)],
     } : {}),
