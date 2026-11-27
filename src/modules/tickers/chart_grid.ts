@@ -6,11 +6,11 @@ export function percentageGrid(values: Iterable<number | null>, intervals = 22) 
   if (low === high) { low = -1; high = 1; }
   const span = high - low;
   const padding = span * .05;
-  low -= padding; high += padding;
+  low = Math.max(-100, low - padding); high += padding;
   const desired = (high - low) / intervals;
   const magnitude = 10 ** Math.floor(Math.log10(desired));
   const step = Math.max(1e-8, [1, 2, 2.5, 5, 10].find(factor => factor * magnitude >= desired)! * magnitude);
-  const min = Math.floor(low / step) * step, max = Math.ceil(high / step) * step;
+  const min = Math.max(-100, Math.floor(low / step) * step), max = Math.ceil(high / step) * step;
   const minorStep = step / 2;
   const ticks = Array.from({ length: Math.round((max - min) / minorStep) + 1 }, (_, index) => ({
     value: Number((min + index * minorStep).toPrecision(12)), major: index % 2 === 0,
