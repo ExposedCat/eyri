@@ -283,6 +283,75 @@ Deno.test("a report lets an existing login finish and retries it if it halts", a
   deepStrictEqual(progress.slice(1), ["Restarting IB Gateway…", "Connecting to IBKR…"]);
 });
 
+Deno.test("reports restart UPSTREAM_DOWN gateways when the controller is not recovering them", async () => {
+  const upstreamDown: GatewayHealth = {
+    state: "blocked",
+    reason: "upstream_down",
+    message: "IBKR server connection is down. Restart Gateway to reconnect.",
+  };
+  let restarted = false, restarts = 0, probes = 0;
+  const recovery = new GatewayRecovery(
+    async () => restarted ? health("ready") : upstreamDown,
+    async () => { probes++; },
+    async () => { restarted = true; restarts++; },
+    () => {},
+    () => 0,
+    async () => {},
+  );
+  const progress: string[] = [];
+  const result = await recovery.handleFailure(integration, new GatewayError("gateway", upstreamDown), {
+    userId: integration.userId,
+    onProgress: (_host, message) => progress.push(message),
+  });
+  equal(result, "retry");
+  equal(restarts, 1);
+  equal(probes, 1);
+  deepStrictEqual(progress, ["Restarting IB Gateway…", "Connecting to IBKR…"]);
+});
+
+Deno.test("explicit restart supersedes a passive follow without restarting for a second passive report", async () => {
+  const reconnecting: GatewayHealth = { ...health("recovering"), reason: "reconnecting" };
+  const sleeping = Promise.withResolvers<void>();
+  const releaseSleep = Promise.withResolvers<void>();
+  let restarted = false, restarts = 0, probes = 0;
+  const recovery = new GatewayRecovery(
+    async () => restarted ? health("ready") : reconnecting,
+    async () => { probes++; },
+    async () => { restarted = true; restarts++; },
+    () => {},
+    () => 0,
+    async () => {
+      if (!restarted) {
+        sleeping.resolve();
+        await releaseSleep.promise;
+      }
+    },
+  );
+  const report1: string[] = [], report2: string[] = [], manual: string[] = [];
+  const firstReport = recovery.handleFailure(integration, new GatewayError("gateway", reconnecting), {
+    userId: integration.userId,
+    onProgress: (_host, message) => report1.push(message),
+  });
+  await sleeping.promise;
+  // Another report joining the passive follow must not trigger a restart.
+  const secondReport = recovery.handleFailure(integration, new GatewayError("gateway", reconnecting), {
+    userId: integration.userId,
+    onProgress: (_host, message) => report2.push(message),
+  });
+  await Promise.resolve();
+  equal(restarts, 0);
+  // Explicit /restart_gateway supersedes the passive wait, restarts, and wakes waiting reports.
+  await recovery.restartAndFollow(integration, (message) => manual.push(message));
+  releaseSleep.resolve();
+  equal(await firstReport, "retry");
+  equal(await secondReport, "retry");
+  equal(restarts, 1);
+  equal(probes, 1);
+  deepStrictEqual(manual, ["Restarting IB Gateway…", "Connecting to IBKR…", "IB Gateway is ready."]);
+  deepStrictEqual(report1, ["Reconnecting to IBKR…", "Restarting IB Gateway…", "Connecting to IBKR…"]);
+  deepStrictEqual(report2, ["Reconnecting to IBKR…", "Restarting IB Gateway…", "Connecting to IBKR…"]);
+});
+
 Deno.test("a failed restart can be retried immediately without force or a cooldown", async () => {
   let restarts = 0;
   const recovery = new GatewayRecovery(

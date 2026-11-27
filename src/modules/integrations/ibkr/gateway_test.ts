@@ -79,6 +79,38 @@ Deno.test("controller states produce distinct short messages without guessing an
   }
 });
 
+Deno.test("UPSTREAM_DOWN without active recovery is blocked while grace-period and active relaunches stay recovering", async () => {
+  const read = (payload: Record<string, unknown>) =>
+    new GatewayMonitor(() => "http://controller/health", async () => Response.json(payload, { status: 503 })).read("gateway");
+  const stopped = await read({
+    state: "UPSTREAM_DOWN",
+    status: "unhealthy",
+    upstream_connected: false,
+    upstream_recovery_active: false,
+  });
+  equal(stopped.state, "blocked");
+  equal(stopped.reason, "upstream_down");
+  const relaunching = await read({
+    state: "UPSTREAM_DOWN",
+    status: "unhealthy",
+    upstream_connected: false,
+    upstream_recovery_active: true,
+  });
+  equal(relaunching.state, "recovering");
+  equal(relaunching.reason, "reconnecting");
+  const graceBlip = await read({
+    state: "MONITORING",
+    status: "healthy",
+    jvm_alive: true,
+    api_port_open: true,
+    socat_port_open: true,
+    upstream_connected: false,
+    upstream_recovery_active: false,
+  });
+  equal(graceBlip.state, "recovering");
+  equal(graceBlip.reason, "reconnecting");
+});
+
 Deno.test("an HTTP health outage permits the socket handshake while active login and halted states stop reports", async () => {
   await assertGatewayReady("gateway", { read: async () => ({ state: "unavailable", message: "HTTP down" }) });
   for (const state of ["recovering", "blocked"] as const) {

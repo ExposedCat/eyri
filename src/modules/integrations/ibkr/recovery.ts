@@ -21,10 +21,17 @@ export type ReportGatewayRecovery = {
 };
 
 type RestartFollow = {
+  restarting: boolean;
   message: string;
   ready?: boolean;
   listeners: Set<GatewayProgress>;
   completion: Promise<void>;
+  supersede: (next: Promise<void>) => void;
+};
+
+type FollowOptions = {
+  restart: boolean;
+  health?: GatewayHealth;
 };
 
 function restartProgressMessage(health: GatewayHealth) {
@@ -223,70 +230,104 @@ export class GatewayRecovery {
   }
 
   restartAndFollow(integration: Integration, onProgress: GatewayProgress): Promise<void> {
-    return this.followGateway(integration, onProgress);
+    return this.followGateway(integration, onProgress, { restart: true });
   }
 
-  private followGateway(integration: Integration, onProgress: GatewayProgress, health?: GatewayHealth): Promise<void> {
+  private followGateway(
+    integration: Integration,
+    onProgress: GatewayProgress,
+    options: FollowOptions,
+  ): Promise<void> {
     const host = getRestartContainerName(integration.credentials);
     const active = this.followingRestarts.get(host);
-    if (active) {
+    if (active && (!options.restart || active.restarting)) {
       active.listeners.add(onProgress);
       onProgress(active.message, active.ready);
       return active.completion;
     }
 
     const pending = this.pendingRestarts.get(host);
-    const follow: RestartFollow = {
-      message: health
-        ? restartProgressMessage(health) ?? "Waiting for IB Gateway to come back…"
-        : "Restarting IB Gateway…",
-      listeners: new Set([onProgress]),
-      completion: Promise.resolve().then(async () => {
-        try {
-          if (pending) await pending;
-          else if (!health) await this.restart(integration);
-        } catch (cause) {
-          throw new UserFacingError(
-            "I couldn’t restart IB Gateway. Ask the bot admin to check it.",
-            { cause, code: "ibkr_restart_failed" },
-          );
-        }
-        const result = await this.waitForReadiness(
-          integration,
-          host,
-          RESTART_FOLLOW_TIMEOUT_MS,
-          (health) => {
-            const message = restartProgressMessage(health);
-            if (message) publish(message);
-          },
-        );
-        if (result.outcome === "ready") {
-          publish("IB Gateway is ready.", true);
-        } else if (result.outcome === "blocked") {
-          throw new UserFacingError("IB Gateway stopped trying to sign in. Eyri will try again automatically.", {
-            code: "ibkr_login_halted",
-          });
-        } else {
-          throw new UserFacingError(result.health.reason === "verification"
-            ? "I stopped checking after 10 minutes. IB Gateway was still waiting for 2FA approval."
-            : "IB Gateway still wasn’t ready after 10 minutes. Ask the bot admin to check its status.");
-        }
-      }).finally(() => this.followingRestarts.delete(host)),
-    };
+    const restarting = options.restart || !!pending;
+    let superseded = false;
+    const handoff = Promise.withResolvers<Promise<void>>();
+    const listeners = new Set<GatewayProgress>(
+      active ? [...active.listeners, onProgress] : [onProgress],
+    );
     const publish = (message: string, ready?: boolean) => {
-      if (follow.message === message) return;
+      if (superseded || follow.message === message) return;
       follow.message = message;
       follow.ready = ready;
       for (const listener of follow.listeners) listener(message, ready);
     };
+    const run = Promise.resolve().then(async () => {
+      try {
+        if (pending) await pending;
+        else if (options.restart) await this.restart(integration);
+      } catch (cause) {
+        if (superseded) return;
+        throw new UserFacingError(
+          "I couldn’t restart IB Gateway. Ask the bot admin to check it.",
+          { cause, code: "ibkr_restart_failed" },
+        );
+      }
+      if (superseded) return;
+      const result = await this.waitForReadiness(
+        integration,
+        host,
+        RESTART_FOLLOW_TIMEOUT_MS,
+        (health) => {
+          const message = restartProgressMessage(health);
+          if (message) publish(message);
+        },
+        () => superseded,
+      );
+      if (superseded || result.outcome === "cancelled") return;
+      if (result.outcome === "ready") {
+        publish("IB Gateway is ready.", true);
+      } else if (result.outcome === "blocked") {
+        throw new UserFacingError(
+          result.health.reason === "upstream_down"
+            ? "IB Gateway lost its connection to IBKR. Eyri will try again automatically."
+            : "IB Gateway stopped trying to sign in. Eyri will try again automatically.",
+          { code: "ibkr_login_halted" },
+        );
+      } else {
+        throw new UserFacingError(result.health.reason === "verification"
+          ? "I stopped checking after 10 minutes. IB Gateway was still waiting for 2FA approval."
+          : "IB Gateway still wasn’t ready after 10 minutes. Ask the bot admin to check its status.");
+      }
+    }).finally(() => {
+      if (this.followingRestarts.get(host) === follow) {
+        this.followingRestarts.delete(host);
+      }
+    });
+    const completion = Promise.race([run, handoff.promise.then((next) => next)]);
+    const follow: RestartFollow = {
+      restarting,
+      message: options.health
+        ? restartProgressMessage(options.health) ?? "Waiting for IB Gateway to come back…"
+        : "Restarting IB Gateway…",
+      listeners,
+      completion,
+      supersede(next) {
+        superseded = true;
+        void run.catch(() => {});
+        handoff.resolve(next);
+      },
+    };
     this.followingRestarts.set(host, follow);
-    onProgress(follow.message);
+    active?.supersede(completion);
+    for (const listener of follow.listeners) listener(follow.message);
     return follow.completion;
   }
 
-  private async followReport(integration: Integration, onProgress: GatewayProgress, health?: GatewayHealth) {
+  private async followReport(
+    integration: Integration,
+    onProgress: GatewayProgress,
+    options: FollowOptions,
+  ) {
     try {
-      await this.followGateway(integration, onProgress, health);
+      await this.followGateway(integration, onProgress, options);
       return "retry" as const;
     } catch (error) {
       if (error instanceof UserFacingError) return error;
@@ -303,7 +344,7 @@ export class GatewayRecovery {
       ? (message, ready) => { if (!ready) report.onProgress(host, message); }
       : undefined;
     if (onProgress && (this.pendingRestarts.has(host) || this.followingRestarts.has(host))) {
-      return await this.followReport(integration, onProgress);
+      return await this.followReport(integration, onProgress, { restart: false });
     }
     if (this.pendingRestarts.has(host)) {
       try { await this.restartRequested.get(host); }
@@ -315,7 +356,7 @@ export class GatewayRecovery {
     let health = await this.health(host);
     if (health.state === "recovering") {
       if (!onProgress) return new UserFacingError(health.message, { cause: error });
-      const result = await this.followReport(integration, onProgress, health);
+      const result = await this.followReport(integration, onProgress, { restart: false, health });
       if (result === "retry" || result.code !== "ibkr_login_halted") return result;
       health = await this.health(host);
       if (health.state !== "blocked") return result;
@@ -330,7 +371,7 @@ export class GatewayRecovery {
       } catch { /* Both the user request and independent API probe failed. */ }
     }
     if (onProgress && (this.pendingRestarts.has(host) || this.followingRestarts.has(host))) {
-      return await this.followReport(integration, onProgress);
+      return await this.followReport(integration, onProgress, { restart: false });
     }
     if (this.pendingRestarts.has(host)) {
       try { await this.restartRequested.get(host); }
@@ -347,14 +388,20 @@ export class GatewayRecovery {
     const interval = halted || previous?.halted ? GATEWAY_RETRY_INTERVAL_MS : CONNECTION_RETRY_INTERVAL_MS;
     if (previous && this.now() - previous.at < interval) {
       if (previous.failure) return new UserFacingError("Gateway restart failed. Ask admin to check /status.");
-      if (halted) return new UserFacingError("IBKR login stopped again. Eyri will retry automatically.");
-      if (onProgress) return await this.followReport(integration, onProgress, health);
+      if (halted) {
+        return new UserFacingError(
+          health.reason === "upstream_down"
+            ? "IBKR server connection is still down. Eyri will retry automatically."
+            : "IBKR login stopped again. Eyri will retry automatically.",
+        );
+      }
+      if (onProgress) return await this.followReport(integration, onProgress, { restart: false, health });
       return new UserFacingError("IBKR API is still unreachable. Retry shortly.");
     }
     const attempt: AutomaticAttempt = { at: this.now(), halted };
     this.automaticAttempts.set(host, attempt);
     if (onProgress) {
-      const result = await this.followReport(integration, onProgress);
+      const result = await this.followReport(integration, onProgress, { restart: true });
       if (result instanceof UserFacingError && result.code === "ibkr_restart_failed") attempt.failure = result;
       return result;
     }
@@ -366,7 +413,9 @@ export class GatewayRecovery {
       return new UserFacingError("Gateway restart failed. Ask admin to check /status.", { cause });
     }
     const reason = /auth.*expir|session.*expir/i.test(message) ? "IBKR session expired."
-      : halted ? "IBKR login stopped." : "IBKR API is unreachable.";
+      : halted
+      ? health.reason === "upstream_down" ? "IBKR server connection is down." : "IBKR login stopped."
+      : "IBKR API is unreachable.";
     return new UserFacingError(`${reason} Gateway restart requested; please wait.`);
   }
 
@@ -417,10 +466,13 @@ export class GatewayRecovery {
     host: string,
     timeoutMs: number,
     onHealth?: (health: GatewayHealth) => void,
+    isCancelled?: () => boolean,
   ) {
     const deadline = this.now() + timeoutMs;
     while (true) {
+      if (isCancelled?.()) return { outcome: "cancelled" } as const;
       const health = await this.health(host);
+      if (isCancelled?.()) return { outcome: "cancelled" } as const;
       if (health.state === "blocked") return { outcome: "blocked", health } as const;
       onHealth?.(health);
       if (
@@ -429,10 +481,12 @@ export class GatewayRecovery {
       ) {
         try {
           await this.probe(integration);
+          if (isCancelled?.()) return { outcome: "cancelled" } as const;
           this.confirmConnection(host);
           return { outcome: "ready", health } as const;
         } catch { /* Login can take several minutes, keep checking. */ }
       }
+      if (isCancelled?.()) return { outcome: "cancelled" } as const;
       const remaining = deadline - this.now();
       if (remaining <= 0) return { outcome: "timeout", health } as const;
       await this.sleep(Math.min(remaining, READINESS_POLL_MS));

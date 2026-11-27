@@ -3,7 +3,7 @@ import { UserFacingError } from "../../../utils/user_error.ts";
 export type GatewayHealth = {
   state: "ready" | "recovering" | "blocked" | "unavailable" | "unknown";
   message: string;
-  reason?: "starting" | "login" | "verification" | "api_starting" | "reconnecting" | "login_paused" | "halted" | "health_unavailable" | "bad_health";
+  reason?: "starting" | "login" | "verification" | "api_starting" | "reconnecting" | "login_paused" | "halted" | "upstream_down" | "health_unavailable" | "bad_health";
 };
 
 export class GatewayError extends UserFacingError {
@@ -77,10 +77,15 @@ export class GatewayMonitor {
         state: "recovering", reason: "starting", message: "Gateway is starting. Please wait." };
       if (health.state === "LOGIN" || health.state === "POST_LOGIN") return { state: "recovering", reason: "login",
         message: "IBKR is logging in. Please wait." };
+      if (health.state === "UPSTREAM_DOWN" && health.upstream_recovery_active === false) {
+        return {
+          state: "blocked",
+          reason: "upstream_down",
+          message: "IBKR server connection is down. Restart Gateway to reconnect.",
+        };
+      }
       if (health.state === "UPSTREAM_DOWN" || health.upstream_connected === false) return {
-        state: "recovering", reason: "reconnecting", message: health.upstream_recovery_active === false
-          ? "IBKR server connection is down. Please wait."
-          : "IBKR is reconnecting. Please wait." };
+        state: "recovering", reason: "reconnecting", message: "IBKR is reconnecting. Please wait." };
       return { state: "recovering", reason: "api_starting", message: "IBKR API is starting. Please wait." };
     } catch {
       return {
