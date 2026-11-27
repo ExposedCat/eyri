@@ -352,6 +352,45 @@ Deno.test("explicit restart supersedes a passive follow without restarting for a
   deepStrictEqual(report2, ["Reconnecting to IBKR…", "Restarting IB Gateway…", "Connecting to IBKR…"]);
 });
 
+Deno.test("shared-gateway reports follow recovery with neutral 2FA wording", async () => {
+  const verification: GatewayHealth = { ...health("recovering"), reason: "verification" };
+  const sleeping = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let ready = false, restarts = 0;
+  const recovery = new GatewayRecovery(
+    async () => ready ? health("ready") : verification,
+    async () => {},
+    async () => { restarts++; },
+    () => {},
+    () => 0,
+    async () => {
+      sleeping.resolve();
+      await release.promise;
+    },
+  );
+  const viewerProgress: string[] = [];
+  const ownerProgress: string[] = [];
+  const viewerReport = recovery.handleFailure(integration, new GatewayError("gateway", verification), {
+    userId: integration.userId + 1,
+    onProgress: (_host, message) => viewerProgress.push(message),
+  });
+  await sleeping.promise;
+  const ownerReport = recovery.handleFailure(integration, new GatewayError("gateway", verification), {
+    userId: integration.userId,
+    onProgress: (_host, message) => ownerProgress.push(message),
+  });
+  ready = true;
+  release.resolve();
+  equal(await viewerReport, "retry");
+  equal(await ownerReport, "retry");
+  equal(restarts, 0);
+  deepStrictEqual(viewerProgress, ["Waiting for 2FA approval.", "Connecting to IBKR…"]);
+  deepStrictEqual(ownerProgress, [
+    "Waiting for 2FA approval. If IBKR sends a prompt, approve it in the app.",
+    "Connecting to IBKR…",
+  ]);
+});
+
 Deno.test("a failed restart can be retried immediately without force or a cooldown", async () => {
   let restarts = 0;
   const recovery = new GatewayRecovery(

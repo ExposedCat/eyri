@@ -34,13 +34,16 @@ type FollowOptions = {
   health?: GatewayHealth;
 };
 
+const OWN_VERIFICATION_MESSAGE =
+  "Waiting for 2FA approval. If IBKR sends a prompt, approve it in the app.";
+const SHARED_VERIFICATION_MESSAGE = "Waiting for 2FA approval.";
+
 function restartProgressMessage(health: GatewayHealth) {
   if (health.state === "ready") return "Connecting to IBKR…";
   switch (health.reason) {
     case "starting": return "IB Gateway is starting up…";
     case "login": return "Signing in to IBKR…";
-    case "verification":
-      return "Waiting for 2FA approval. If IBKR sends a prompt, approve it in the app.";
+    case "verification": return OWN_VERIFICATION_MESSAGE;
     case "login_paused":
       return "IBKR has paused sign-in. I’ll keep checking.";
     case "reconnecting": return "Reconnecting to IBKR…";
@@ -340,8 +343,17 @@ export class GatewayRecovery {
     if (!(error instanceof GatewayError) && !(error instanceof UserFacingError && error.code === "ibkr_connection") &&
       !/IBKR.*(?:disconnect|connection.*reset|auth.*expir|session.*expir)|(?:connecting to|waiting for) IBKR|ECONNREFUSED|ECONNRESET|EHOSTUNREACH/i.test(message)) return null;
     const host = getRestartContainerName(integration.credentials);
-    const onProgress: GatewayProgress | undefined = report?.userId === integration.userId
-      ? (message, ready) => { if (!ready) report.onProgress(host, message); }
+    const ownsGateway = report?.userId === integration.userId;
+    const onProgress: GatewayProgress | undefined = report
+      ? (message, ready) => {
+        if (ready) return;
+        report.onProgress(
+          host,
+          !ownsGateway && message === OWN_VERIFICATION_MESSAGE
+            ? SHARED_VERIFICATION_MESSAGE
+            : message,
+        );
+      }
       : undefined;
     if (onProgress && (this.pendingRestarts.has(host) || this.followingRestarts.has(host))) {
       return await this.followReport(integration, onProgress, { restart: false });

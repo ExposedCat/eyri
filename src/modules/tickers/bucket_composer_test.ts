@@ -10,7 +10,7 @@ import { createIntegration } from "../database/integration.ts";
 import { saveRsuAward } from "../database/rsu.ts";
 import { setPortfolioVisibility } from "../database/visibility.ts";
 import { ibkrAdapter } from "../integrations/ibkr/adapter.ts";
-import { gatewayMonitor } from "../integrations/ibkr/gateway.ts";
+import { GatewayError, type GatewayHealth, gatewayMonitor } from "../integrations/ibkr/gateway.ts";
 import { GatewayRecovery, gatewayRecovery } from "../integrations/ibkr/recovery.ts";
 import type { IntegrationOrder, IntegrationPortfolioPosition } from "../integrations/types.ts";
 import { getOrderTransactionKey } from "./portfolio.ts";
@@ -277,6 +277,115 @@ Deno.test("two Telegram reports share a restart, then each posts its original re
     approval.resolve();
     gatewayRecovery.handleFailure = originalRecovery;
     ibkrAdapter.fetchPortfolio = originalPortfolio;
+    db.close();
+  }
+});
+
+Deno.test("Telegram reports wait for both own and shared-bucket IBKR gateways when APIs are starting", async () => {
+  const db = new Database(":memory:");
+  const originalRecovery = gatewayRecovery.handleFailure;
+  const originalPortfolio = ibkrAdapter.fetchPortfolio;
+  const originalOrders = ibkrAdapter.fetchOrderHistory;
+  const release = Promise.withResolvers<void>();
+  const done = Promise.withResolvers<void>();
+  let ready = false, restarts = 0;
+  const apiStarting: GatewayHealth = {
+    state: "recovering",
+    reason: "api_starting",
+    message: "IBKR API is starting. Please wait.",
+  };
+  const recovery = new GatewayRecovery(
+    async () => ready ? { state: "ready", message: "IBKR Gateway is ready." } : apiStarting,
+    async () => { if (!ready) throw new Error("API offline"); },
+    async () => { restarts++; },
+    () => {},
+    () => 0,
+    () => release.promise,
+  );
+  try {
+    ensureSchema(db);
+    const callerId = 123456789, ownerId = 426043802;
+    await findOrCreateUser(db, callerId);
+    await findOrCreateUser(db, ownerId);
+    const ownSaved = createIntegration({
+      database: db,
+      userId: callerId,
+      kind: "ibkr",
+      credentials: { instanceUrl: "tcp://ib_gateway:4003" },
+    });
+    const sharedSaved = createIntegration({
+      database: db,
+      userId: ownerId,
+      kind: "ibkr",
+      credentials: { instanceUrl: "tcp://ib_gateway_2:4003" },
+    });
+    ok(ownSaved.data && sharedSaved.data);
+    const sharedOrder: IntegrationOrder = {
+      integrationId: sharedSaved.data.id,
+      integrationKind: "ibkr",
+      account: "U2",
+      ticker: "SHARED",
+      assetCategory: "STK",
+      currency: "USD",
+      quantity: 1,
+      price: 100,
+      date: new Date("2025-01-01"),
+    };
+    const bot = harness(db, ({ method }) => {
+      if (method === "sendRichMessage") done.resolve();
+    });
+    await bot.command("/bucket new Shared", ownerId);
+    await bot.command("/bucket transfer Shared", ownerId, callerId);
+    await bot.command("/bucket include Shared", callerId);
+    db.prepare(
+      "INSERT INTO portfolio_bucket_transactions (user_id, transaction_key, bucket_name) VALUES (?, ?, ?)",
+    ).run(ownerId, getOrderTransactionKey(sharedOrder), "Shared");
+    bot.calls.length = 0;
+
+    gatewayRecovery.handleFailure = recovery.handleFailure.bind(recovery);
+    ibkrAdapter.fetchOrderHistory = async (_db, integration) =>
+      integration.id === sharedSaved.data!.id ? [sharedOrder] : [];
+    ibkrAdapter.fetchPortfolio = async (_db, integration) => {
+      const host = integration.id === ownSaved.data!.id ? "ib_gateway" : "ib_gateway_2";
+      if (!ready) throw new GatewayError(host, apiStarting);
+      return [{
+        integrationId: integration.id,
+        integrationKind: "ibkr",
+        account: host,
+        ticker: integration.id === ownSaved.data!.id ? "OWN" : "SHARED",
+        assetCategory: "STK",
+        currency: "USD",
+        amount: 1,
+        averageUnitPrice: 100,
+        currentPrice: 110,
+        totalInput: 100,
+        totalNow: 110,
+        unrealizedPnl: 10,
+        realizedPnl: 0,
+        dailyPnl: 2,
+        dailyPnlPercentage: 2,
+        dailyPnlBaseline: 108,
+        openedAt: new Date("2025-01-01"),
+      }];
+    };
+
+    await bot.command("/dpnl", callerId);
+    equal(restarts, 0);
+    ok(!bot.calls.some((call) => String(call.payload.text ?? "").includes("IBKR API is starting")));
+
+    ready = true;
+    release.resolve();
+    await done.promise;
+    equal(restarts, 0);
+    const report = String((bot.calls.findLast((call) => call.method === "sendRichMessage")?.payload.rich_message as { html: string }).html);
+    match(report, /OWN/);
+    match(report, /SHARED/);
+  } finally {
+    ready = true;
+    release.resolve();
+    gatewayRecovery.handleFailure = originalRecovery;
+    ibkrAdapter.fetchPortfolio = originalPortfolio;
+    ibkrAdapter.fetchOrderHistory = originalOrders;
     db.close();
   }
 });

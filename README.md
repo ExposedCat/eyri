@@ -992,9 +992,9 @@ Gateway restart after an independent socket probe also fails. Concurrent request
 share the restart, and repeated failures have a three-minute retry interval.
 An active controller login/recovery is allowed to finish. An unreachable HTTP
 health endpoint does not restart a working API. A halted login can trigger a
-fresh restart, subject to the shared 15-minute retry interval. Telegram reports
-follow recovery for the sender's own Gateway and reply with progress, including
-when to check for 2FA.
+fresh restart, subject to the shared 15-minute retry interval. Telegram reports follow recovery for every IBKR Gateway needed by the report
+(including shared buckets and public portfolios) and reply with progress,
+including when to check for 2FA on the sender's own Gateway.
 Once the API responds, Eyri retries the failed broker request and sends the
 original report automatically. Reports that need the same Gateway share the
 restart. If recovery stops or a ten-minute sign-in watch expires, Eyri replies
