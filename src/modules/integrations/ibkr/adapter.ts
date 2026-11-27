@@ -1,4 +1,5 @@
 import {
+  type CommissionReport,
   type Contract,
   EventName,
   type Execution,
@@ -51,6 +52,8 @@ type IbkrExecutionRow = {
   currency: string | null;
   asset_category: string | null;
   contract_multiplier: number | null;
+  commission: number | null;
+  commission_currency: string | null;
 };
 
 function withTimeout<T>(
@@ -211,6 +214,8 @@ function ensureExecutionSchema(database: Database) {
       currency TEXT,
       asset_category TEXT,
       contract_multiplier REAL,
+      commission REAL,
+      commission_currency TEXT,
       synced_at TEXT NOT NULL,
       PRIMARY KEY (integration_id, exec_id)
     );
@@ -221,6 +226,12 @@ function ensureExecutionSchema(database: Database) {
   const columns = database.prepare("PRAGMA table_info(ibkr_executions)").all() as { name: string }[];
   if (!columns.some(column => column.name === "contract_multiplier")) {
     database.exec("ALTER TABLE ibkr_executions ADD COLUMN contract_multiplier REAL");
+  }
+  if (!columns.some(column => column.name === "commission")) {
+    database.exec("ALTER TABLE ibkr_executions ADD COLUMN commission REAL");
+  }
+  if (!columns.some(column => column.name === "commission_currency")) {
+    database.exec("ALTER TABLE ibkr_executions ADD COLUMN commission_currency TEXT");
   }
 }
 
@@ -272,8 +283,10 @@ function writeExecutionOrders(
       currency,
       asset_category,
       contract_multiplier,
+      commission,
+      commission_currency,
       synced_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(integration_id, exec_id) DO UPDATE SET
       account = excluded.account,
       ticker = excluded.ticker,
@@ -283,6 +296,8 @@ function writeExecutionOrders(
       currency = excluded.currency,
       asset_category = excluded.asset_category,
       contract_multiplier = COALESCE(excluded.contract_multiplier, ibkr_executions.contract_multiplier),
+      commission = COALESCE(excluded.commission, ibkr_executions.commission),
+      commission_currency = COALESCE(excluded.commission_currency, ibkr_executions.commission_currency),
       synced_at = excluded.synced_at
   `);
 
@@ -298,9 +313,29 @@ function writeExecutionOrders(
       order.currency,
       order.assetCategory,
       order.contractMultiplier ?? null,
+      order.commission?.amount ?? null,
+      order.commission?.currency ?? null,
       syncedAt,
     );
   }
+}
+
+const COMMISSION_REPORT_GRACE_MS = 150;
+
+function normalizeCommissionReport(report: CommissionReport) {
+  if (
+    !report?.execId ||
+    typeof report.commission !== "number" ||
+    !Number.isFinite(report.commission) ||
+    Math.abs(report.commission) >= 1e300
+  ) {
+    return null;
+  }
+  return {
+    execId: report.execId,
+    amount: report.commission === 0 ? 0 : -report.commission,
+    currency: report.currency?.trim().toUpperCase() || "",
+  };
 }
 
 async function fetchTodayExecutions(
@@ -310,17 +345,28 @@ async function fetchTodayExecutions(
   config: IbkrConnectionConfig,
 ) {
   const orders: { execId: string; order: IntegrationOrder }[] = [];
+  const commissions = new Map<string, { amount: number; currency: string }>();
   const filter: ExecutionFilter = { acctCode: accountId };
 
   let cleanup = () => {};
   try {
     await withTimeout(
       new Promise<void>((resolve, reject) => {
+        let detailsEnded = false;
+        let graceTimer: ReturnType<typeof setTimeout> | undefined;
         cleanup = () => {
+          clearTimeout(graceTimer);
           api.off(EventName.execDetails, onExecDetails);
           api.off(EventName.execDetailsEnd, onExecDetailsEnd);
+          api.off(EventName.commissionReport, onCommissionReport);
           api.off(EventName.error, onError);
         };
+        const finish = () => {
+          cleanup();
+          resolve();
+        };
+        const hasAllCommissions = () =>
+          orders.every(({ execId }) => commissions.has(execId));
         const onExecDetails = (
           reqId: number,
           contract: Contract,
@@ -335,13 +381,29 @@ async function fetchTodayExecutions(
             orders.push(order);
           }
         };
+        const onCommissionReport = (report: CommissionReport) => {
+          const parsed = normalizeCommissionReport(report);
+          if (!parsed) return;
+          commissions.set(parsed.execId, {
+            amount: parsed.amount,
+            currency: parsed.currency,
+          });
+          if (detailsEnded && hasAllCommissions()) {
+            finish();
+          }
+        };
         const onExecDetailsEnd = (reqId: number) => {
           if (reqId !== EXECUTION_SYNC_REQUEST_ID) {
             return;
           }
 
-          cleanup();
-          resolve();
+          detailsEnded = true;
+          if (orders.length === 0 || hasAllCommissions()) {
+            finish();
+            return;
+          }
+          // IB Gateway often emits CommissionReport callbacks right after execDetailsEnd.
+          graceTimer = setTimeout(finish, COMMISSION_REPORT_GRACE_MS);
         };
         const onError = (...args: unknown[]) => {
           const code = args[1];
@@ -352,6 +414,7 @@ async function fetchTodayExecutions(
 
         api.on(EventName.execDetails, onExecDetails);
         api.on(EventName.execDetailsEnd, onExecDetailsEnd);
+        api.on(EventName.commissionReport, onCommissionReport);
         api.on(EventName.error, onError);
         api.reqExecutions(EXECUTION_SYNC_REQUEST_ID, filter);
       }),
@@ -360,6 +423,16 @@ async function fetchTodayExecutions(
     );
   } finally {
     cleanup();
+  }
+
+  for (const item of orders) {
+    const report = commissions.get(item.execId);
+    if (report) {
+      item.order.commission = {
+        amount: report.amount,
+        currency: report.currency || item.order.currency,
+      };
+    }
   }
 
   return orders;
@@ -834,7 +907,9 @@ export function readExecutionOrders(
         price,
         currency,
         asset_category,
-        contract_multiplier
+        contract_multiplier,
+        commission,
+        commission_currency
       FROM ibkr_executions
       WHERE integration_id = ?
       ORDER BY date
@@ -852,6 +927,12 @@ export function readExecutionOrders(
     currency: row.currency ?? "USD",
     assetCategory: row.asset_category,
     ...(row.contract_multiplier !== null ? { contractMultiplier: row.contract_multiplier } : {}),
+    ...(row.commission !== null ? {
+      commission: {
+        amount: row.commission,
+        currency: row.commission_currency ?? row.currency ?? "USD",
+      },
+    } : {}),
   }));
 }
 

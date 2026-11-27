@@ -851,7 +851,7 @@ Deno.test("bucket move renders rich Move/Remove buttons and edits the clicked me
     const sent = richHtml("sendRichMessage");
     match(sent, /^<h2>Bucket Core<\/h2>\n<h3>2025 - /);
     ok(sent.includes(moveButton(1)) && sent.includes(moveButton(2)));
-    match(sent, /<p><b>Total \$200<\/b><\/p>$/);
+    match(sent, /<p><b>Total \$200 ⚠️<\/b><\/p>$/);
 
     await h.click(`bucket:${owner}:move:Core:1`);
     equal(readBucketAssignments(db, owner).get(JSON.stringify(["2025-01-02", "AAPL.US", "USD"])), "Core");
@@ -1248,5 +1248,149 @@ Deno.test("performance commands filter current and sold assets, with bot mention
     globalThis.fetch = previousFetch;
     if (previousPath === undefined) Deno.env.delete("EYRI_DATABASE_PATH");
     else Deno.env.set("EYRI_DATABASE_PATH", previousPath);
+  }
+});
+
+Deno.test("dpnl bought flags filter today's purchases and last N open purchases", async () => {
+  const db = new Database(":memory:");
+  const previousPortfolio = ibkrAdapter.fetchPortfolio;
+  const previousOrders = ibkrAdapter.fetchOrderHistory;
+  try {
+    ensureSchema(db);
+    const userId = 123456789;
+    await findOrCreateUser(db, userId);
+    const saved = createIntegration({
+      database: db,
+      userId,
+      kind: "ibkr",
+      credentials: { instanceUrl: "tcp://fixture:4003" },
+    });
+    ok(saved.data);
+    const todayIso = new Date().toISOString().slice(0, 10);
+    const olderDate = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10);
+    const oldestDate = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10);
+    let orders: IntegrationOrder[] = [
+      {
+        integrationId: saved.data.id,
+        integrationKind: "ibkr",
+        account: "U1",
+        ticker: "OLDEST",
+        assetCategory: "STK",
+        currency: "USD",
+        quantity: 2,
+        price: 50,
+        commission: { amount: -1, currency: "USD" },
+        date: new Date(oldestDate),
+      },
+      {
+        integrationId: saved.data.id,
+        integrationKind: "ibkr",
+        account: "U1",
+        ticker: "PREV",
+        assetCategory: "STK",
+        currency: "USD",
+        quantity: 2,
+        price: 100,
+        commission: { amount: -1, currency: "USD" },
+        date: new Date(olderDate),
+      },
+      {
+        integrationId: saved.data.id,
+        integrationKind: "ibkr",
+        account: "U1",
+        ticker: "TODAY",
+        assetCategory: "STK",
+        currency: "USD",
+        quantity: 5,
+        price: 100,
+        commission: { amount: -2, currency: "USD" },
+        date: new Date(todayIso),
+      },
+    ];
+    ibkrAdapter.fetchOrderHistory = async () => orders;
+    ibkrAdapter.fetchPortfolio = async () => [
+      {
+        integrationId: saved.data!.id,
+        integrationKind: "ibkr",
+        account: "U1",
+        ticker: "OLDEST",
+        assetCategory: "STK",
+        currency: "USD",
+        amount: 2,
+        averageUnitPrice: 50.5,
+        currentPrice: 60,
+        totalInput: 101,
+        totalNow: 120,
+        unrealizedPnl: 19,
+        realizedPnl: 0,
+        dailyPnl: 4,
+        dailyPnlPercentage: 3.45,
+        dailyPnlBaseline: 116,
+        openedAt: new Date(oldestDate),
+      },
+      {
+        integrationId: saved.data!.id,
+        integrationKind: "ibkr",
+        account: "U1",
+        ticker: "PREV",
+        assetCategory: "STK",
+        currency: "USD",
+        amount: 2,
+        averageUnitPrice: 100.5,
+        currentPrice: 110,
+        totalInput: 201,
+        totalNow: 220,
+        unrealizedPnl: 19,
+        realizedPnl: 0,
+        dailyPnl: 10,
+        dailyPnlPercentage: 4.76,
+        dailyPnlBaseline: 210,
+        openedAt: new Date(olderDate),
+      },
+      {
+        integrationId: saved.data!.id,
+        integrationKind: "ibkr",
+        account: "U1",
+        ticker: "TODAY",
+        assetCategory: "STK",
+        currency: "USD",
+        amount: 5,
+        averageUnitPrice: 100.4,
+        currentPrice: 102,
+        totalInput: 502,
+        totalNow: 510,
+        unrealizedPnl: 8,
+        realizedPnl: 0,
+        dailyPnl: 8,
+        dailyPnlPercentage: (8 / 502) * 100,
+        dailyPnlBaseline: 502,
+        openedAt: new Date(todayIso),
+      },
+    ];
+    const h = harness(db);
+
+    await h.command("/dpnl b");
+    match(h.lastText(), /TODAY.*\+\$8\.00 today/);
+    ok(!h.lastText().includes("PREV"));
+    ok(!h.lastText().includes("OLDEST"));
+    ok(!h.lastText().includes("⚠️"));
+
+    await h.command("/dpnl bought2");
+    match(h.lastText(), /TODAY.*\+\$8\.00 today/);
+    match(h.lastText(), /PREV.*\+\$10\.00 today/);
+    ok(!h.lastText().includes("OLDEST"));
+    match(h.lastText(), /Total:.*\+\$18\.00 today/);
+
+    await h.command("/number dpnl b");
+    match(h.lastText(), /\+\$8\.00$/);
+
+    // Without today's purchase, /dpnl b reports no purchases for today.
+    orders = orders.slice(0, 2);
+    await h.command("/dpnl b");
+    equal(h.lastText(), "No purchases found for today.");
+  } finally {
+    ibkrAdapter.fetchPortfolio = previousPortfolio;
+    ibkrAdapter.fetchOrderHistory = previousOrders;
+    db.close();
   }
 });

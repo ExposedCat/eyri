@@ -263,18 +263,24 @@ export async function runReport(
     });
     const years = new Map<
       number,
-      { year: number; spent: number; purchases: unknown[] }
+      { year: number; spent: number; approximate?: boolean; purchases: unknown[] }
     >();
+    let approximate = false;
     for (const group of groups) {
       const year = group.date.getUTCFullYear();
       const entry = years.get(year) ?? { year, spent: 0, purchases: [] };
       entry.spent += group.total;
+      if (group.approximate) {
+        entry.approximate = true;
+        approximate = true;
+      }
       entry.purchases.push({
         date: group.date.toISOString().slice(0, 10),
         ticker: group.ticker,
         amount: group.quantity,
         price: group.total / group.quantity,
         spent: group.total,
+        ...(group.approximate ? { approximate: true } : {}),
       });
       years.set(year, entry);
     }
@@ -282,6 +288,7 @@ export async function runReport(
       ...context,
       years: [...years.values()],
       total: groups.length ? groups.reduce((sum, g) => sum + g.total, 0) : null,
+      ...(approximate ? { approximate: true } : {}),
     };
   }
   if (name === "alltime" || name === "allnumber") {

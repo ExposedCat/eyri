@@ -1,4 +1,5 @@
 import { accountFunding, accountWorth } from "./account_return.ts";
+import type { BoughtFilter, ReportFilter } from "./performance_command.ts";
 import { accountFxInputs, accountFxPnl, accountTopups, proportionalCurrencyReturns } from "./account_fx.ts";
 import { requireReportNumber } from "../../utils/report_value.ts";
 import { userErrorMessage } from "../../utils/user_error.ts";
@@ -87,6 +88,8 @@ export type IntegratedHistoryGroup = {
   currency: string;
   quantity: number;
   total: number;
+  fees?: { currency: string; amount: number }[];
+  approximate?: boolean;
 };
 
 type IntegratedPositionPerformance = {
@@ -1748,6 +1751,341 @@ export function buildBucketedPortfolioPositions({
   return getSortedIntegratedPositions(positions);
 }
 
+function getOrderBuyFees(order: IntegrationOrder) {
+  const orderCurrency = order.currency.trim().toUpperCase();
+  if (order.commission !== undefined) {
+    const fee = -order.commission.amount;
+    const feeCurrency = order.commission.currency.trim().toUpperCase();
+    return feeCurrency === orderCurrency
+      ? { exact: true, sameCurrencyFee: fee, extraFees: [] as { currency: string; amount: number }[] }
+      : { exact: true, sameCurrencyFee: 0, extraFees: [{ currency: feeCurrency, amount: fee }] };
+  }
+  if (order.walletImpact !== undefined) {
+    let sameCurrencyFee = 0;
+    const extraFees: { currency: string; amount: number }[] = [];
+    for (const tax of order.walletImpact.taxes) {
+      const fee = -tax.quantity;
+      const feeCurrency = tax.currency.trim().toUpperCase();
+      if (feeCurrency === orderCurrency) sameCurrencyFee += fee;
+      else extraFees.push({ currency: feeCurrency, amount: fee });
+    }
+    return { exact: true, sameCurrencyFee, extraFees };
+  }
+  if (isCfdAllocation(order) || order.receipt === "gift") {
+    return { exact: true, sameCurrencyFee: 0, extraFees: [] as { currency: string; amount: number }[] };
+  }
+  return { exact: false, sameCurrencyFee: 0, extraFees: [] as { currency: string; amount: number }[] };
+}
+
+export async function buildBoughtDailyPositions({
+  orders,
+  positions,
+  transactionBuckets,
+  bucketName,
+  bought,
+  filter = null,
+  request,
+  today = new Date(),
+}: {
+  orders: IntegrationOrder[];
+  positions: IntegrationPortfolioPosition[];
+  transactionBuckets: Map<string, string>;
+  bucketName: string | null;
+  bought: BoughtFilter;
+  filter?: ReportFilter;
+  request?: typeof fetch;
+  today?: Date;
+}): Promise<IntegrationPortfolioPosition[]> {
+  type OpenBoughtLot = {
+    integrationId: number;
+    integrationKind: string;
+    account: string;
+    ticker: string;
+    currency: string;
+    assetCategory: string | null;
+    quantity: number;
+    originalQuantity: number;
+    price: number;
+    sameCurrencyFee: number;
+    extraFees: { currency: string; amount: number }[];
+    exactCost: boolean;
+    date: Date;
+    dayKey: string;
+    transactionKey: string;
+    bucketName: string | null;
+    orderIndex: number;
+  };
+
+  const livePositionsByKey = new Map<string, IntegrationPortfolioPosition>();
+  for (const position of positions) {
+    const key = getPositionDisplayKey(position.ticker, position.currency);
+    if (!livePositionsByKey.has(key)) livePositionsByKey.set(key, position);
+  }
+
+  const lotsByKey = new Map<string, OpenBoughtLot[]>();
+  const indexedOrders = orders
+    .map((order, orderIndex) => ({ order, orderIndex }))
+    .filter((item): item is { order: IntegrationOrder & { price: number }; orderIndex: number } =>
+      isDisplayableOrder(item.order)
+    )
+    .sort((a, b) => a.order.date.getTime() - b.order.date.getTime() || a.orderIndex - b.orderIndex);
+
+  for (const { order, orderIndex } of indexedOrders) {
+    const key = getBucketLotKey(order);
+    const lots = lotsByKey.get(key) ?? [];
+    if (order.quantity > 0) {
+      const fees = getOrderBuyFees(order);
+      const transactionKey = getOrderTransactionKey(order);
+      lots.push({
+        integrationId: order.integrationId,
+        integrationKind: order.integrationKind,
+        account: order.account,
+        ticker: order.ticker,
+        currency: order.currency,
+        assetCategory: order.assetCategory,
+        quantity: order.quantity,
+        originalQuantity: order.quantity,
+        price: order.price,
+        sameCurrencyFee: fees.sameCurrencyFee,
+        extraFees: fees.extraFees,
+        exactCost: fees.exact,
+        date: order.date,
+        dayKey: order.date.toISOString().slice(0, 10),
+        transactionKey,
+        bucketName: transactionBuckets.get(transactionKey) ?? null,
+        orderIndex,
+      });
+      lotsByKey.set(key, lots);
+      continue;
+    }
+
+    let remainingSellQuantity = Math.abs(order.quantity);
+    while (remainingSellQuantity > FLOAT_EPSILON && lots.length > 0) {
+      const lot = lots[0];
+      const consumedQuantity = Math.min(lot.quantity, remainingSellQuantity);
+      lot.quantity -= consumedQuantity;
+      remainingSellQuantity -= consumedQuantity;
+      if (lot.quantity <= FLOAT_EPSILON) lots.shift();
+    }
+    lotsByKey.set(key, lots);
+  }
+
+  const matchesFilter = filter === "stocks" ? isStockPosition
+    : filter === "options" ? isOptionPosition : () => true;
+  const todayKey = today.toISOString().slice(0, 10);
+
+  const openLots: OpenBoughtLot[] = [];
+  const allTodayLotsByKey = new Map<string, OpenBoughtLot[]>();
+  for (const lots of lotsByKey.values()) {
+    for (const lot of lots) {
+      if (lot.quantity <= FLOAT_EPSILON || lot.bucketName !== bucketName) continue;
+      const displayKey = getPositionDisplayKey(lot.ticker, lot.currency);
+      const livePosition = livePositionsByKey.get(displayKey);
+      if (!livePosition) continue;
+      if (lot.dayKey === todayKey) {
+        const list = allTodayLotsByKey.get(displayKey) ?? [];
+        list.push(lot);
+        allTodayLotsByKey.set(displayKey, list);
+      }
+      if (!matchesFilter(livePosition)) continue;
+      openLots.push(lot);
+    }
+  }
+
+  // Convert cross-currency fees into each lot's instrument currency when needed.
+  const feeRatesByTarget = new Map<string, Map<string, number>>();
+  const feeCurrenciesByTarget = new Map<string, Set<string>>();
+  for (const lots of [...allTodayLotsByKey.values(), openLots]) {
+    for (const lot of lots) {
+      if (!lot.extraFees.length) continue;
+      const target = lot.currency.trim().toUpperCase();
+      const set = feeCurrenciesByTarget.get(target) ?? new Set<string>();
+      for (const fee of lot.extraFees) set.add(fee.currency);
+      feeCurrenciesByTarget.set(target, set);
+    }
+  }
+  for (const [target, currencies] of feeCurrenciesByTarget) {
+    feeRatesByTarget.set(target, await fetchConversionRates([...currencies], target, request));
+  }
+
+  const lotCost = (lot: OpenBoughtLot) => {
+    const fraction = lot.quantity / lot.originalQuantity;
+    const rates = feeRatesByTarget.get(lot.currency.trim().toUpperCase());
+    const extraFeeTotal = rates
+      ? lot.extraFees.reduce((sum, fee) => sum + fee.amount * conversionFactor(fee.currency, rates), 0)
+      : 0;
+    return lot.quantity * lot.price + (lot.sameCurrencyFee + extraFeeTotal) * fraction;
+  };
+
+  type PurchaseGroup = {
+    transactionKey: string;
+    dayKey: string;
+    latestTime: number;
+    lastOrderIndex: number;
+    lots: OpenBoughtLot[];
+  };
+  const purchaseGroups = new Map<string, PurchaseGroup>();
+  for (const lot of openLots) {
+    const group = purchaseGroups.get(lot.transactionKey) ?? {
+      transactionKey: lot.transactionKey,
+      dayKey: lot.dayKey,
+      latestTime: lot.date.getTime(),
+      lastOrderIndex: lot.orderIndex,
+      lots: [],
+    };
+    group.latestTime = Math.max(group.latestTime, lot.date.getTime());
+    group.lastOrderIndex = Math.max(group.lastOrderIndex, lot.orderIndex);
+    group.lots.push(lot);
+    purchaseGroups.set(lot.transactionKey, group);
+  }
+
+  const selectedGroups = bought.mode === "today"
+    ? [...purchaseGroups.values()].filter((group) => group.dayKey === todayKey)
+    : [...purchaseGroups.values()]
+      .sort((a, b) =>
+        b.dayKey.localeCompare(a.dayKey) ||
+        b.latestTime - a.latestTime ||
+        b.lastOrderIndex - a.lastOrderIndex
+      )
+      .slice(0, bought.count);
+
+  if (selectedGroups.length === 0) return [];
+
+  const todaySummaryByKey = new Map<string, { amount: number; cost: number }>();
+  for (const [displayKey, lots] of allTodayLotsByKey) {
+    todaySummaryByKey.set(displayKey, {
+      amount: lots.reduce((sum, lot) => sum + lot.quantity, 0),
+      cost: lots.reduce((sum, lot) => sum + lotCost(lot), 0),
+    });
+  }
+
+  type AggregatedBoughtPosition = {
+    livePosition: IntegrationPortfolioPosition;
+    accounts: Set<string>;
+    amount: number;
+    totalInput: number;
+    totalNow: number | null;
+    dailyPnl: number | null;
+    dailyPnlBaseline: number | null;
+    dailyPnlTotalBaseline: number | null;
+    dailyPnlCached: boolean;
+    openedAt: Date | null;
+  };
+  const aggregated = new Map<string, AggregatedBoughtPosition>();
+
+  for (const group of selectedGroups) {
+    for (const lot of group.lots) {
+      const displayKey = getPositionDisplayKey(lot.ticker, lot.currency);
+      const livePosition = livePositionsByKey.get(displayKey)!;
+      const liveAmount = Math.abs(livePosition.amount);
+      const cost = lotCost(lot);
+      const now = livePosition.currentPrice === null ? null : lot.quantity * livePosition.currentPrice;
+
+      let lotDailyPnl: number | null = null;
+      let lotDailyBaseline: number | null = null;
+      let lotDailyTotalBaseline: number | null = null;
+      let lotDailyCached = false;
+
+      if (lot.dayKey === todayKey) {
+        lotDailyPnl = now === null ? null : now - cost;
+        lotDailyBaseline = cost;
+        lotDailyTotalBaseline = cost;
+        lotDailyCached = !lot.exactCost || Boolean(livePosition.currentPriceCached);
+      } else if (livePosition.dailyPnl !== null && liveAmount > FLOAT_EPSILON) {
+        const todaySummary = todaySummaryByKey.get(displayKey);
+        const todayAmount = todaySummary?.amount ?? 0;
+        const oldAmount = liveAmount - todayAmount;
+        if (
+          todayAmount > FLOAT_EPSILON &&
+          oldAmount > FLOAT_EPSILON &&
+          livePosition.currentPrice !== null &&
+          (livePosition.integrationKind === "ibkr" || livePosition.integrationKind === "f24")
+        ) {
+          const todayPnl = todayAmount * livePosition.currentPrice - todaySummary!.cost;
+          const oldDailyPnl = livePosition.dailyPnl - todayPnl;
+          const oldBaseline = livePosition.dailyPnlBaseline === null
+            ? null
+            : livePosition.dailyPnlBaseline - todaySummary!.cost;
+          const share = lot.quantity / oldAmount;
+          lotDailyPnl = oldDailyPnl * share;
+          lotDailyBaseline = oldBaseline === null ? null : oldBaseline * share;
+          lotDailyTotalBaseline = livePosition.dailyPnlTotalBaseline == null
+            ? lotDailyBaseline
+            : livePosition.dailyPnlTotalBaseline * (lot.quantity / liveAmount);
+        } else {
+          const share = lot.quantity / liveAmount;
+          lotDailyPnl = livePosition.dailyPnl * share;
+          lotDailyBaseline = livePosition.dailyPnlBaseline === null
+            ? null
+            : livePosition.dailyPnlBaseline * share;
+          lotDailyTotalBaseline = livePosition.dailyPnlTotalBaseline == null
+            ? lotDailyBaseline
+            : livePosition.dailyPnlTotalBaseline * share;
+        }
+        lotDailyCached = Boolean(livePosition.dailyPnlCached);
+      }
+
+      const current = aggregated.get(displayKey);
+      if (!current) {
+        aggregated.set(displayKey, {
+          livePosition,
+          accounts: new Set(lot.account ? [lot.account] : []),
+          amount: lot.quantity,
+          totalInput: cost,
+          totalNow: now,
+          dailyPnl: lotDailyPnl,
+          dailyPnlBaseline: lotDailyBaseline,
+          dailyPnlTotalBaseline: lotDailyTotalBaseline,
+          dailyPnlCached: lotDailyCached,
+          openedAt: lot.date,
+        });
+      } else {
+        if (lot.account) current.accounts.add(lot.account);
+        current.amount += lot.quantity;
+        current.totalInput += cost;
+        current.totalNow = current.totalNow === null || now === null ? null : current.totalNow + now;
+        current.dailyPnl = current.dailyPnl === null || lotDailyPnl === null ? null : current.dailyPnl + lotDailyPnl;
+        current.dailyPnlBaseline = current.dailyPnlBaseline === null || lotDailyBaseline === null
+          ? null
+          : current.dailyPnlBaseline + lotDailyBaseline;
+        current.dailyPnlTotalBaseline = current.dailyPnlTotalBaseline === null || lotDailyTotalBaseline === null
+          ? null
+          : current.dailyPnlTotalBaseline + lotDailyTotalBaseline;
+        current.dailyPnlCached = current.dailyPnlCached || lotDailyCached;
+        if (current.openedAt === null || lot.date < current.openedAt) current.openedAt = lot.date;
+      }
+    }
+  }
+
+  const result: IntegrationPortfolioPosition[] = [...aggregated.values()].map((item) => {
+    const { livePosition } = item;
+    const dailyPnlPercentage = item.dailyPnl === null || item.dailyPnlBaseline === null
+      ? null
+      : Math.abs(item.dailyPnlBaseline) <= FLOAT_EPSILON
+      ? (Math.abs(item.dailyPnl) <= FLOAT_EPSILON ? 0 : null)
+      : (item.dailyPnl / item.dailyPnlBaseline) * 100;
+    const dailyPnl = dailyPnlPercentage === null ? null : item.dailyPnl;
+    return {
+      ...livePosition,
+      account: [...item.accounts].join(", ") || livePosition.account,
+      amount: item.amount,
+      averageUnitPrice: item.amount > 0 ? item.totalInput / item.amount : null,
+      totalInput: item.totalInput,
+      totalNow: item.totalNow,
+      unrealizedPnl: item.totalNow === null ? null : item.totalNow - item.totalInput,
+      realizedPnl: null,
+      dailyPnl,
+      dailyPnlPercentage,
+      dailyPnlBaseline: dailyPnl === null ? null : item.dailyPnlBaseline,
+      dailyPnlTotalBaseline: dailyPnl === null ? null : item.dailyPnlTotalBaseline,
+      ...(item.dailyPnlCached ? { dailyPnlCached: true } : { dailyPnlCached: undefined }),
+      openedAt: item.openedAt,
+    };
+  });
+
+  return getSortedIntegratedPositions(result);
+}
+
 export function buildIntegratedHistoryGroups(orders: IntegrationOrder[]) {
   const grouped = new Map<string, IntegratedHistoryGroup>();
 
@@ -1765,8 +2103,15 @@ export function buildIntegratedHistoryGroups(orders: IntegrationOrder[]) {
       quantity: 0,
       total: 0,
     };
+    const fees = getOrderBuyFees(order);
     group.quantity += order.quantity;
-    group.total += order.quantity * order.price;
+    group.total += order.quantity * order.price + fees.sameCurrencyFee;
+    if (fees.extraFees.length) {
+      group.fees = [...(group.fees ?? []), ...fees.extraFees];
+    }
+    if (!fees.exact) {
+      group.approximate = true;
+    }
     grouped.set(key, group);
   }
 
@@ -1784,14 +2129,21 @@ export async function buildIntegratedHistoryReport({
 }: BuildIntegratedHistoryArgs) {
   const sorted = buildIntegratedHistoryGroups(orders);
   const rates = await fetchConversionRates(
-    sorted.map((g) => g.currency),
+    [
+      ...sorted.map((g) => g.currency),
+      ...sorted.flatMap((g) => g.fees?.map((fee) => fee.currency) ?? []),
+    ],
     currency,
     request,
   );
   const groups = sorted.map((original) => ({
     ...original,
     currency,
-    total: original.total * conversionFactor(original.currency, rates),
+    total: original.total * conversionFactor(original.currency, rates) +
+      (original.fees ?? []).reduce(
+        (sum, fee) => sum + fee.amount * conversionFactor(fee.currency, rates),
+        0,
+      ),
   }));
   return { sorted, groups };
 }
@@ -1822,9 +2174,10 @@ export async function buildIntegratedHistorySections({
   const { sorted, groups } = await buildIntegratedHistoryReport({ orders, request, currency });
   if (sorted.length === 0) return null;
   const grouped = new Map<number, { index: number; text: string }[]>();
-  const yearTotals = new Map<number, { total: number; currency: string }>();
+  const yearTotals = new Map<number, { total: number; currency: string; approximate: boolean }>();
   let totalSpent = 0;
   let totalCurrency = currency;
+  let totalApproximate = false;
 
   for (const [index, original] of sorted.entries()) {
     const group = groups[index];
@@ -1847,7 +2200,7 @@ export async function buildIntegratedHistorySections({
         group.total,
         group.currency,
       )
-    })`;
+    })${group.approximate ? " ⚠️" : ""}`;
     const lineSuffix = formatLineSuffix?.(original, index + 1);
     lines.push({
       index: index + 1,
@@ -1858,24 +2211,27 @@ export async function buildIntegratedHistorySections({
     const yearTotal = yearTotals.get(year) ?? {
       total: 0,
       currency: group.currency,
+      approximate: false,
     };
     yearTotal.total += group.total;
+    yearTotal.approximate = yearTotal.approximate || Boolean(group.approximate);
     yearTotals.set(year, yearTotal);
     totalSpent += group.total;
     totalCurrency = group.currency;
+    totalApproximate = totalApproximate || Boolean(group.approximate);
   }
 
   const sections = [...grouped.entries()].map(([year, lines]) => {
     const yearTotal = yearTotals.get(year);
     const header = yearTotal
-      ? `${year} - ${formatWholeMoney(yearTotal.total, yearTotal.currency)}`
+      ? `${year} - ${formatWholeMoney(yearTotal.total, yearTotal.currency)}${yearTotal.approximate ? " ⚠️" : ""}`
       : String(year);
     return { header, lines };
   });
 
   return {
     sections,
-    total: `Total ${formatWholeMoney(totalSpent, totalCurrency)}`,
+    total: `Total ${formatWholeMoney(totalSpent, totalCurrency)}${totalApproximate ? " ⚠️" : ""}`,
   };
 }
 

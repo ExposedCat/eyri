@@ -5,6 +5,7 @@ import type {
   IntegrationPortfolioPosition,
 } from "../integrations/types.ts";
 import {
+  buildBoughtDailyPositions,
   buildBucketedPortfolioPositions,
   buildIntegratedAllTimePerformanceList,
   buildIntegratedAllTimeReport,
@@ -829,4 +830,137 @@ Deno.test("all money reports fail on unavailable FX rather than display a partia
     buildIntegratedHistory({ orders, request }),
     /Could not load USD exchange rate for EUR/,
   );
+});
+
+Deno.test("history includes known commissions and wallet fees, and marks missing fees with a warning", async () => {
+  const exactOrders: IntegrationOrder[] = [
+    { ...order("SMH", 18, 78.45, "2026-11-27"), commission: { amount: -4, currency: "USD" } },
+    { ...order("SMH", 1.7586, 78.41, "2026-11-27"), commission: { amount: 0, currency: "USD" } },
+    // Cross-currency EUR commission (-2 EUR = $2.50 at fxRequest 0.8 EUR/USD).
+    { ...order("NVDA", 1, 100, "2026-11-26"), commission: { amount: -2, currency: "EUR" } },
+    // Trading 212 fill with wallet FX fee (-0.80 EUR = $1.00).
+    {
+      ...order("AVGO", 1, 200, "2026-11-25"),
+      integrationKind: "t212",
+      walletImpact: {
+        currency: "EUR",
+        netValue: 161,
+        fxRate: 1.25,
+        taxes: [{ name: "CURRENCY_CONVERSION_FEE", quantity: -0.8, currency: "EUR" }],
+      },
+    },
+  ];
+  const exactHistory = await buildIntegratedHistory({ orders: exactOrders, request: fxRequest });
+  ok(!exactHistory.includes("⚠️"), exactHistory);
+  // SMH: 18*78.45 + 1.7586*78.41 + 4 = 1553.991826 -> $1,554
+  match(exactHistory, /27\.11 SMH 19\.7586 x \$78\.65 \(\$1,554\)$/m);
+  // NVDA: 100 + 2.50 = 102.50 -> $103
+  match(exactHistory, /26\.11 NVDA 1\.0000 x \$102\.50 \(\$103\)/);
+  // AVGO: 200 + 1.00 = 201 -> $201
+  match(exactHistory, /25\.11 AVGO 1\.0000 x \$201\.00 \(\$201\)/);
+
+  const mixedOrders: IntegrationOrder[] = [
+    { ...order("SMH", 10, 100, "2025-05-01"), commission: { amount: -4, currency: "USD" } },
+    // Missing commission (e.g. Freedom24 or unsynced IBKR execution).
+    order("MSFT", 2, 50, "2026-11-27"),
+  ];
+  const mixedHistory = await buildIntegratedHistory({ orders: mixedOrders, request: fxRequest });
+  match(mixedHistory, /2025 - \$1,004\n/);
+  ok(!mixedHistory.includes("01.05 SMH 10.0000 x $100.40 ($1,004) ⚠️"));
+  match(mixedHistory, /2026 - \$100 ⚠️\n27\.11 MSFT 2\.0000 x \$50\.00 \(\$100\) ⚠️/);
+  match(mixedHistory, /Total \$1,104 ⚠️$/);
+});
+
+Deno.test("buildBoughtDailyPositions evaluates today's buys from cost and last N purchases cleanly", async () => {
+  const today = new Date("2026-11-27T17:00:00Z");
+  const orders: IntegrationOrder[] = [
+    // Older SMH holding (10 shares) + today's SMH buy split across 2 fills (10 shares, $105 + $4 fee = $1054).
+    { ...order("SMH", 10, 90, "2026-07-03"), commission: { amount: -4, currency: "USD" } },
+    { ...order("SMH", 8, 105, "2026-11-27"), commission: { amount: -4, currency: "USD" } },
+    { ...order("SMH", 2, 105, "2026-11-27"), commission: { amount: 0, currency: "USD" } },
+    // Prior-day NVDA buy (5 shares, still open).
+    { ...order("NVDA", 5, 120, "2026-11-20"), commission: { amount: -1, currency: "USD" } },
+    // Sold AAPL buy (should not count as open in b2).
+    { ...order("AAPL", 3, 200, "2026-11-25"), commission: { amount: -1, currency: "USD" } },
+    { ...order("AAPL", -3, 210, "2026-11-26"), commission: { amount: -1, currency: "USD" } },
+    // Freedom24 today buy without commission (should mark dailyPnlCached -> ⚠️).
+    { ...order("PLAB", 2, 50, "2026-11-27"), integrationId: 2, integrationKind: "f24" },
+  ];
+  const positions: IntegrationPortfolioPosition[] = [
+    // SMH: 10 old shares (prevClose 100 -> 110 = +100) + 10 today shares (cost 1054 -> 1100 = +46) = +146 total dailyPnl.
+    position({
+      ticker: "SMH",
+      amount: 20,
+      currentPrice: 110,
+      totalNow: 2200,
+      dailyPnl: 146,
+      dailyPnlBaseline: 2054,
+      dailyPnlPercentage: (146 / 2054) * 100,
+    }),
+    position({
+      ticker: "NVDA",
+      amount: 5,
+      currentPrice: 130,
+      totalNow: 650,
+      dailyPnl: 25,
+      dailyPnlBaseline: 625,
+      dailyPnlPercentage: 4,
+    }),
+    position({
+      integrationId: 2,
+      integrationKind: "f24",
+      ticker: "PLAB",
+      amount: 2,
+      currentPrice: 55,
+      totalNow: 110,
+      dailyPnl: 10,
+      dailyPnlBaseline: 100,
+      dailyPnlPercentage: 10,
+    }),
+  ];
+
+  // /dpnl b -> only today's SMH (10 shares, +46 exact) and PLAB (2 shares, +10 approximate).
+  const boughtToday = await buildBoughtDailyPositions({
+    orders,
+    positions,
+    transactionBuckets: new Map(),
+    bucketName: null,
+    bought: { mode: "today" },
+    today,
+  });
+  equal(boughtToday.length, 2);
+  const smhToday = boughtToday.find((p) => p.ticker === "SMH")!;
+  equal(smhToday.amount, 10);
+  equal(smhToday.dailyPnl, 46);
+  equal(smhToday.dailyPnlBaseline, 1054);
+  equal(smhToday.dailyPnlCached, undefined);
+  const plabToday = boughtToday.find((p) => p.ticker === "PLAB")!;
+  equal(plabToday.dailyPnl, 10);
+  equal(plabToday.dailyPnlCached, true);
+
+  // /dpnl b3 -> PLAB (today), SMH (today), NVDA (2026-11-20); sold AAPL is excluded.
+  const lastThree = await buildBoughtDailyPositions({
+    orders,
+    positions,
+    transactionBuckets: new Map(),
+    bucketName: null,
+    bought: { mode: "last", count: 3 },
+    today,
+  });
+  deepStrictEqual(lastThree.map((p) => p.ticker).sort(), ["NVDA", "PLAB", "SMH"]);
+  equal(lastThree.find((p) => p.ticker === "NVDA")!.dailyPnl, 25);
+
+  // /dpnl b4 -> also includes older SMH lot (+100), combining with today's SMH (+46) = +146!
+  const lastFour = await buildBoughtDailyPositions({
+    orders,
+    positions,
+    transactionBuckets: new Map(),
+    bucketName: null,
+    bought: { mode: "last", count: 4 },
+    today,
+  });
+  const smhCombined = lastFour.find((p) => p.ticker === "SMH")!;
+  equal(smhCombined.amount, 20);
+  equal(smhCombined.dailyPnl, 146);
+  equal(smhCombined.dailyPnlBaseline, 2054);
 });

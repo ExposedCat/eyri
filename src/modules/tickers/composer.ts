@@ -57,6 +57,7 @@ import {
 } from "./decorations.ts";
 import { removeTickerEmojiPack, syncTickerEmojiPack } from "./emoji_pack.ts";
 import {
+  buildBoughtDailyPositions,
   buildIntegratedAllTimePerformanceList,
   buildIntegratedDailyPerformanceList,
   buildIntegratedHistoryGroups,
@@ -1003,9 +1004,9 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
   const defaultKind = hasCommand(["alltime", "allnumber"]) ? "alltime"
     : hasCommand(["worth", "worthnumber"]) ? "worth" : hasCommand("dpnl") ? "dpnl" : "perf";
   const args = hasCommand("number") ? parseReportArgs(ctx.match, defaultKind, true)
-    : (() => { const parsed = parsePerformanceArgs(ctx.match); return parsed ? { ...parsed, kind: defaultKind } : null; })();
+    : (() => { const parsed = parsePerformanceArgs(ctx.match, defaultKind === "dpnl"); return parsed ? { ...parsed, kind: defaultKind } : null; })();
   if (!args) {
-    await ctx.reply("Use /perf, /dpnl, /alltime, or /worth [s/o/stocks/options] [BUCKET], or /number [perf|alltime|worth|dpnl] [s/o/stocks/options] [BUCKET].");
+    await ctx.reply("Use /perf, /dpnl, /alltime, or /worth [s/o/stocks/options] [BUCKET] (with optional b/bought/bN/boughtN for /dpnl), or /number [perf|alltime|worth|dpnl] [s/o/stocks/options] [BUCKET].");
     return;
   }
   const bucketName = await resolveBucketName(ctx, args.bucketName);
@@ -1058,6 +1059,31 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
         ...preferences,
         formatTicker,
       });
+    } else if (isDaily && args.bought) {
+      const view = await fetchPortfolioView(
+        ctx.db, ctx.dbEntities.user.userId, bucketName, {
+          history: true,
+          recentHistory: true,
+          warrantQuotes: args.filter !== "stocks",
+          dailyPnl: true,
+          gatewayRecovery: ctx.ibkrReportRecovery,
+        },
+      );
+      const positions = await buildBoughtDailyPositions({
+        orders: view.orders,
+        positions: view.positions,
+        transactionBuckets: view.transactionBuckets,
+        bucketName,
+        bought: args.bought,
+        filter: args.filter,
+      });
+      performanceList = await buildIntegratedDailyPerformanceList({
+        currency,
+        positions,
+        numberOnly,
+        ...preferences,
+        formatTicker,
+      });
     } else {
       const worthView = showCurrentValue && args.filter === null
         ? await fetchPortfolioView(ctx.db, ctx.dbEntities.user.userId, bucketName, {
@@ -1078,6 +1104,10 @@ tickersComposer.command(["perf", "dpnl", "alltime", "number", "allnumber", "wort
     }
 
     if (performanceList.length === 0) {
+      if (args.bought?.mode === "today") {
+        await ctx.reply("No purchases found for today.", await ctx.ibkrReportRecovery?.replyOptions());
+        return;
+      }
       await ctx.text("no_positions");
       return;
     }

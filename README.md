@@ -556,10 +556,17 @@ Use `/KIND[@bot_username] [s/o/stocks/options] [BUCKET]`, where `KIND` is
 `perf`, `dpnl`, `alltime`, or `worth`. Both arguments are optional; put the
 asset filter before the bucket. `s` and `stocks` select stocks/CFDs; `o` and
 `options` select options and warrants. Without a filter, both are included.
-For example: `/perf s`, `/dpnl options Core`, `/worth Core`, or
-`/alltime@eyri_bot stocks Core`. `/number`, `/allnumber`, and `/worthnumber`
+For example: `/perf s`, `/dpnl options Core`, `/dpnl b`, `/dpnl bought2 Core`, `/worth Core`, or
+`/alltime@eyri_bot stocks Core`. `/dpnl` and `/number dpnl` also accept `b`/`bought`
+to evaluate only today's purchases or `bN`/`boughtN` (e.g. `b2`, `bought2`) to
+evaluate the last `N` open purchases. `/number`, `/allnumber`, and `/worthnumber`
 also accept these filters. Filter words in the first argument are reserved.
 The separate `/stocks` and `/options` commands have been removed.
+
+`/history` includes broker commissions and fees whenever available (IBKR Flex
+trades, IBKR execution commission reports, Trading 212 wallet taxes) and marks
+purchases, year totals, and grand totals with `⚠️` when per-trade commissions
+are unavailable.
 
 Filtered `/alltime` views show selected open and sold P/L without allocating
 account cash. Bucket views use the fresh-cash purchase assumption described above.

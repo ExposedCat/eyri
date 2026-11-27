@@ -282,6 +282,50 @@ Deno.test("IBKR migrates stored executions and preserves broker contract multipl
   } finally { ibkrSessions.run = original; db.close(); }
 });
 
+Deno.test("IBKR execution sync captures CommissionReport callbacks and preserves known commissions", async () => {
+  const db = new Database(":memory:");
+  const original = ibkrSessions.run;
+  class Api extends EventEmitter {
+    emitCommission = true;
+    reqManagedAccts() { this.emit(EventName.managedAccounts, "U1"); }
+    reqExecutions(id: number) {
+      this.emit(EventName.execDetails, id,
+        { symbol: "SMH", secType: "STK", currency: "USD" },
+        { execId: "smh-1", acctNumber: "U1", time: "20261127 16:00:00", shares: 18, side: "BOT", price: 78.45 });
+      this.emit(EventName.execDetails, id,
+        { symbol: "SMH", secType: "STK", currency: "USD" },
+        { execId: "smh-2", acctNumber: "U1", time: "20261127 16:00:01", shares: 1, side: "BOT", price: 78.44 });
+      this.emit(EventName.execDetailsEnd, id);
+      if (this.emitCommission) {
+        queueMicrotask(() => {
+          this.emit(EventName.commissionReport, { execId: "smh-1", commission: 4, currency: "USD" });
+          this.emit(EventName.commissionReport, { execId: "smh-2", commission: Number.MAX_VALUE, currency: "USD" });
+        });
+      }
+    }
+  }
+  const api = new Api();
+  ibkrSessions.run = async (_config, action) => await action(api as unknown as IBApi);
+  try {
+    ensureSchema(db);
+    db.exec("INSERT INTO users(user_id) VALUES (1)");
+    db.prepare("INSERT INTO integrations(id,user_id,kind,credentials_json) VALUES (1,1,'ibkr',?)")
+      .run(JSON.stringify(integration.credentials));
+    await syncIbkrExecutions(db);
+    let orders = await ibkrAdapter.fetchOrderHistory(db, integration);
+    equal(orders.length, 2);
+    deepStrictEqual(orders[0].commission, { amount: -4, currency: "USD" });
+    equal(orders[1].commission, undefined);
+
+    // A later sync without CommissionReport must preserve previously saved commissions.
+    api.emitCommission = false;
+    await syncIbkrExecutions(db);
+    orders = await ibkrAdapter.fetchOrderHistory(db, integration);
+    deepStrictEqual(orders[0].commission, { amount: -4, currency: "USD" });
+    deepStrictEqual(api.eventNames(), []);
+  } finally { ibkrSessions.run = original; db.close(); }
+});
+
 Deno.test("IBKR preserves separate identical Flex warrant purchases and the chart matches the full holding", async () => {
   const db = await setup();
   try {
