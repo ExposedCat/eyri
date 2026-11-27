@@ -21,3 +21,10 @@ Deno.test("percentage grids retain decimal detail for small returns and stay fin
   equal(percentageGridLabel(.25), "0.25%");
   equal(percentageGridLabel(-0), "0%");
 });
+
+Deno.test("percentage grids never extend below -100%", () => {
+  for (const values of [[-86, 112], [-100, 5], [-99.9, 300], [-64, 10]]) {
+    const grid = percentageGrid(values);
+    ok(grid.min >= -100 && grid.ticks.every(tick => tick.value >= -100));
+  }
+});
