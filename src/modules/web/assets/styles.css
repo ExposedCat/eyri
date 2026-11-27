@@ -273,7 +273,64 @@ html, body {
 .icon-btn:hover { background: var(--bg-hover); color: var(--text); }
 .icon-btn.spinning svg { animation: spin 0.7s linear infinite; }
 
-.account-area { display: flex; align-items: center; gap: 10px; }
+.account-area {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 4px 10px 4px 4px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.account-area:hover:not(:disabled) { background: var(--bg-hover); }
+.account-area:disabled { cursor: default; }
+.account-signout { display: none; font-size: 14px; color: var(--red); white-space: nowrap; }
+.account-area:hover:not(:disabled) .account-name { display: none; }
+.account-area:hover:not(:disabled) .account-signout { display: inline; }
+
+/* IB Gateway status */
+.broker-status { display: flex; align-items: center; gap: 6px; }
+.broker-pill {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 4px 0 11px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  font-size: 13px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+.broker-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); flex: none; }
+.broker-pill.ready .broker-dot { background: var(--green); }
+.broker-pill.recovering .broker-dot { background: var(--amber); animation: pulse 1.2s ease-in-out infinite; }
+.broker-pill.blocked .broker-dot,
+.broker-pill.unavailable .broker-dot { background: var(--red); }
+.broker-pill.recovering .broker-state { color: var(--amber); }
+.broker-pill.blocked .broker-state,
+.broker-pill.unavailable .broker-state { color: var(--red); }
+.broker-name { color: var(--text); font-weight: 600; }
+.broker-restart {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.broker-restart:hover:not(:disabled) { color: var(--text); border-color: var(--text-3); }
+.broker-restart:disabled { opacity: 0.5; cursor: default; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .avatar {
   width: 30px;
   height: 30px;
@@ -934,4 +991,10 @@ table.data-table tbody tr.clickable:hover { background: var(--bg-hover); }
   .kbd-hint { display: none; }
   .chart-canvas-wrap { height: 300px; }
   .chart-canvas-wrap.tall { height: 330px; }
+}
+
+@media (max-width: 880px) {
+  .broker-name, .broker-restart span, .account-name { display: none; }
+  .broker-pill { padding-left: 9px; }
+  .broker-restart { padding: 0 7px; }
 }

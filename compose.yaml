@@ -1,62 +1,9 @@
 services:
-  ib_gateway:
-    container_name: ib_gateway
-    build: &gateway-build
-      context: ./gateway
-      dockerfile: Containerfile
-    restart: unless-stopped
-    stop_grace_period: 90s
-    env_file:
-      - .env-ibkr-1
-    environment:
-      USE_IBG_CONTROLLER: "yes"
-      TRADING_MODE: live
-      READ_ONLY_API: "yes"
-      TWS_SETTINGS_PATH: /home/ibgateway/settings
-      AUTO_RESTART_TIME: "11:59 PM"
-      AUTO_RESTART_ADOPT: "yes"
-      TWOFA_TIMEOUT_ACTION: none
-      TIME_ZONE: Etc/UTC
-      TZ: Etc/UTC
-    ports:
-      - "127.0.0.1:4001:4003"
-      - "127.0.0.1:4002:4004"
-      - "127.0.0.1:5900:5900"
-      - "127.0.0.1:9081:8080"
-    volumes:
-      - ib-gateway-settings:/home/ibgateway/settings
-
-  ib_gateway_2:
-    container_name: ib_gateway_2
-    build: *gateway-build
-    restart: on-failure
-    stop_grace_period: 90s
-    env_file:
-      - .env-ibkr-2
-    environment:
-      USE_IBG_CONTROLLER: "yes"
-      EXISTING_SESSION_DETECTED_ACTION: primary
-      BYPASS_WARNING: "Continue Login,Reconnect This Session"
-      TRADING_MODE: live
-      READ_ONLY_API: "yes"
-      TWS_SETTINGS_PATH: /home/ibgateway/settings
-      AUTO_RESTART_TIME: "11:59 PM"
-      AUTO_RESTART_ADOPT: "yes"
-      TWOFA_TIMEOUT_ACTION: none
-      TIME_ZONE: Etc/UTC
-      TZ: Etc/UTC
-    ports:
-      - "127.0.0.1:9082:8080"
-    volumes:
-      - ib-gateway-2-settings:/home/ibgateway/settings
-
   eyri_app:
     build:
       context: .
       dockerfile: Containerfile
     restart: unless-stopped
-    depends_on:
-      - ib_gateway
     env_file:
       - .env
     environment:
@@ -73,6 +20,7 @@ services:
     networks:
       - default
       - finance-mcp
+      - ib
     healthcheck:
       test:
         [
@@ -115,8 +63,6 @@ services:
       - ./tailscale/config:/etc/tailscale:ro,Z
 
 volumes:
-  ib-gateway-settings:
-  ib-gateway-2-settings:
   eyri-data:
   eyri-tailscale-state:
 
@@ -124,4 +70,9 @@ networks:
   default:
   finance-mcp:
     name: ${FINANCE_MCP_NETWORK:-finance-mcp}
+    external: true
+  # Shared with the separately managed IB Gateways (compose.gateway.yaml), so app
+  # deploys never restart them or force an IBKR re-login.
+  ib:
+    name: eyri-ib
     external: true

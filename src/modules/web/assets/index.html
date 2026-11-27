@@ -83,11 +83,12 @@
           <button id="theme-toggle" class="icon-btn" title="Switch theme" aria-label="Switch theme">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.9" y1="4.9" x2="6.3" y2="6.3"/><line x1="17.7" y1="17.7" x2="19.1" y2="19.1"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.9" y1="19.1" x2="6.3" y2="17.7"/><line x1="17.7" y1="6.3" x2="19.1" y2="4.9"/></svg>
           </button>
-          <div class="account-area">
-            <div id="user-avatar" class="avatar">U</div>
+          <div id="broker-status" class="broker-status hidden" aria-live="polite"></div>
+          <button id="account-btn" class="account-area" type="button" title="Sign out">
+            <span id="user-avatar" class="avatar">U</span>
             <span id="user-name" class="account-name"></span>
-            <button id="logout-btn" class="text-btn">Sign out</button>
-          </div>
+            <span class="account-signout" aria-hidden="true">Sign out</span>
+          </button>
         </div>
       </header>
 
@@ -96,8 +97,7 @@
         <aside id="tickers-sidebar" class="rail">
           <div class="rail-head">
             <div class="rail-tabs" id="sidebar-tabs">
-              <button class="rail-tab active" data-panel-tab="all">All</button>
-              <button class="rail-tab" data-panel-tab="holdings">Owned</button>
+              <button class="rail-tab active" data-panel-tab="holdings">Owned</button>
               <button class="rail-tab" data-panel-tab="watchlist">Watchlist</button>
             </div>
             <select id="sidebar-sort" class="ghost-select" aria-label="Sort tickers">

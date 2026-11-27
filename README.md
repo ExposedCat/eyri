@@ -173,10 +173,20 @@ an Interactive Brokers integration for the current user.
 ### Second IBKR Gateway with TOTP
 
 `/ibkr` registers an existing Gateway; it does not install or start a container.
-`compose.yaml` includes a second live, read-only Gateway with
+`compose.gateway.yaml` includes a second live, read-only Gateway with
 [ibg-controller](https://github.com/code-hustler-ft3d/ibg-controller)'s automatic
-TOTP login. It uses its own settings volume and the same private network as
-Eyri. Both Gateway instances are managed by the existing PM3 project.
+TOTP login. It uses its own settings volume and the shared `eyri-ib` network.
+Both Gateway instances are managed by the separate `eyri-gateway` PM3 project,
+so `pm3 restart eyri -d` (app deploys) never restarts them or forces an IBKR
+re-login. One-time setup on the server:
+
+```sh
+podman network create eyri-ib
+pm3 create ~/apps/eyri --name eyri-gateway -- -f compose.gateway.yaml
+```
+
+Restart the gateways only when needed with `pm3 restart eyri-gateway -d`, the
+`/restart` bot command, or the Restart button in Eyri Web.
 
 `EXISTING_SESSION_DETECTED_ACTION=primary` accepts session-conflict prompts,
 and `BYPASS_WARNING=Continue Login,Reconnect This Session` also handles those
@@ -195,8 +205,8 @@ to be available for this IBKR username; test its activation before changing othe
 authentication methods. The controller documents that a single TOTP method is
 needed for reliable unattended login.
 
-Run `pm3 restart eyri -d` after filling the file. This installs or restarts both
-Gateway instances and Eyri. Check IBKR2 readiness with
+Run `pm3 restart eyri-gateway -d` after filling the file. This installs or
+restarts both Gateway instances. Check IBKR2 readiness with
 `curl -fsS http://127.0.0.1:9082/health`. Login can take a few minutes. If the
 account's default connection server is incorrect, set `TWS_SERVER` in the env
 file to its actual Gateway server and restart the PM3 project; see the controller's

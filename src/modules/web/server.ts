@@ -1,4 +1,7 @@
 import type { Database } from "../database/setup.ts";
+import { getUserIntegrations, type Integration } from "../database/integration.ts";
+import { gatewayMonitor } from "../integrations/ibkr/gateway.ts";
+import { gatewayRecovery, getRestartContainerName } from "../integrations/ibkr/recovery.ts";
 import { findOrCreateUser } from "../database/user.ts";
 import type { ReportRuntime } from "../mcp/reports.ts";
 import type { ReportFilter } from "../tickers/performance_command.ts";
@@ -211,6 +214,22 @@ export function createWebHttpHandler(
       return null;
     }
     return { token, user };
+  }
+
+  const restartProgress = new Map<string, { at: number; message: string; done: boolean }>();
+
+  function userIbkrGateways(userId: number): { host: string; integration: Integration }[] {
+    const seen = new Map<string, Integration>();
+    for (const integration of getUserIntegrations(db, userId)) {
+      if (integration.kind !== "ibkr") continue;
+      try {
+        const host = getRestartContainerName(integration.credentials);
+        if (!seen.has(host)) seen.set(host, integration);
+      } catch {
+        // Integration without an instance URL; nothing to monitor.
+      }
+    }
+    return [...seen].map(([host, integration]) => ({ host, integration }));
   }
 
   async function signInWithTelegram(
@@ -467,6 +486,47 @@ export function createWebHttpHandler(
           }
           const userContext = await loadUserTickerContext(db, userId, symbol, options.reportRuntime);
           return jsonResponse({ userContext });
+        }
+
+        if (method === "GET" && pathname === "/api/brokers/status") {
+          const brokers = await Promise.all(
+            userIbkrGateways(userId).map(async ({ host }) => {
+              const health = await gatewayMonitor.read(host);
+              const restart = restartProgress.get(host);
+              return {
+                kind: "ibkr",
+                host,
+                state: health.state,
+                reason: health.reason ?? null,
+                message: health.message,
+                restart: restart && now() - restart.at < 15 * 60_000 ? restart : null,
+              };
+            }),
+          );
+          return jsonResponse({ brokers }, { cacheControl: "no-store" });
+        }
+
+        if (method === "POST" && pathname === "/api/brokers/restart") {
+          const body = await readJsonBody(request);
+          const host = typeof body?.host === "string" ? body.host : "";
+          const gateway = userIbkrGateways(userId).find((g) => g.host === host);
+          if (!gateway) {
+            return jsonResponse({ error: "Unknown IB Gateway." }, { status: 404 });
+          }
+          if (!authLimiter.allow(`restart:${userId}`, now())) {
+            return jsonResponse({ error: "Too many restarts. Wait a minute." }, { status: 429 });
+          }
+          const update = (message: string, ready?: boolean) => {
+            restartProgress.set(host, { at: now(), message, done: ready === true });
+          };
+          update("Restart requested…");
+          void gatewayRecovery.restartAndFollow(gateway.integration, update).catch((error) => {
+            console.warn(`[Eyri Web] Gateway restart for ${host} failed:`, error);
+            update(error instanceof Error && "userMessage" in error
+              ? String((error as { userMessage: unknown }).userMessage)
+              : "Gateway restart failed. Ask admin to check it.");
+          });
+          return jsonResponse({ ok: true }, { status: 202 });
         }
 
         if (method === "GET" && pathname === "/api/watchlist") {

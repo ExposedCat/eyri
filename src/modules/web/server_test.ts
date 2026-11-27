@@ -286,6 +286,28 @@ Deno.test("FORCE_USER authenticates local dev requests without Telegram OAuth", 
   const overviewJson = await overviewRes.json();
   assertEquals(overviewJson.currency, "USD");
 
+  // Broker status lists only the user's IBKR gateways; restart rejects unknown hosts.
+  db.prepare("INSERT INTO integrations (user_id, kind, credentials_json) VALUES (?, ?, ?)").run(
+    77777,
+    "ibkr",
+    JSON.stringify({ instanceUrl: "tcp://ib_gateway_test:4003" }),
+  );
+  const statusRes = await handler(new Request("http://127.0.0.1:3000/api/brokers/status"));
+  assertEquals(statusRes.status, 200);
+  const statusJson = await statusRes.json();
+  assertEquals(statusJson.brokers.length, 1);
+  assertEquals(statusJson.brokers[0].host, "ib_gateway_test");
+  assertEquals(statusJson.brokers[0].restart, null);
+
+  const badRestart = await handler(
+    new Request("http://127.0.0.1:3000/api/brokers/restart", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host: "someone_elses_gateway" }),
+    }),
+  );
+  assertEquals(badRestart.status, 404);
+
   db.close();
 });
 

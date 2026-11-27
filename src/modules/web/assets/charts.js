@@ -20,15 +20,20 @@ window.EyriCharts = (() => {
 
   function setupCanvas(canvas) {
     const rect = canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const width = Math.max(100, Math.floor(rect.width));
-    const height = Math.max(100, Math.floor(rect.height));
-    if (canvas.width !== Math.floor(width * dpr) || canvas.height !== Math.floor(height * dpr)) {
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
+    // Size the bitmap to the exact device-pixel size of the element. Rounding CSS width first
+    // (or capping DPR) makes the browser resample the bitmap, which looks blurry on
+    // fractional scaling (125%/150%) and 3x screens.
+    const dpr = Math.min(window.devicePixelRatio || 1, 4);
+    const width = Math.max(100, rect.width);
+    const height = Math.max(100, rect.height);
+    const pxW = Math.max(1, Math.round(width * dpr));
+    const pxH = Math.max(1, Math.round(height * dpr));
+    if (canvas.width !== pxW || canvas.height !== pxH) {
+      canvas.width = pxW;
+      canvas.height = pxH;
     }
     const ctx = canvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.setTransform(pxW / width, 0, 0, pxH / height, 0, 0);
     ctx.clearRect(0, 0, width, height);
     return { ctx, width, height };
   }
@@ -74,26 +79,109 @@ window.EyriCharts = (() => {
     ctx.restore();
   }
 
+  // Draws a highlighted range between two x positions with a change callout.
+  function drawSelection(ctx, colors, sel) {
+    const { x1, x2, y1, y2, top, bottom, label, positive } = sel;
+    const left = Math.min(x1, x2);
+    const right = Math.max(x1, x2);
+    const tint = positive ? "rgba(18, 210, 122, 0.10)" : "rgba(255, 76, 94, 0.10)";
+    const color = positive ? colors.green : colors.red;
+    ctx.save();
+    ctx.fillStyle = tint;
+    ctx.fillRect(left, top, right - left, bottom - top);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    for (const x of [x1, x2]) {
+      ctx.beginPath();
+      ctx.moveTo(Math.round(x) + 0.5, top);
+      ctx.lineTo(Math.round(x) + 0.5, bottom);
+      ctx.stroke();
+    }
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const [x, y] of [[x1, y1], [x2, y2]]) {
+      ctx.fillStyle = color;
+      ctx.strokeStyle = colors.bg;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.arc(x, y, 4.6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.font = "600 12.5px -apple-system, BlinkMacSystemFont, Inter, sans-serif";
+    const w = ctx.measureText(label).width + 14;
+    const canvasW = ctx.canvas.getBoundingClientRect().width;
+    const cx = Math.max(w / 2 + 4, Math.min(canvasW - w / 2 - 4, (left + right) / 2));
+    drawCallout(ctx, cx, top + 11, label, "#fff", color);
+    ctx.restore();
+  }
+
+  function signed(n, fmt) {
+    if (!Number.isFinite(n)) return "—";
+    return `${n > 0 ? "+" : n < 0 ? "−" : ""}${fmt(Math.abs(n))}`;
+  }
+
   function attachInteractive(canvas, renderFn, onHover) {
     let hoverX = null;
-    const draw = () => renderFn(hoverX);
+    let dragStartX = null;
+    const selection = () =>
+      dragStartX !== null && hoverX !== null && Math.abs(hoverX - dragStartX) >= 4
+        ? { from: dragStartX, to: hoverX }
+        : null;
+    const draw = () => {
+      const sel = selection();
+      renderFn(sel ? null : hoverX, sel);
+      if (sel && onHover) onHover(null);
+    };
 
+    const xOf = (clientX) => clientX - canvas.getBoundingClientRect().left;
     const onMove = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      hoverX = clientX - rect.left;
+      hoverX = xOf(e.touches ? e.touches[0].clientX : e.clientX);
       draw();
     };
     const onLeave = () => {
       hoverX = null;
+      if (dragStartX === null) {
+        draw();
+        if (onHover) onHover(null);
+      }
+    };
+    const onDown = (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      dragStartX = xOf(e.clientX);
+      hoverX = dragStartX;
+    };
+    const onWindowMove = (e) => {
+      if (dragStartX === null) return;
+      const rect = canvas.getBoundingClientRect();
+      hoverX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
       draw();
-      if (onHover) onHover(null);
+    };
+    const onUp = (e) => {
+      if (dragStartX === null) return;
+      dragStartX = null;
+      const rect = canvas.getBoundingClientRect();
+      const inside = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top &&
+        e.clientY <= rect.bottom;
+      hoverX = inside ? e.clientX - rect.left : null;
+      draw();
+      if (!inside && onHover) onHover(null);
     };
 
     const ro = new ResizeObserver(() => draw());
     ro.observe(canvas);
+    canvas.style.cursor = "crosshair";
     canvas.addEventListener("mousemove", onMove);
     canvas.addEventListener("mouseleave", onLeave);
+    canvas.addEventListener("mousedown", onDown);
+    window.addEventListener("mousemove", onWindowMove);
+    window.addEventListener("mouseup", onUp);
     canvas.addEventListener("touchmove", onMove, { passive: true });
     canvas.addEventListener("touchend", onLeave);
 
@@ -105,6 +193,9 @@ window.EyriCharts = (() => {
         ro.disconnect();
         canvas.removeEventListener("mousemove", onMove);
         canvas.removeEventListener("mouseleave", onLeave);
+        canvas.removeEventListener("mousedown", onDown);
+        window.removeEventListener("mousemove", onWindowMove);
+        window.removeEventListener("mouseup", onUp);
         canvas.removeEventListener("touchmove", onMove);
         canvas.removeEventListener("touchend", onLeave);
       },
@@ -125,7 +216,7 @@ window.EyriCharts = (() => {
 
     const purchaseSet = new Set(purchaseDates);
 
-    return attachInteractive(canvas, (hoverX) => {
+    return attachInteractive(canvas, (hoverX, sel) => {
       const { ctx, width, height } = setupCanvas(canvas);
       const colors = CSS();
       if (!points || points.length < 1) return;
@@ -315,7 +406,7 @@ window.EyriCharts = (() => {
       }
 
       // Peak & Trough key points
-      if (showKeyPoints && points.length > 2) {
+      if (showKeyPoints && !sel && points.length > 2) {
         let hiIdx = -1;
         let loIdx = -1;
         for (let i = 0; i < points.length; i++) {
@@ -343,6 +434,34 @@ window.EyriCharts = (() => {
           ctx.fill();
           const align = lx < pad.left + 75 ? "left" : lx > pad.left + plotW - 75 ? "right" : "center";
           drawCallout(ctx, lx, Math.min(pad.top + plotH - 12, ly + 17), `Low ${formatY(vals[loIdx])}`, "#fff", colors.red, align);
+        }
+      }
+
+      // Drag selection: change between two points
+      if (sel && points.length > 1) {
+        const idxAt = (px) =>
+          Math.max(0, Math.min(points.length - 1, Math.round(((px - pad.left) / plotW) * (points.length - 1))));
+        let a = idxAt(Math.min(sel.from, sel.to));
+        let b = idxAt(Math.max(sel.from, sel.to));
+        while (a < b && (vals[a] === null || !Number.isFinite(vals[a]))) a++;
+        while (b > a && (vals[b] === null || !Number.isFinite(vals[b]))) b--;
+        if (a < b) {
+          const delta = vals[b] - vals[a];
+          let label = signed(delta, formatY);
+          if (mode !== "pct" && kind === "worth" && vals[a] !== 0) {
+            label += ` (${signed((delta / Math.abs(vals[a])) * 100, (n) => `${n.toFixed(2)}%`)})`;
+          }
+          label += `  ·  ${points[a].date} → ${points[b].date}`;
+          drawSelection(ctx, colors, {
+            x1: xFor(a),
+            x2: xFor(b),
+            y1: yFor(vals[a]),
+            y2: yFor(vals[b]),
+            top: pad.top,
+            bottom: pad.top + plotH,
+            label,
+            positive: delta >= 0,
+          });
         }
       }
 
@@ -433,7 +552,19 @@ window.EyriCharts = (() => {
     const divByDate = new Map(dividends.map((d) => [d.date, d]));
     const splitByDate = new Map(splits.map((s) => [s.date, s]));
 
-    return attachInteractive(canvas, (hoverX) => {
+    let timeFmt = null;
+    try {
+      timeFmt = new Intl.DateTimeFormat("en-US", { timeZone: timezone, hour: "2-digit", minute: "2-digit", hour12: false });
+    } catch {
+      timeFmt = null;
+    }
+    const barLabel = (b, withDate = false) => {
+      if (!intraday) return b.date;
+      const t = timeFmt ? timeFmt.format(new Date(b.time)) : new Date(b.time).toISOString().slice(11, 16);
+      return withDate && b.date ? `${b.date.slice(5)} ${t}` : t;
+    };
+
+    return attachInteractive(canvas, (hoverX, sel) => {
       const { ctx, width, height } = setupCanvas(canvas);
       const colors = CSS();
       if (!activeBars || activeBars.length < 1) return;
@@ -561,20 +692,7 @@ window.EyriCharts = (() => {
         const idx = xCount === 1 ? 0 : Math.round((k / (xCount - 1)) * (activeBars.length - 1));
         const b = activeBars[idx];
         const x = Math.min(Math.max(xFor(idx), pad.left + 32), pad.left + plotW - 32);
-        let lbl = b.date;
-        if (intraday) {
-          try {
-            lbl = new Intl.DateTimeFormat("en-US", {
-              timeZone: timezone,
-              hour: "2-digit",
-              minute: "2-digit",
-              hour12: false,
-            }).format(new Date(b.time));
-          } catch {
-            lbl = new Date(b.time).toISOString().slice(11, 16);
-          }
-        }
-        ctx.fillText(lbl, x, plotBottom + 10);
+        ctx.fillText(barLabel(b), x, plotBottom + 10);
       }
 
       const baseline = intraday && previousClose !== null ? previousClose : activeBars[0].open;
@@ -635,7 +753,7 @@ window.EyriCharts = (() => {
       }
 
       // Key points
-      if (showKeyPoints && activeBars.length > 2) {
+      if (showKeyPoints && !sel && activeBars.length > 2) {
         const hiBar = activeBars[hiIdx];
         const loBar = activeBars[loIdx];
         const hx = xFor(hiIdx);
@@ -690,6 +808,33 @@ window.EyriCharts = (() => {
           ctx.arc(xFor(i), yFor(activeBars[i].close), 5.6, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
+        }
+      }
+
+      // Drag selection: price change between two bars
+      if (sel && activeBars.length > 1) {
+        const idxAt = (px) =>
+          Math.max(0, Math.min(activeBars.length - 1, Math.round(((px - pad.left) / plotW) * (activeBars.length - 1))));
+        const a = idxAt(Math.min(sel.from, sel.to));
+        const b = idxAt(Math.max(sel.from, sel.to));
+        if (a < b) {
+          const from = activeBars[a].close;
+          const to = activeBars[b].close;
+          const delta = to - from;
+          const pct = from ? (delta / from) * 100 : NaN;
+          const decimals = Math.abs(from) >= 1 ? 2 : 4;
+          const label = `${signed(delta, (n) => n.toFixed(decimals))} (${signed(pct, (n) => `${n.toFixed(2)}%`)})  ·  ` +
+            `${barLabel(activeBars[a], true)} → ${barLabel(activeBars[b], true)}`;
+          drawSelection(ctx, colors, {
+            x1: xFor(a),
+            x2: xFor(b),
+            y1: yFor(from),
+            y2: yFor(to),
+            top: pad.top,
+            bottom: plotBottom,
+            label,
+            positive: delta >= 0,
+          });
         }
       }
 

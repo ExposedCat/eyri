@@ -1,6 +1,5 @@
 (() => {
   const $ = (id) => document.getElementById(id);
-  const DEFAULT_WATCHLIST_SUGGESTIONS = ["SPY", "QQQ", "AAPL", "NVDA", "MSFT", "BTC-USD"];
   const ALLOC_PALETTE = [
     "#4d9bff", "#12d27a", "#f5a623", "#8d97ff", "#f472b6",
     "#22d3ee", "#fb923c", "#a3e635", "#2dd4bf", "#a78bfa",
@@ -12,7 +11,9 @@
     botUsername: null,
     currency: "USD",
     mainView: "personal",
-    panelTab: "all",
+    panelTab: "holdings",
+    brokers: [],
+    brokerTimer: null,
     panelSort: "daily",
     panelFilter: "",
     overview: null,
@@ -31,7 +32,7 @@
     personalChartHandle: null,
     portfolioSubView: "holdings",
 
-    activeSymbol: "AAPL",
+    activeSymbol: null,
     tickerRange: "1d",
     tickerStyle: "area",
     tickerShowKp: true,
@@ -227,6 +228,85 @@
     }
   }
 
+  function defaultTickerSymbol() {
+    const holdings = state.overview?.holdings || [];
+    const stock = holdings.find((h) => h.assetType === "stock") || holdings[0];
+    if (stock) return (stock.optionMeta?.underlying || stock.yahooSymbol || stock.ticker || "").toUpperCase() || null;
+    return state.watchlist[0] || null;
+  }
+
+  // ---- Broker (IB Gateway) status ----
+  const BROKER_LABEL = {
+    ready: "Connected",
+    recovering: "Connecting",
+    blocked: "Stopped",
+    unavailable: "Unreachable",
+    unknown: "Unknown",
+  };
+
+  async function loadBrokerStatus() {
+    try {
+      const data = await api("/api/brokers/status");
+      state.brokers = data.brokers || [];
+    } catch {
+      // keep last known state
+    }
+    renderBrokerStatus();
+    const busy = state.brokers.some((b) => b.state !== "ready" || (b.restart && !b.restart.done));
+    if (state.brokerTimer) clearTimeout(state.brokerTimer);
+    if (state.user) state.brokerTimer = setTimeout(loadBrokerStatus, busy ? 4_000 : 30_000);
+  }
+
+  function startBrokerStatus() {
+    loadBrokerStatus();
+  }
+
+  function renderBrokerStatus() {
+    const el = $("broker-status");
+    if (!state.brokers.length) {
+      el.classList.add("hidden");
+      el.innerHTML = "";
+      return;
+    }
+    el.classList.remove("hidden");
+    const many = state.brokers.length > 1;
+    el.innerHTML = state.brokers.map((b) => {
+      const restarting = b.restart && !b.restart.done;
+      const stateCls = restarting ? "recovering" : b.state;
+      const label = restarting ? "Restarting" : (BROKER_LABEL[b.state] || b.state);
+      const detail = restarting ? b.restart.message : b.message;
+      const name = many ? `IBKR · ${b.host}` : "IBKR";
+      return `
+        <div class="broker-pill ${escapeHtml(stateCls)}" title="${escapeHtml(detail)}">
+          <span class="broker-dot"></span>
+          <span class="broker-name">${escapeHtml(name)}</span>
+          <span class="broker-state">${escapeHtml(label)}</span>
+          <button class="broker-restart" type="button" data-host="${escapeHtml(b.host)}" ${restarting ? "disabled" : ""}
+            title="Restart IB Gateway (${escapeHtml(b.host)})" aria-label="Restart IB Gateway">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.13-9.36L23 10"/></svg>
+            <span>Restart</span>
+          </button>
+        </div>`;
+    }).join("");
+    el.querySelectorAll(".broker-restart").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const host = btn.dataset.host;
+        if (!confirm(`Restart IB Gateway ${host}? IBKR will log in again.`)) return;
+        btn.disabled = true;
+        try {
+          await api("/api/brokers/restart", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ host }),
+          });
+        } catch (err) {
+          alert(err instanceof Error ? err.message : String(err));
+        }
+        loadBrokerStatus();
+      });
+    });
+  }
+
   function enterWorkspace() {
     $("splash").classList.add("hidden");
     $("login-view").classList.add("hidden");
@@ -235,7 +315,9 @@
     const name = [state.user.firstName, state.user.lastName].filter(Boolean).join(" ") ||
       (state.user.username ? `@${state.user.username}` : `User ${state.user.userId}`);
     $("user-name").textContent = state.forced ? `${name} (local)` : name;
-    $("logout-btn").classList.toggle("hidden", state.forced);
+    $("account-btn").disabled = state.forced;
+    $("account-btn").title = state.forced ? "Local session" : "Sign out";
+    startBrokerStatus();
 
     const avatar = $("user-avatar");
     if (state.user.photoUrl) {
@@ -315,9 +397,18 @@
       state.watchlist = (data.watchlist || []).map((w) => w.symbol);
       $("unit-currency-btn").textContent = state.currency;
 
-      if (data.holdings?.length && state.activeSymbol === "AAPL" && !state.tickerData) {
-        const firstStock = data.holdings.find((h) => h.assetType === "stock");
-        if (firstStock) state.activeSymbol = firstStock.yahooSymbol || firstStock.ticker;
+      if (!state.panelTabChosen) {
+        const tab = data.holdings?.length || !state.watchlist.length ? "holdings" : "watchlist";
+        if (tab !== state.panelTab) {
+          state.panelTab = tab;
+          document.querySelectorAll("#sidebar-tabs .rail-tab").forEach((b) => {
+            b.classList.toggle("active", b.dataset.panelTab === tab);
+          });
+        }
+      }
+      if (!state.activeSymbol) {
+        state.activeSymbol = defaultTickerSymbol();
+        if (state.mainView === "ticker" && state.activeSymbol) loadTickerView(state.activeSymbol);
       }
 
       const bucketSel = $("personal-bucket");
@@ -780,10 +871,7 @@
   function getPanelSymbols() {
     const holdingSymbols = (state.overview?.holdings || [])
       .map((h) => h.optionMeta?.underlying || h.yahooSymbol || h.ticker);
-    const watchSymbols = state.watchlist.length
-      ? state.watchlist
-      : (holdingSymbols.length ? [] : DEFAULT_WATCHLIST_SUGGESTIONS);
-    return [...new Set([...holdingSymbols, ...watchSymbols])];
+    return [...new Set([...holdingSymbols, ...state.watchlist])];
   }
 
   function formatShortExpiry(isoDate) {
@@ -820,18 +908,13 @@
       holdingMap.set(sym, h);
     }
     const watchSet = new Set(state.watchlist.map((s) => s.toUpperCase()));
-    const useDefaults = !holdings.length && !state.watchlist.length;
-    const allSyms = new Set([
-      ...holdingMap.keys(),
-      ...watchSet,
-      ...(useDefaults ? DEFAULT_WATCHLIST_SUGGESTIONS : []),
-    ]);
+    const allSyms = new Set([...holdingMap.keys(), ...watchSet]);
 
     let items = [...allSyms].map((sym) => {
       const holding = holdingMap.get(sym) || null;
       const snapKey = (holding?.optionMeta?.underlying || sym).toUpperCase();
       const snap = state.snapshots.get(sym) || state.snapshots.get(snapKey) || null;
-      const isWatch = watchSet.has(sym) || useDefaults;
+      const isWatch = watchSet.has(sym);
       const isOption = holding?.assetType === "option";
       const changePct = isOption ? (holding?.dailyPct ?? null) : (snap?.changePct ?? holding?.dailyPct ?? null);
       const price = isOption ? (holding?.currentPrice ?? null) : (snap?.price ?? holding?.currentPrice ?? null);
@@ -872,7 +955,14 @@
     }
 
     if (!items.length) {
-      listEl.innerHTML = `<div class="empty-state">No matching tickers.</div>`;
+      const emptyMsg = q
+        ? "No matching tickers."
+        : state.panelTab === "watchlist"
+        ? "Watchlist is empty. Add a symbol above."
+        : state.overview?.errors?.length
+        ? "Holdings unavailable while your broker reconnects."
+        : "No holdings.";
+      listEl.innerHTML = `<div class="empty-state">${escapeHtml(emptyMsg)}</div>`;
       return;
     }
 
@@ -910,7 +1000,13 @@
   }
 
   async function loadTickerView(symbol, opts = {}) {
-    if (!symbol) return;
+    if (!symbol) {
+      if (state.overview && !opts.silent) {
+        $("ticker-alert").textContent = "Search any ticker above, or add one to your watchlist.";
+        $("ticker-alert").classList.remove("hidden");
+      }
+      return;
+    }
     if (!opts.silent) {
       $("ticker-chart-loader").classList.remove("hidden");
       $("ticker-alert").classList.add("hidden");
@@ -1325,7 +1421,9 @@
     });
     $("sidebar-scrim").addEventListener("click", closeMobileSidebar);
 
-    $("logout-btn").addEventListener("click", async () => {
+    $("account-btn").addEventListener("click", async () => {
+      if (state.forced) return;
+      if (state.brokerTimer) clearTimeout(state.brokerTimer);
       await fetch("/api/auth/logout", {
         method: "POST",
         credentials: "same-origin",
@@ -1345,6 +1443,7 @@
     document.querySelectorAll("#sidebar-tabs .rail-tab").forEach((btn) => {
       btn.addEventListener("click", () => {
         state.panelTab = btn.dataset.panelTab;
+        state.panelTabChosen = true;
         document.querySelectorAll("#sidebar-tabs .rail-tab").forEach((b) =>
           b.classList.toggle("active", b === btn)
         );

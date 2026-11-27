@@ -1,0 +1,76 @@
+# IB Gateways, managed as their own pm3 project ("eyri-gateway") so that deploying
+# the app (compose.yaml, pm3 project "eyri") does not restart them and trigger an
+# IBKR re-login. The app reaches them by container name over the shared eyri-ib network.
+#
+# One-time server setup:
+#   podman network create eyri-ib
+#   pm3 create ~/apps/eyri --name eyri-gateway -- -f compose.gateway.yaml
+name: eyri-gateway
+
+services:
+  ib_gateway:
+    container_name: ib_gateway
+    build: &gateway-build
+      context: ./gateway
+      dockerfile: Containerfile
+    restart: unless-stopped
+    stop_grace_period: 90s
+    env_file:
+      - .env-ibkr-1
+    environment:
+      USE_IBG_CONTROLLER: "yes"
+      TRADING_MODE: live
+      READ_ONLY_API: "yes"
+      TWS_SETTINGS_PATH: /home/ibgateway/settings
+      AUTO_RESTART_TIME: "11:59 PM"
+      AUTO_RESTART_ADOPT: "yes"
+      TWOFA_TIMEOUT_ACTION: none
+      TIME_ZONE: Etc/UTC
+      TZ: Etc/UTC
+    ports:
+      - "127.0.0.1:4001:4003"
+      - "127.0.0.1:4002:4004"
+      - "127.0.0.1:5900:5900"
+      - "127.0.0.1:9081:8080"
+    volumes:
+      - ib-gateway-settings:/home/ibgateway/settings
+    networks:
+      - ib
+
+  ib_gateway_2:
+    container_name: ib_gateway_2
+    build: *gateway-build
+    restart: on-failure
+    stop_grace_period: 90s
+    env_file:
+      - .env-ibkr-2
+    environment:
+      USE_IBG_CONTROLLER: "yes"
+      EXISTING_SESSION_DETECTED_ACTION: primary
+      BYPASS_WARNING: "Continue Login,Reconnect This Session"
+      TRADING_MODE: live
+      READ_ONLY_API: "yes"
+      TWS_SETTINGS_PATH: /home/ibgateway/settings
+      AUTO_RESTART_TIME: "11:59 PM"
+      AUTO_RESTART_ADOPT: "yes"
+      TWOFA_TIMEOUT_ACTION: none
+      TIME_ZONE: Etc/UTC
+      TZ: Etc/UTC
+    ports:
+      - "127.0.0.1:9082:8080"
+    volumes:
+      - ib-gateway-2-settings:/home/ibgateway/settings
+    networks:
+      - ib
+
+volumes:
+  # Keep the settings volumes created under the original "eyri" project.
+  ib-gateway-settings:
+    name: eyri_ib-gateway-settings
+  ib-gateway-2-settings:
+    name: eyri_ib-gateway-2-settings
+
+networks:
+  ib:
+    name: eyri-ib
+    external: true
