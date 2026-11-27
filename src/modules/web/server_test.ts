@@ -152,6 +152,39 @@ Deno.test("Web HTTP server enforces Telegram OAuth, security headers, watchlist 
   );
   assertEquals(replayRes.status, 401);
 
+  // Redirect-flow callback (data-auth-url) signs in via GET and redirects home
+  const cbPayload = await signTelegram(
+    { id: 5001, first_name: "Kit", username: "kitkat", auth_date: Math.floor(nowMs / 1000) - 3 },
+    botToken,
+  );
+  const cbQuery = new URLSearchParams(
+    Object.entries(cbPayload).map(([k, v]) => [k, String(v)]),
+  );
+  const cbRes = await handler(
+    new Request(`https://eyri.mercat-pumpkinseed.ts.net/auth/telegram/callback?${cbQuery}`, {
+      headers: { "Sec-Fetch-Site": "same-origin" },
+    }),
+  );
+  assertEquals(cbRes.status, 303);
+  assertEquals(cbRes.headers.get("location"), "/");
+  assert((cbRes.headers.get("set-cookie") ?? "").includes("eyri_session="));
+
+  // Replayed callback redirects with an error and no cookie
+  const cbReplay = await handler(
+    new Request(`https://eyri.mercat-pumpkinseed.ts.net/auth/telegram/callback?${cbQuery}`),
+  );
+  assertEquals(cbReplay.status, 303);
+  assert(cbReplay.headers.get("location")?.startsWith("/?login_error="));
+  assertEquals(cbReplay.headers.get("set-cookie"), null);
+
+  // Cross-site callback navigation is rejected
+  const cbCross = await handler(
+    new Request(`https://eyri.mercat-pumpkinseed.ts.net/auth/telegram/callback?${cbQuery}`, {
+      headers: { "Sec-Fetch-Site": "cross-site" },
+    }),
+  );
+  assert(cbCross.headers.get("location")?.startsWith("/?login_error="));
+
   // 5. Session endpoint returns logged-in user
   const sessRes = await handler(
     new Request("https://eyri.mercat-pumpkinseed.ts.net/api/auth/session", {

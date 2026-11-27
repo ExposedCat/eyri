@@ -191,36 +191,14 @@
     slot.innerHTML = "";
     if (state.botUsername) {
       $("telegram-setup-hint").classList.add("hidden");
-      window.onTelegramAuth = async (user) => {
-        $("login-error").classList.add("hidden");
-        $("login-status").textContent = "Verifying Telegram signature…";
-        $("login-status").classList.remove("hidden");
-        try {
-          const res = await fetch("/api/auth/telegram", {
-            method: "POST",
-            credentials: "same-origin",
-            headers: { "Content-Type": "application/json", "X-Requested-With": "EyriWeb" },
-            body: JSON.stringify(user),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok) throw new Error(data.error || "Telegram sign-in failed.");
-          state.user = data.user;
-          state.forced = false;
-          $("login-status").classList.add("hidden");
-          enterWorkspace();
-        } catch (err) {
-          $("login-status").classList.add("hidden");
-          errEl.textContent = err instanceof Error ? err.message : String(err);
-          errEl.classList.remove("hidden");
-        }
-      };
       const script = document.createElement("script");
       script.async = true;
       script.src = "https://telegram.org/js/telegram-widget.js?22";
       script.setAttribute("data-telegram-login", state.botUsername);
       script.setAttribute("data-size", "large");
       script.setAttribute("data-radius", "8");
-      script.setAttribute("data-onauth", "onTelegramAuth(user)");
+      // Redirect flow: data-onauth needs eval(), which our CSP forbids.
+      script.setAttribute("data-auth-url", "/auth/telegram/callback");
       script.setAttribute("data-request-access", "write");
       slot.appendChild(script);
     } else {
@@ -230,6 +208,9 @@
 
   async function boot() {
     initTheme();
+    const params = new URLSearchParams(location.search);
+    const loginError = params.get("login_error");
+    if (loginError !== null) history.replaceState(null, "", location.pathname + location.hash);
     try {
       const data = await fetch("/api/auth/session", { credentials: "same-origin" }).then((r) => r.json());
       state.botUsername = data.botUsername || null;
@@ -238,7 +219,7 @@
         state.user = data.user;
         enterWorkspace();
       } else {
-        showLogin();
+        showLogin(loginError);
       }
     } catch {
       showLogin("Unable to reach Eyri server.");

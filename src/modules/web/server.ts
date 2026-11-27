@@ -213,6 +213,43 @@ export function createWebHttpHandler(
     return { token, user };
   }
 
+  async function signInWithTelegram(
+    request: Request,
+    raw: Record<string, unknown>,
+  ): Promise<
+    | { ok: true; cookie: string; user: Pick<WebSessionUser, "userId" | "firstName" | "lastName" | "username" | "photoUrl"> }
+    | { ok: false; status: number; error: string }
+  > {
+    if (!authLimiter.allow(`tg:${clientRateKey(request)}`, now())) {
+      return { ok: false, status: 429, error: "Too many sign-in attempts. Wait a minute and try again." };
+    }
+    const verified = await verifyTelegramLogin(raw, botToken, now());
+    if (!verified.ok) return { ok: false, status: 401, error: verified.error };
+    if (!consumeTelegramAuthReplay(db, verified.payload.hash, now())) {
+      return { ok: false, status: 401, error: "This Telegram login payload was already used. Sign in again." };
+    }
+    const authz = isUserAuthorized(db, verified.payload.id, allowedUserIds);
+    if (!authz.ok) return { ok: false, status: 403, error: authz.reason };
+    const { token, session } = await createWebSession(db, {
+      userId: verified.payload.id,
+      firstName: verified.payload.first_name ?? null,
+      lastName: verified.payload.last_name ?? null,
+      username: verified.payload.username ?? null,
+      photoUrl: verified.payload.photo_url ?? null,
+    }, now());
+    return {
+      ok: true,
+      cookie: buildSessionCookie(token, isSecureRequest(request, publicUrl)),
+      user: {
+        userId: session.userId,
+        firstName: session.firstName,
+        lastName: session.lastName,
+        username: session.username,
+        photoUrl: session.photoUrl,
+      },
+    };
+  }
+
   return async (request: Request): Promise<Response> => {
     const url = new URL(request.url);
     const { pathname } = url;
@@ -262,46 +299,39 @@ export function createWebHttpHandler(
       if (!isSameOriginMutation(request, publicUrl)) {
         return jsonResponse({ error: "Invalid request origin." }, { status: 403 });
       }
-      if (!authLimiter.allow(`tg:${clientRateKey(request)}`, now())) {
-        return jsonResponse({ error: "Too many sign-in attempts. Wait a minute and try again." }, { status: 429 });
-      }
       const body = await readJsonBody(request);
       if (!body) {
         return jsonResponse({ error: "Invalid JSON payload." }, { status: 400 });
       }
-      const verified = await verifyTelegramLogin(body, botToken, now());
-      if (!verified.ok) {
-        return jsonResponse({ error: verified.error }, { status: 401 });
+      const result = await signInWithTelegram(request, body);
+      if (!result.ok) {
+        return jsonResponse({ error: result.error }, { status: result.status });
       }
-      if (!consumeTelegramAuthReplay(db, verified.payload.hash, now())) {
-        return jsonResponse({ error: "This Telegram login payload was already used. Sign in again." }, { status: 401 });
-      }
-      const authz = isUserAuthorized(db, verified.payload.id, allowedUserIds);
-      if (!authz.ok) {
-        return jsonResponse({ error: authz.reason }, { status: 403 });
-      }
-      const { token, session } = await createWebSession(db, {
-        userId: verified.payload.id,
-        firstName: verified.payload.first_name ?? null,
-        lastName: verified.payload.last_name ?? null,
-        username: verified.payload.username ?? null,
-        photoUrl: verified.payload.photo_url ?? null,
-      }, now());
-      const cookie = buildSessionCookie(token, isSecureRequest(request, publicUrl));
       return jsonResponse(
-        {
-          authenticated: true,
-          forced: false,
-          user: {
-            userId: session.userId,
-            firstName: session.firstName,
-            lastName: session.lastName,
-            username: session.username,
-            photoUrl: session.photoUrl,
-          },
-        },
-        { headers: { "Set-Cookie": cookie } },
+        { authenticated: true, forced: false, user: result.user },
+        { headers: { "Set-Cookie": result.cookie } },
       );
+    }
+
+    // Redirect flow for the Telegram Login Widget (data-auth-url). Avoids the widget's
+    // eval()-based data-onauth callback, which the CSP (no 'unsafe-eval') blocks.
+    if (method === "GET" && pathname === "/auth/telegram/callback") {
+      const fail = (error: string) =>
+        new Response(null, {
+          status: 303,
+          headers: { Location: `/?login_error=${encodeURIComponent(error)}`, "Cache-Control": "no-store" },
+        });
+      if (!isSameOriginMutation(request, publicUrl)) {
+        return fail("Invalid request origin.");
+      }
+      const payload: Record<string, string> = {};
+      for (const [key, value] of url.searchParams) payload[key] = value;
+      const result = await signInWithTelegram(request, payload);
+      if (!result.ok) return fail(result.error);
+      return new Response(null, {
+        status: 303,
+        headers: { Location: "/", "Set-Cookie": result.cookie, "Cache-Control": "no-store" },
+      });
     }
 
     if (method === "POST" && pathname === "/api/auth/logout") {
