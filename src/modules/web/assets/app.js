@@ -39,6 +39,7 @@
     tickerShowTrades: true,
     tickerData: null,
     tickerContext: null,
+    tickerContextSymbol: null,
     tickerChartHandle: null,
     countdownTimer: null,
     refreshTimer: null,
@@ -914,10 +915,30 @@
       $("ticker-chart-loader").classList.remove("hidden");
       $("ticker-alert").classList.add("hidden");
     }
+    const symbolKey = symbol.toUpperCase();
+    const symbolChanged = state.tickerContextSymbol !== symbolKey;
+    if (symbolChanged) {
+      // Position context comes from the (slow) broker portfolio; load it alongside, never block the chart on it.
+      state.tickerContext = null;
+      state.tickerContextSymbol = symbolKey;
+    }
+    if (symbolChanged || opts.silent) {
+      api(`/api/ticker/${encodeURIComponent(symbol)}/context`)
+        .then((ctx) => {
+          if (state.tickerContextSymbol !== symbolKey) return;
+          state.tickerContext = ctx.userContext || null;
+          if (state.tickerData) renderTickerView();
+        })
+        .catch(() => {});
+    }
+    const range = state.tickerRange;
     try {
-      const data = await api(`/api/ticker/${encodeURIComponent(symbol)}/chart?range=${encodeURIComponent(state.tickerRange)}`);
+      const data = await api(
+        `/api/ticker/${encodeURIComponent(symbol)}/chart?range=${encodeURIComponent(range)}&context=0`,
+      );
+      // Ignore stale responses after the user switched symbol or range.
+      if (state.tickerContextSymbol !== symbolKey || state.tickerRange !== range) return;
       state.tickerData = data.chart;
-      state.tickerContext = data.userContext || null;
       state.activeSymbol = data.chart.symbol;
       renderTickerView();
     } catch (err) {

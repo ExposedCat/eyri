@@ -99,13 +99,25 @@ export type UserTickerContext = {
 };
 
 type PortfolioViewValue = Awaited<ReturnType<typeof fetchPortfolioView>>;
+type ViewCacheEntry = {
+  createdAt: number;
+  expiresAt: number;
+  promise: Promise<PortfolioViewValue>;
+  /** Last successfully loaded view for this key, served while a refresh runs. */
+  settled?: { at: number; value: PortfolioViewValue };
+  inFlight?: boolean;
+};
+
 type CacheBucket = {
-  views: Map<string, { createdAt: number; expiresAt: number; promise: Promise<PortfolioViewValue> }>;
+  views: Map<string, ViewCacheEntry>;
   datasets: Map<string, { createdAt: number; expiresAt: number; promise: Promise<AllTimeDataset> }>;
   fxResponses: Map<string, { expiresAt: number; status: number; body: string }>;
 };
 
 const VIEW_CACHE_TTL_MS = 60_000;
+/** How long an expired view may still be served instantly while it refreshes in the background. */
+const VIEW_STALE_MAX_MS = 15 * 60_000;
+const TICKER_CONTEXT_TTL_MS = 60_000;
 const DATASET_CACHE_TTL_MS = 120_000;
 const PERSISTENT_CHART_FRESH_MS = 5 * 60_000;
 const FX_CACHE_TTL_MS = 120_000;
@@ -276,21 +288,45 @@ function getSharedPortfolioView(
   const now = Date.now();
   const existing = cache.get(key);
   if (existing && (existing.expiresAt > now && (!forceRefresh || now - existing.createdAt <= 2_000))) {
+    // While a refresh is still in flight, answer with the last good view instead of waiting on brokers.
+    if (!forceRefresh && existing.inFlight && existing.settled && now - existing.settled.at <= VIEW_STALE_MAX_MS) {
+      return Promise.resolve(existing.settled.value);
+    }
     return existing.promise;
   }
-  const promise = loader(db, userId, bucketName, {
+  const previous = existing?.settled;
+  const entry: ViewCacheEntry = { createdAt: now, expiresAt: now + VIEW_CACHE_TTL_MS, promise: null!, settled: previous, inFlight: true };
+  entry.promise = loader(db, userId, bucketName, {
     positions: true,
     history: true,
     displayHistory: true,
     accountPerformance: true,
     warrantQuotes: true,
     dailyPnl: true,
-  }).catch((error) => {
-    if (cache.get(key)?.promise === promise) cache.delete(key);
+  }).then((value) => {
+    entry.settled = { at: Date.now(), value };
+    entry.inFlight = false;
+    return value;
+  }, (error) => {
+    entry.inFlight = false;
+    if (cache.get(key) === entry) {
+      if (entry.settled) {
+        // Keep serving the last good view; retry on the next request.
+        entry.promise = Promise.resolve(entry.settled.value);
+        entry.expiresAt = 0;
+      } else {
+        cache.delete(key);
+      }
+    }
     throw error;
   });
-  cache.set(key, { createdAt: now, expiresAt: now + VIEW_CACHE_TTL_MS, promise });
-  return promise;
+  cache.set(key, entry);
+  // Stale-while-revalidate: a recent good view answers immediately while the refresh runs.
+  if (!forceRefresh && previous && now - previous.at <= VIEW_STALE_MAX_MS) {
+    entry.promise.catch(() => {});
+    return Promise.resolve(previous.value);
+  }
+  return entry.promise;
 }
 
 export function listWatchlist(db: Database, userId: number): WatchlistItem[] {
@@ -925,7 +961,50 @@ export async function loadWebPersonalChart(
   };
 }
 
-export async function loadUserTickerContext(
+const tickerContextCache = new WeakMap<
+  Database,
+  Map<string, { at: number; promise: Promise<UserTickerContext | null>; value?: UserTickerContext | null }>
+>();
+
+export function loadUserTickerContext(
+  db: Database,
+  userId: number,
+  rawSymbol: string,
+  runtime?: ReportRuntime,
+): Promise<UserTickerContext | null> {
+  // Custom runtimes (tests) bypass the cache.
+  if (runtime) return computeUserTickerContext(db, userId, rawSymbol, runtime);
+  let perDb = tickerContextCache.get(db);
+  if (!perDb) {
+    perDb = new Map();
+    tickerContextCache.set(db, perDb);
+  }
+  const key = `${userId}:${rawSymbol.trim().toUpperCase()}`;
+  const now = Date.now();
+  const hit = perDb.get(key);
+  if (hit && now - hit.at <= TICKER_CONTEXT_TTL_MS) return hit.promise;
+  const entry: { at: number; promise: Promise<UserTickerContext | null>; value?: UserTickerContext | null } = {
+    at: now,
+    promise: null!,
+    value: hit?.value,
+  };
+  entry.promise = computeUserTickerContext(db, userId, rawSymbol).then((value) => {
+    entry.value = value;
+    return value;
+  }, (error) => {
+    if (perDb.get(key) === entry) perDb.delete(key);
+    throw error;
+  });
+  perDb.set(key, entry);
+  // Serve the previous answer while recomputing.
+  if (hit?.value !== undefined && now - hit.at <= VIEW_STALE_MAX_MS) {
+    entry.promise.catch(() => {});
+    return Promise.resolve(hit.value);
+  }
+  return entry.promise;
+}
+
+async function computeUserTickerContext(
   db: Database,
   userId: number,
   rawSymbol: string,

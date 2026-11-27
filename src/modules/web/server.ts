@@ -447,11 +447,26 @@ export function createWebHttpHandler(
             }
             return await fetchTickerChart(symbol, range, fetcher, now());
           };
+          // context=0 lets the client fetch the chart without waiting on the portfolio-derived
+          // position context (loaded separately via /context).
+          if (url.searchParams.get("context") === "0") {
+            return jsonResponse({ chart: await loadChart() });
+          }
           const [chart, userContext] = await Promise.all([
             loadChart(),
             loadUserTickerContext(db, userId, symbol, options.reportRuntime),
           ]);
           return jsonResponse({ chart, userContext });
+        }
+
+        const tickerContextMatch = pathname.match(/^\/api\/ticker\/([^/]+)\/context$/);
+        if (method === "GET" && tickerContextMatch) {
+          const symbol = sanitizeSymbol(decodeURIComponent(tickerContextMatch[1]));
+          if (!symbol) {
+            return jsonResponse({ error: "Invalid ticker symbol." }, { status: 400 });
+          }
+          const userContext = await loadUserTickerContext(db, userId, symbol, options.reportRuntime);
+          return jsonResponse({ userContext });
         }
 
         if (method === "GET" && pathname === "/api/watchlist") {
