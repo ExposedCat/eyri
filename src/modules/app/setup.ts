@@ -9,6 +9,7 @@ import { startGatewayWatchdog } from "../integrations/ibkr/watchdog.ts";
 import { ensureTickerDisplaySchema } from "../tickers/decorations.ts";
 import { startMcpHttpServer } from "../mcp/server.ts";
 import { ensureYahooMappings } from "../market_data/mappings.ts";
+import { startWebHttpServer } from "../web/server.ts";
 
 export async function startApp() {
   try {
@@ -41,10 +42,15 @@ export async function startApp() {
     Deno.exit(5);
   }
 
+  let botUsername: string | null = Deno.env.get("EYRI_WEB_BOT_USERNAME")?.trim() || null;
+
   try {
     console.log("Starting bot...");
     const bot = createBot(database);
     await bot.init();
+    if (!botUsername && bot.botInfo?.username) {
+      botUsername = bot.botInfo.username;
+    }
     await bot.api.deleteWebhook();
     await setupBotCommands(bot);
 
@@ -57,6 +63,17 @@ export async function startApp() {
   } catch (error) {
     console.error("Error occurred while starting the bot:", error);
     Deno.exit(4);
+  }
+
+  try {
+    const web = startWebHttpServer(database, { botUsername });
+    web?.finished.catch((error) => {
+      console.error("Web server stopped:", error);
+      Deno.exit(6);
+    });
+  } catch (error) {
+    console.error("Error occurred while starting Web server:", error);
+    Deno.exit(6);
   }
 
   try {

@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="dark light">
+  <title>Eyri</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div id="app" class="app-root">
+    <!-- Loading -->
+    <div id="splash" class="splash">
+      <div class="spinner"></div>
+    </div>
+
+    <!-- Minimalist Editorial Login -->
+    <main id="login-view" class="login-screen hidden">
+      <div class="login-stage">
+        <div class="eyri-emblem lg" aria-hidden="true">
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+            <path d="M5 24C10.5 14 16 11 22 14C26 16 29 13 31 9" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>
+            <path d="M5 28H31" stroke="currentColor" stroke-width="1.5" stroke-opacity="0.35" stroke-linecap="round"/>
+            <circle cx="31" cy="9" r="2.6" fill="var(--green)"/>
+          </svg>
+        </div>
+        <h1>Eyri</h1>
+        <p class="login-lead">Portfolio intelligence and live markets, signed in with Telegram.</p>
+
+        <div id="login-error" class="inline-notice error hidden"></div>
+        <div id="login-status" class="inline-notice info hidden"></div>
+
+        <div id="telegram-widget-container" class="telegram-widget-slot"></div>
+
+        <p id="telegram-setup-hint" class="login-hint hidden">
+          Set <code>EYRI_WEB_BOT_USERNAME</code> (or start with <code>TOKEN</code>) and configure your domain via <code>/setdomain</code> in @BotFather.
+        </p>
+      </div>
+    </main>
+
+    <!-- Main Workspace -->
+    <div id="workspace" class="workspace hidden">
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="sidebar-toggle" class="icon-btn mobile-only" aria-label="Tickers" title="Tickers">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+          </button>
+
+          <button id="brand-home" class="brand-btn" title="Eyri">
+            <svg width="22" height="22" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+              <path d="M5 24C10.5 14 16 11 22 14C26 16 29 13 31 9" stroke="currentColor" stroke-width="2.8" stroke-linecap="round"/>
+              <circle cx="31" cy="9" r="3" fill="var(--green)"/>
+            </svg>
+            <span class="brand-word">Eyri</span>
+          </button>
+
+          <nav class="nav-links" aria-label="Views">
+            <button class="nav-link active" data-main-view="personal">Portfolio</button>
+            <button class="nav-link" data-main-view="ticker">Markets</button>
+          </nav>
+        </div>
+
+        <div class="topbar-search">
+          <div class="search-field">
+            <svg class="search-ico" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="11" cy="11" r="7.5"/><line x1="20" y1="20" x2="16.4" y2="16.4"/></svg>
+            <input
+              id="global-search"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="Search any ticker — AAPL, NVDA, VWCE.DE, BTC-USD"
+              aria-label="Search any ticker"
+            >
+            <kbd class="kbd-hint">/</kbd>
+          </div>
+          <div id="search-results" class="search-dropdown hidden" role="listbox"></div>
+        </div>
+
+        <div class="topbar-right">
+          <button id="refresh-btn" class="icon-btn" title="Refresh" aria-label="Refresh">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </button>
+          <button id="theme-toggle" class="icon-btn" title="Switch theme" aria-label="Switch theme">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.9" y1="4.9" x2="6.3" y2="6.3"/><line x1="17.7" y1="17.7" x2="19.1" y2="19.1"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.9" y1="19.1" x2="6.3" y2="17.7"/><line x1="17.7" y1="6.3" x2="19.1" y2="4.9"/></svg>
+          </button>
+          <div class="account-area">
+            <div id="user-avatar" class="avatar">U</div>
+            <span id="user-name" class="account-name"></span>
+            <button id="logout-btn" class="text-btn">Sign out</button>
+          </div>
+        </div>
+      </header>
+
+      <div class="workspace-body">
+        <!-- Left Ticker Rail -->
+        <aside id="tickers-sidebar" class="rail">
+          <div class="rail-head">
+            <div class="rail-tabs" id="sidebar-tabs">
+              <button class="rail-tab active" data-panel-tab="all">All</button>
+              <button class="rail-tab" data-panel-tab="holdings">Owned</button>
+              <button class="rail-tab" data-panel-tab="watchlist">Watchlist</button>
+            </div>
+            <select id="sidebar-sort" class="ghost-select" aria-label="Sort tickers">
+              <option value="daily">Daily %</option>
+              <option value="value">Size</option>
+              <option value="alpha">A–Z</option>
+            </select>
+          </div>
+
+          <div class="rail-input-row">
+            <input id="sidebar-filter" type="text" placeholder="Filter or add symbol…" autocomplete="off" spellcheck="false">
+            <button id="sidebar-add-btn" class="rail-add-btn" title="Watch &amp; open">+</button>
+          </div>
+
+          <div id="tickers-list" class="rail-list"></div>
+        </aside>
+        <div id="sidebar-scrim" class="sidebar-scrim hidden"></div>
+
+        <!-- Main Editorial Stage -->
+        <main class="stage">
+          <!-- PERSONAL PORTFOLIO VIEW -->
+          <section id="personal-view" class="canvas-flow">
+            <div id="personal-alert" class="inline-notice warn hidden"></div>
+
+            <!-- Hero Header -->
+            <header class="hero-block">
+              <div class="hero-top-bar">
+                <div class="underline-tabs" id="personal-kind-group">
+                  <button class="u-tab active" data-kind="alltime">All-Time</button>
+                  <button class="u-tab" data-kind="perf">Open P&amp;L</button>
+                  <button class="u-tab" data-kind="worth">Net Worth</button>
+                </div>
+
+                <div class="inline-controls">
+                  <div class="inline-switch" id="personal-unit-group">
+                    <button class="sw-btn active" data-unit="value" id="unit-currency-btn">USD</button>
+                    <button class="sw-btn" data-unit="pct">%</button>
+                  </div>
+                  <select id="personal-benchmark" class="ghost-select" aria-label="Benchmark">
+                    <option value="sp500">vs S&amp;P 500</option>
+                    <option value="momentum">vs Momentum</option>
+                    <option value="spyl">vs SPYL</option>
+                    <option value="none">No benchmark</option>
+                  </select>
+                  <select id="personal-filter" class="ghost-select" aria-label="Asset filter">
+                    <option value="all">All assets</option>
+                    <option value="stocks">Stocks</option>
+                    <option value="options">Options</option>
+                  </select>
+                  <select id="personal-bucket" class="ghost-select hidden" aria-label="Bucket"></select>
+                </div>
+              </div>
+
+              <div class="hero-figure-row">
+                <div class="hero-main-num" id="personal-hero-value">—</div>
+                <div class="hero-delta-cluster">
+                  <span id="personal-hero-delta" class="hero-delta">—</span>
+                  <span id="personal-bench-readout" class="hero-bench hidden"></span>
+                  <span id="personal-hover-date" class="hero-date"></span>
+                </div>
+              </div>
+            </header>
+
+            <!-- Edge-to-edge Personal Chart -->
+            <div class="chart-stage">
+              <div class="chart-canvas-wrap">
+                <canvas id="personal-chart-canvas"></canvas>
+                <div id="personal-chart-tooltip" class="chart-tooltip hidden"></div>
+                <div id="personal-chart-loader" class="chart-loader hidden"><div class="spinner"></div></div>
+                <div id="personal-chart-empty" class="chart-empty hidden">No personal chart history yet.</div>
+              </div>
+
+              <div class="chart-footer-bar">
+                <div class="range-strip" id="personal-range-group">
+                  <button class="r-btn" data-prange="1m">1M</button>
+                  <button class="r-btn" data-prange="3m">3M</button>
+                  <button class="r-btn" data-prange="6m">6M</button>
+                  <button class="r-btn" data-prange="ytd">YTD</button>
+                  <button class="r-btn" data-prange="1y">1Y</button>
+                  <button class="r-btn active" data-prange="all">ALL</button>
+                </div>
+
+                <div class="chart-toggles">
+                  <button class="text-toggle active" id="personal-toggle-kp" type="button">Key points</button>
+                  <button class="text-toggle active" id="personal-toggle-buys" type="button">Buys</button>
+                </div>
+              </div>
+
+              <div id="personal-keypoints-strip" class="kp-row"></div>
+              <p id="personal-chart-notes" class="subtle-note hidden"></p>
+            </div>
+
+            <!-- Borderless Hairline Metrics Ledger -->
+            <section class="metrics-ledger" aria-label="Portfolio summary">
+              <div class="metric-cell">
+                <span class="m-label">Net worth</span>
+                <strong class="m-val" id="kpi-worth">—</strong>
+                <span class="m-sub" id="kpi-cash">Cash —</span>
+              </div>
+              <div class="metric-cell">
+                <span class="m-label">Today</span>
+                <strong class="m-val" id="kpi-dpnl">—</strong>
+                <span class="m-sub" id="kpi-dpnl-pct">—</span>
+              </div>
+              <div class="metric-cell">
+                <span class="m-label">Open P&amp;L</span>
+                <strong class="m-val" id="kpi-open">—</strong>
+                <span class="m-sub" id="kpi-open-pct">—</span>
+              </div>
+              <div class="metric-cell">
+                <span class="m-label">All-time</span>
+                <strong class="m-val" id="kpi-alltime">—</strong>
+                <span class="m-sub" id="kpi-alltime-pct">—</span>
+              </div>
+              <div class="metric-cell">
+                <span class="m-label">Peak &amp; drawdown</span>
+                <strong class="m-val" id="kpi-peak">—</strong>
+                <span class="m-sub" id="kpi-dd">—</span>
+              </div>
+            </section>
+
+            <!-- Portfolio Detail Ledger -->
+            <section class="ledger-section">
+              <div class="ledger-head">
+                <div class="underline-tabs" id="portfolio-subview-tabs">
+                  <button class="u-tab active" data-subview="holdings">Holdings</button>
+                  <button class="u-tab" data-subview="allocation">Allocation</button>
+                  <button class="u-tab" data-subview="sold">Sold</button>
+                  <button class="u-tab" data-subview="history">History</button>
+                  <button class="u-tab hidden" data-subview="rsu" id="subview-rsu-btn">RSUs</button>
+                </div>
+              </div>
+              <div id="portfolio-subview-body" class="ledger-body"></div>
+            </section>
+          </section>
+
+          <!-- TICKER EXPLORER VIEW -->
+          <section id="ticker-view" class="canvas-flow hidden">
+            <div id="ticker-alert" class="inline-notice error hidden"></div>
+
+            <!-- Ticker Hero -->
+            <header class="hero-block">
+              <div class="ticker-title-bar">
+                <div class="ticker-id">
+                  <div class="ticker-sym-line">
+                    <h1 id="ticker-symbol">—</h1>
+                    <button id="ticker-watch-btn" class="star-btn" title="Toggle watchlist" aria-label="Toggle watchlist">
+                      <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+                    </button>
+                  </div>
+                  <div class="ticker-meta-line">
+                    <span id="ticker-name">Search or pick a ticker</span>
+                    <span class="sep">·</span>
+                    <span id="ticker-exchange">—</span>
+                  </div>
+                </div>
+
+                <!-- Live Market Pulse -->
+                <div class="market-pulse">
+                  <div class="pulse-head" id="market-state-pill">
+                    <span class="pulse-dot"></span>
+                    <span id="market-state-label">—</span>
+                  </div>
+                  <div class="pulse-countdown" id="market-state-detail">—</div>
+                  <div class="pulse-next" id="market-state-next"></div>
+                </div>
+              </div>
+
+              <div class="hero-figure-row">
+                <div class="price-stack">
+                  <span id="ticker-price" class="hero-main-num">—</span>
+                  <span id="ticker-currency" class="hero-ccy"></span>
+                </div>
+                <div class="hero-delta-cluster">
+                  <span id="ticker-change-badge" class="hero-delta">—</span>
+                  <span id="ticker-extended-pill" class="hero-extended hidden"></span>
+                  <span id="ticker-hover-info" class="hero-date"></span>
+                </div>
+              </div>
+            </header>
+
+            <!-- Edge-to-edge Ticker Chart -->
+            <div class="chart-stage">
+              <div class="chart-canvas-wrap tall">
+                <canvas id="ticker-chart-canvas"></canvas>
+                <div id="ticker-chart-tooltip" class="chart-tooltip hidden"></div>
+                <div id="ticker-chart-loader" class="chart-loader hidden"><div class="spinner"></div></div>
+                <div id="ticker-chart-empty" class="chart-empty hidden">No price bars available for this range.</div>
+              </div>
+
+              <div class="chart-footer-bar">
+                <div class="range-strip" id="ticker-range-group">
+                  <button class="r-btn active" data-trange="1d">1D</button>
+                  <button class="r-btn" data-trange="5d">5D</button>
+                  <button class="r-btn" data-trange="1m">1M</button>
+                  <button class="r-btn" data-trange="3m">3M</button>
+                  <button class="r-btn" data-trange="6m">6M</button>
+                  <button class="r-btn" data-trange="ytd">YTD</button>
+                  <button class="r-btn" data-trange="1y">1Y</button>
+                  <button class="r-btn" data-trange="5y">5Y</button>
+                  <button class="r-btn" data-trange="max">MAX</button>
+                </div>
+
+                <div class="chart-toggles">
+                  <div class="inline-switch" id="ticker-style-group">
+                    <button class="sw-btn active" data-style="area">Line</button>
+                    <button class="sw-btn" data-style="candles">Candles</button>
+                  </div>
+                  <button class="text-toggle active" id="ticker-toggle-kp" type="button">Key points</button>
+                  <button class="text-toggle active" id="ticker-toggle-ext" type="button">Pre/Post</button>
+                  <button class="text-toggle active hidden" id="ticker-toggle-trades" type="button">My trades</button>
+                </div>
+              </div>
+
+              <div class="legend-line" id="ticker-session-legend"></div>
+            </div>
+
+            <!-- Single Sleek Session Timeline Ribbon -->
+            <section class="session-ribbon-section" id="session-ribbon-section">
+              <div class="section-bar">
+                <h2>Trading hours</h2>
+                <span id="schedule-tz" class="section-meta"></span>
+              </div>
+              <div id="market-schedule-body"></div>
+            </section>
+
+            <!-- Hairline Two-Column Specs & Position -->
+            <section class="specs-split">
+              <div class="specs-col">
+                <div class="section-bar">
+                  <h2>Key points &amp; stats</h2>
+                  <span id="ticker-period-badge" class="section-meta"></span>
+                </div>
+                <div id="ticker-stats-grid" class="spec-list"></div>
+              </div>
+
+              <div id="ticker-position-card" class="specs-col hidden">
+                <div class="section-bar">
+                  <h2>Your position</h2>
+                  <span id="position-period" class="section-meta"></span>
+                </div>
+                <div id="ticker-position-body" class="spec-list"></div>
+              </div>
+            </section>
+          </section>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <script src="/assets/charts.js" defer></script>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>

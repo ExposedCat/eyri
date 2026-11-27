@@ -64,8 +64,12 @@ services:
       IBKR_GATEWAY_HEALTH_URLS: '{"ib_gateway":"http://ib_gateway:8080/health","ib_gateway_2":"http://ib_gateway_2:8080/health"}'
       EYRI_MCP_HOST: "0.0.0.0"
       EYRI_MCP_PORT: "8000"
+      EYRI_WEB_HOST: "0.0.0.0"
+      EYRI_WEB_PORT: "3000"
+      EYRI_WEB_URL: "${EYRI_WEB_URL:-https://eyri.mercat-pumpkinseed.ts.net}"
     ports:
       - "127.0.0.1:8000:8000"
+      - "127.0.0.1:3000:3000"
     networks:
       - default
       - finance-mcp
@@ -85,10 +89,36 @@ services:
       - eyri-data:/app/data
       - ${XDG_RUNTIME_DIR}/podman/podman.sock:/run/podman/podman.sock:rw
 
+  tailscale:
+    container_name: eyri_tailscale
+    image: docker.io/tailscale/tailscale:stable
+    # Reach loopback-published Eyri Web (127.0.0.1:3000) without exposing MCP (8000).
+    network_mode: host
+    environment:
+      - TS_HOSTNAME=eyri
+      - TS_AUTH_ONCE=true
+      - TS_ACCEPT_DNS=false
+      - TS_USERSPACE=true
+      - TS_BOOT_TIMEOUT=10m
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_SOCKET=/var/run/tailscale/tailscaled.sock
+      - TS_SERVE_CONFIG=/etc/tailscale/serve.json
+    healthcheck:
+      test: [CMD, tailscale, status]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+    volumes:
+      - eyri-tailscale-state:/var/lib/tailscale
+      - ./tailscale/config:/etc/tailscale:ro,Z
+
 volumes:
   ib-gateway-settings:
   ib-gateway-2-settings:
   eyri-data:
+  eyri-tailscale-state:
 
 networks:
   default:

@@ -3,7 +3,8 @@
     "dev": "deno run --watch --env-file=.env -A src/main.ts",
     "format": "deno run -A @biomejs/biome format src --write; deno run -A @biomejs/biome lint src --write",
     "mcp": "deno run --env-file=.env -A src/mcp.ts",
-    "mcp:stdio": "deno run --env-file=.env -A src/mcp.ts --stdio"
+    "mcp:stdio": "deno run --env-file=.env -A src/mcp.ts --stdio",
+    "web": "deno run --env-file=.env -A src/web.ts"
   },
   "compilerOptions": {
     "lib": ["deno.ns", "dom", "dom.iterable"]
