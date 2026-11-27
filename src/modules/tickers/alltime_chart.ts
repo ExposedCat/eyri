@@ -898,7 +898,7 @@ export async function renderAllTimeChart(
     throw new UserFacingError("Saved chart uses the old contribution rule. Run /chart again.",
       { detail: "This chart uses an older return calculation. Create a new chart with /chart." });
   }
-  const key = await hash({ version: 22, datasets });
+  const key = await hash({ version: 23, datasets });
   const stored = db.prepare(
     "SELECT png FROM alltime_render_cache WHERE cache_key = ?",
   ).get(key) as { png: Uint8Array } | undefined;

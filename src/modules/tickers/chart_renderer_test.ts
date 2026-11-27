@@ -231,3 +231,15 @@ Deno.test("Momentum changes the rendered legend and cache even when both indices
     await Deno.writeFile("/tmp/eyri-momentum-test.png", png);
   } finally { db.close(); }
 });
+
+Deno.test("percentage charts floor the y-axis at -100% for deep drawdowns and large gains", async () => {
+  for (const percentages of [[-98, -50, 10, 50], [-50, 100, 1000, 3000]]) {
+    const points = percentages.map((percentage, index) => ({
+      date: `2026-01-0${index + 1}`,
+      percentage,
+      gain: percentage * 10,
+    }));
+    const png = renderAllTimeDatasets([{ ...dataset, points }]);
+    deepStrictEqual([...png.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  }
+});

@@ -21,3 +21,23 @@ Deno.test("percentage grids retain decimal detail for small returns and stay fin
   equal(percentageGridLabel(.25), "0.25%");
   equal(percentageGridLabel(-0), "0%");
 });
+
+Deno.test("percentage grids never render below -100% even with padding, deep losses, or large steps", () => {
+  for (const [values, intervals] of [
+    [[-95, 112], 22],
+    [[-99, 10], 22],
+    [[-100, 0], 22],
+    [[-86, 200], 22],
+    [[-100, 50], 10],
+    [[0, 3000], 22],
+    [[-50, 2000], 10],
+    [[-50, 8000], 22],
+    [[-120, 50], 22],
+  ] as [number[], number][]) {
+    const grid = percentageGrid(values, intervals);
+    equal(grid.min, -100, `Expected -100% floor for ${JSON.stringify(values)} (intervals=${intervals})`);
+    ok(grid.ticks.every(tick => tick.value >= -100 && tick.value <= grid.max));
+    ok(grid.ticks.some(tick => tick.major && tick.value === 0));
+    ok(grid.ticks.filter(tick => tick.major).every(tick => Math.abs(tick.value / grid.step - Math.round(tick.value / grid.step)) < 1e-9));
+  }
+});

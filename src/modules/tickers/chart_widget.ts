@@ -35,8 +35,8 @@ export function renderChartWidget(
 
   const purchases = new Set(dataset.purchaseDates ?? []);
   const grids = percent ? [1, 2].map(curve => {
-    const { min, max, step } = percentageGrid(values.flatMap(row => [row[0], row[curve]]), 10);
-    return { min, max, step };
+    const { min, max, ticks } = percentageGrid(values.flatMap(row => [row[0], row[curve]]), 10);
+    return { min, max, ticks: ticks.map(tick => [tick.value, tick.major ? 1 : 0]) };
   }) : undefined;
   for (const budget of [120, 84, 60, 36, 18, 8]) {
     // Retain the first/last dates and each curve's extrema in every time bucket.
@@ -120,7 +120,12 @@ function draw(){
  const x=i=>54+(last===first ? .5 : (Date.parse(D.dates[i])-first)/(last-first))*296;
  const y=v=>176-(v-low)/(high-low)*162;
  function add(tag,attrs,text){const node=document.createElementNS(ns,tag);Object.keys(attrs).forEach(k=>node.setAttribute(k,attrs[k]));if(text!==undefined)node.textContent=text;svg.appendChild(node);return node}
- const count=g?Math.round((high-low)/g.step)*2:3;for(let i=0;i<=count;i++){const v=low+(high-low)*i/count,yy=y(v),major=!g||i%2===0;add('line',{x1:54,x2:350,y1:yy,y2:yy,stroke:'#87909d','stroke-opacity':Math.abs(v)<1e-10?'.6':major?'.25':'.1'});if(major)add('text',{x:49,y:yy+4,'text-anchor':'end'},D.percent?new Intl.NumberFormat('en-US',{maximumFractionDigits:8}).format(Math.abs(v)<1e-10?0:v)+'%':new Intl.NumberFormat(undefined,{notation:'compact',maximumFractionDigits:1}).format(v))}
+ const ticks = g ? g.ticks : [0, 1, 2, 3].map(i => [low + (high - low) * i / 3, 1]);
+ for (const [v, major] of ticks) {
+  const yy = y(v);
+  add('line', { x1: 54, x2: 350, y1: yy, y2: yy, stroke: '#87909d', 'stroke-opacity': Math.abs(v) < 1e-10 ? '.6' : major ? '.25' : '.1' });
+  if (major) add('text', { x: 49, y: yy + 4, 'text-anchor': 'end' }, D.percent ? new Intl.NumberFormat('en-US', { maximumFractionDigits: 8 }).format(v === 0 ? 0 : v) + '%' : new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(v));
+ }
  function line(curve,color,dashed){let connected=false;const path=rows.map((r,i)=>{if(r[curve]===null){connected=false;return ''}const part=(connected?'L':'M')+x(i).toFixed(1)+','+y(r[curve]).toFixed(1);connected=true;return part}).join('');add('path',{d:path,fill:'none',stroke:color,'stroke-width':2,'stroke-linejoin':'round',...(dashed?{'stroke-dasharray':'5 4'}:{})});if(rows[n-1][curve]!==null)add('circle',{cx:x(n-1),cy:y(rows[n-1][curve]),r:3,fill:dashed?'var(--tg-theme-bg-color,#15191f)':color,stroke:color,'stroke-width':1.5});if(curve===0)rows.forEach((r,i)=>{if(r[0]!==null&&(D.purchases[i]||(i>0&&rows[i-1][0]===null&&i<n-1&&rows[i+1][0]===null)))add('circle',{cx:x(i),cy:y(r[0]),r:3.5,fill:'var(--tg-theme-bg-color,#15191f)',stroke:color,'stroke-width':1.5})})}
  line(index+1,light?'#96630c':'#e7c678',true);line(0,light?'#087e62':'#59d6ad',false);
  add('text',{x:54,y:201},D.dates[0]);add('text',{x:350,y:201,'text-anchor':'end'},D.dates[n-1]);

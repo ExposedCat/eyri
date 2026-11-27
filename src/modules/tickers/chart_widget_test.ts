@@ -158,3 +158,17 @@ Deno.test("long widget histories fit Telegram limits, retain endpoints and leave
   const get = runWidget(renderChartWidget(dataset, sp500, iumo));
   equal(get("benchmarkValue").textContent, "Value unavailable");
 });
+
+Deno.test("widget percentage axis never renders below -100% and keeps zero-aligned labels for large steps", () => {
+  for (const percentages of [[-95, -50, 20], [-50, 500, 2000]]) {
+    const { dataset, sp500, iumo } = fixture(percentages.length);
+    dataset.points.forEach((point, i) => { point.percentage = percentages[i]; });
+    const html = renderChartWidget(dataset, sp500, iumo);
+    const get = runWidget(html);
+    const labels = get("plot").children
+      .filter(node => node.textContent.endsWith("%"))
+      .map(node => Number(node.textContent.replaceAll(",", "").slice(0, -1)));
+    ok(labels.every(value => Number.isFinite(value) && value >= -100));
+    ok(labels.includes(0));
+  }
+});
